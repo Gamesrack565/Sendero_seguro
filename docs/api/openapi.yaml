@@ -384,39 +384,39 @@ paths:
   /pasarela/sms/entrante:
     post:
       tags: [Pasarelas]
-      summary: Webhook del proveedor para SMS recibidos (CU-25)
+      summary: Webhook de Twilio para SMS recibidos (CU-25)
       description: |
-        Lo llama el proveedor de SMS, no la app. Se valida con la firma del proveedor
-        (encabezado según el proveedor elegido; en el ejemplo, `X-Firma-Proveedor`).
+        Lo llama Twilio cuando llega un SMS a su número, no la app. Se valida con `X-Twilio-Signature`.
 
-        Cada mensaje se guarda en `mensaje_sms`, válido o no. Si es un `SS1|…` válido,
-        se registra la alerta con `canalRecepcion = SMS` y sigue el mismo flujo de dispersión.
-        El formato `SS1` está en `README.md`. Siempre responde `200` para que el proveedor no reintente
-        un mensaje que ya se guardó.
+        Cada mensaje se guarda en `mensaje_sms`, válido o no. Si es un `SS1|…` válido de una cuenta activa,
+        se registra la alerta con `canalRecepcion = SMS` y sigue el mismo flujo de dispersión; si la alerta
+        ya existía (mismo id corto y hora ±60 s), solo se liga a ella. El formato `SS1` está en `README.md`.
+        Siempre responde `200` para que Twilio no reintente un mensaje que ya se guardó: TwiML vacío
+        (no se contesta nada al teléfono), o JSON si la petición pide `Accept: application/json`.
       x-proceso: P16, P5
       security:
-        - firmaProveedor: []
+        - firmaTwilio: []
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SmsEntrante' }
           application/x-www-form-urlencoded:
             schema: { $ref: '#/components/schemas/SmsEntrante' }
       responses:
         '200':
           description: Mensaje guardado
           content:
+            text/xml:
+              schema: { type: string, example: '<?xml version="1.0" encoding="UTF-8"?><Response></Response>' }
             application/json:
               schema:
                 type: object
-                required: [mensajeId, valido]
+                required: [valido]
                 properties:
-                  mensajeId: { type: integer, format: int64 }
+                  mensajeId: { type: [integer, 'null'], format: int64, description: Nulo si el remitente no es un número de teléfono }
                   valido: { type: boolean }
-                  alertaId: { type: [string, 'null'], format: uuid }
+                  alertaId: { type: [string, 'null'], format: uuid, description: Nulo si no es válido o si el registro está pendiente }
         '401':
-          description: Firma del proveedor inválida
+          description: Firma de Twilio inválida
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -424,26 +424,31 @@ paths:
   /pasarela/sms/estado:
     post:
       tags: [Pasarelas]
-      summary: Webhook del proveedor con el estado de entrega de un SMS enviado
-      description: Actualiza `notificacion.estado` (E-03) buscando por `proveedorMensajeId`.
+      summary: Webhook de Twilio con el estado de entrega de un SMS enviado
+      description: |
+        Twilio lo llama para cada SMS que mandó el servidor (`StatusCallback`). Actualiza `notificacion` (E-03)
+        buscando por `proveedor_mensaje_id = MessageSid`:
+        `sent` deja de esperar la confirmación, `delivered` pasa a `ENTREGADA`, y `undelivered` o `failed`
+        pasa a `FALLIDA` (se reintenta) o a `DESCARTADA` con los errores 30004, 30005 y 30006.
+        Los demás estados se ignoran.
       x-proceso: P16
       security:
-        - firmaProveedor: []
+        - firmaTwilio: []
       requestBody:
         required: true
         content:
-          application/json:
+          application/x-www-form-urlencoded:
             schema:
               type: object
-              required: [proveedorMensajeId, estado]
+              required: [MessageSid, MessageStatus]
               properties:
-                proveedorMensajeId: { type: string, maxLength: 120 }
-                estado: { type: string, enum: [ENTREGADA, FALLIDA] }
-                error: { type: string }
+                MessageSid: { type: string, maxLength: 120 }
+                MessageStatus: { type: string, enum: [queued, sending, sent, delivered, undelivered, failed] }
+                ErrorCode: { type: string }
       responses:
         '204': { description: Actualizado (o ignorado si no se encontró) }
         '401':
-          description: Firma del proveedor inválida
+          description: Firma de Twilio inválida
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -625,11 +630,13 @@ components:
         Reclamos: `sub` (usuario.id), `rol` (INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR),
         `disp` (dispositivo.id, solo en la app), `sid` (sesion.id), `exp`.
         Vida propuesta: 15 min; se renueva con el token de sesión.
-    firmaProveedor:
+    firmaTwilio:
       type: apiKey
       in: header
-      name: X-Firma-Proveedor
-      description: Firma HMAC del proveedor de SMS sobre el cuerpo. El nombre real depende del proveedor elegido.
+      name: X-Twilio-Signature
+      description: |
+        Base64 de HMAC-SHA1 con el Auth Token de Twilio sobre la URL pública del webhook seguida de cada
+        campo del formulario (nombre y valor, ordenados por nombre).
 
   parameters:
     IdAlerta:
@@ -924,12 +931,12 @@ components:
 
     SmsEntrante:
       type: object
-      required: [de, texto]
+      description: Campos que manda Twilio (manda más, y se ignoran).
+      required: [From, Body]
       properties:
-        de: { type: string, pattern: '^\+?[0-9]{10,15}$', description: Número de origen }
-        texto: { type: string, maxLength: 160 }
-        proveedorMensajeId: { type: string }
-        recibidoEn: { type: string, format: date-time }
+        From: { type: string, description: 'Número de origen en formato internacional, por ejemplo +525512345678' }
+        Body: { type: string, description: Texto del SMS; se guardan hasta 160 caracteres }
+        MessageSid: { type: string }
 
     LoteSync:
       type: object

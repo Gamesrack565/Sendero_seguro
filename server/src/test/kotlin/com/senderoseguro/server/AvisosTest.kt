@@ -254,4 +254,21 @@ class AvisosTest : PruebaConBaseDatos() {
         // El operador no tiene push registrado: la cancelación le llega por SMS.
         assertTrue(sms.enviados.any { it.destino == "5510000011" && it.texto.contains("cancelada") })
     }
+
+    @Test
+    fun `si el proveedor esta saturado se espera sin contar reintento y no se le manda nada mas`() {
+        vaciarCola()
+        val id = alertaDespachada()
+        sms.respuesta = { ResultadoEnvio.Fallo("Twilio 429 20429: Too many requests", esperarSeg = 60) }
+        val (e, _) = envio()
+        e.procesarPendientes()
+        // Solo se intentó el primero; los tres SMS de la alerta siguen PENDIENTE, sin reintentos, para dentro de ~60 s.
+        assertEquals(1, sms.enviados.size)
+        assertEquals("PENDIENTE,PENDIENTE", estado(id, "RED_APOYO"))
+        assertEquals(0, numero("SELECT coalesce(sum(reintentos), 0) FROM notificacion WHERE alerta_id = ?", id))
+        assertEquals(
+            3,
+            numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND proximo_reintento_en > now() + interval '50 seconds'", id),
+        )
+    }
 }

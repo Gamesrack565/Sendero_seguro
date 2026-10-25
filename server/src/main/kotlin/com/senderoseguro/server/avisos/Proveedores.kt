@@ -22,7 +22,16 @@ sealed interface ResultadoEnvio {
      * No lo aceptó. Con [definitivo] no tiene caso reintentar. Con [destinoInvalido] el token o el número ya no
      * sirve: un token de push se borra y el aviso sale por SMS; un número de SMS inválido se descarta.
      */
-    data class Fallo(val error: String, val definitivo: Boolean = false, val destinoInvalido: Boolean = false) : ResultadoEnvio
+    data class Fallo(
+        val error: String,
+        val definitivo: Boolean = false,
+        val destinoInvalido: Boolean = false,
+        /**
+         * El proveedor está saturado (429) y pide esperar estos segundos. No es culpa del aviso: no cuenta como
+         * reintento, y mientras tanto no se le manda nada más a ese proveedor.
+         */
+        val esperarSeg: Long? = null,
+    ) : ResultadoEnvio
 }
 
 /** Un servicio que entrega mensajes de un canal: FCM para PUSH y la pasarela (Twilio) para SMS. */

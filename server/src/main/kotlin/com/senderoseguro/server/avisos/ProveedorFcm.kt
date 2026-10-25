@@ -116,9 +116,13 @@ class ProveedorFcm(
         val texto = "FCM ${respuesta.statusCode()} ${codigoFcm ?: estado ?: ""}: ${error?.get("message")?.jsonPrimitive?.contentOrNull ?: respuesta.body().take(200)}"
         if (respuesta.statusCode() == 401) tokenAcceso = null   // se pide uno nuevo en el siguiente intento
         return when {
+            respuesta.statusCode() == 429 -> ResultadoEnvio.Fallo(
+                texto,
+                esperarSeg = respuesta.headers().firstValue("Retry-After").map { it.trim().toLongOrNull() }.orElse(null)?.coerceIn(1, 300) ?: 10,
+            )
             codigoFcm in TOKEN_INVALIDO || estado == "INVALID_ARGUMENT" ->
                 ResultadoEnvio.Fallo(texto, destinoInvalido = true)
-            else -> ResultadoEnvio.Fallo(texto)   // 401, 403, 429, 5xx: se reintenta
+            else -> ResultadoEnvio.Fallo(texto)   // 401, 403, 5xx: se reintenta
         }
     }
 

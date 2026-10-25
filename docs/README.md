@@ -16,6 +16,8 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/dispersion/      Canalización, asignación de la unidad más cercana y escalamiento (P5)
   src/main/kotlin/…/tiemporeal/      WebSocket de la consola y del enlace (P16)
   src/main/kotlin/…/avisos/          Envío de los avisos por push y SMS con reintentos (P16)
+  src/main/kotlin/…/auditoria/       Bitácora, historial, línea de tiempo y estadísticas (P13)
+  src/main/kotlin/…/pasarela/        Webhooks de Twilio: SMS de contingencia SS1 y estado de los SMS (P16)
   src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
   src/main/resources/
     application.conf                 Configuración (puerto, base de datos, JWT)
@@ -85,7 +87,7 @@ En local (`DB_DATOS_PRUEBA` sin definir o en `true`) el servidor carga usuarios,
 | Admin | Administrador |
 | Operadores de Caseta ESCOM, Patrulla Lindavista, Ambulancia ERUM 12 y PBI Zacatenco | Operador |
 
-También se activan dos rutas que no existen en la nube:
+También se activan rutas que no existen en la nube:
 
 | Ruta | Qué hace |
 |---|---|
@@ -93,6 +95,8 @@ También se activan dos rutas que no existen en la nube:
 | `POST /api/v1/dev/alertas` | Crea una alerta de Ana y la despacha. La respuesta trae `enlace`, la ruta que vería la red de apoyo. Cuerpo opcional: `{"tipo":"EMERGENCIA_MEDICA","latitud":19.5045,"longitud":-99.1469}`. Sin cuerpo es una alerta genérica frente a la ESCOM. |
 | `POST /api/v1/dev/alertas/{id}/vencer` | Vence ya el plazo de acuse de esa alerta y la escala, sin esperar el tiempo de la regla. |
 | `POST /api/v1/dev/unidades/liberar` | Regresa a DISPONIBLE las unidades ocupadas, para repetir la prueba. |
+| `POST /api/v1/dev/sms/ss1` | Arma el SMS `SS1` que mandaría el teléfono de Ana sin internet, con su número de origen (`de`). Mismo cuerpo opcional que `/dev/alertas`. |
+| `POST /api/v1/dev/sms/prueba` | Manda un SMS de prueba con el proveedor configurado. Cuerpo: `{"telefono":"+5255..."}`. Responde si el proveedor lo aceptó y su id, o el error. |
 
 Ejemplo en PowerShell:
 
@@ -166,17 +170,56 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 | Estado | Qué pasa |
 |---|---|
 | `PENDIENTE` | Se elige el canal. Push si la cuenta tiene un teléfono con token FCM; si no, SMS a su número. Los contactos sin app reciben SMS (WhatsApp también sale por SMS mientras no haya proveedor de WhatsApp). Una alerta informativa sin push se descarta, porque el operador ya la ve en la consola. |
-| `ENVIADA` | El proveedor aceptó el mensaje. Si el proveedor confirma entregas (el SMS con webhook de estado) y la confirmación no llega en 10 minutos, pasa a `FALLIDA`. |
+| `ENVIADA` | El proveedor aceptó el mensaje. Si el proveedor confirma entregas (Twilio con `PASARELA_URL_PUBLICA`) y en 10 minutos no avisa ni que lo pasó a la compañía telefónica, pasa a `FALLIDA`. |
 | `ENTREGADA` | El proveedor confirmó la entrega. |
-| `FALLIDA` | Se cuenta el reintento y se espera 15 s, 30 s, 1 min, 2 min… antes de volver a intentar. |
+| `FALLIDA` | Se cuenta el reintento y se espera 15 s, 30 s, 1 min, 2 min… antes de volver a intentar. Si el proveedor responde que está saturado (429), no cuenta como reintento: se espera lo que pide (`Retry-After`) y mientras no se le manda nada más. |
 | `DESCARTADA` | Se llegó a 5 fallas, o el error no tiene caso reintentarlo (token o número inválido). Se avisa a los Administradores: queda en la historia de la alerta (`ENTREGA_DESCARTADA`) y la consola recibe `alerta.entrega_fallida`. |
 
 - Los SMS van sin acentos ni eñes para caber en 160 caracteres. A la red de apoyo con acceso de seguimiento le llega el enlace de ubicación.
 - No se envían los avisos para atender una alerta que ya terminó (alerta asignada o informativa, escalamiento, sin acuse), ni los que tienen más de 24 horas (por ejemplo, si el servidor estuvo apagado). Se marcan `DESCARTADA` sin avisar.
 - En local el proveedor es `simulado`: no manda nada y escribe cada mensaje en el log del servidor con `[SIMULADO]`. Los proveedores reales (FCM y Twilio) se eligen con `AVISOS_PROVEEDOR_PUSH` y `AVISOS_PROVEEDOR_SMS`.
 - **Push con FCM.** Con `AVISOS_PROVEEDOR_PUSH=fcm` y `FCM_CREDENCIALES` (ruta del `.json` de la cuenta de servicio de Firebase, que nunca se sube al repo), el servidor envía por la API HTTP v1 de FCM con prioridad alta. FCM no confirma la entrega, así que el push queda `ENVIADA`. Si FCM responde que el token ya no sirve, se borra del dispositivo y el aviso sale por SMS en el siguiente intento.
+- **SMS con Twilio.** Con `AVISOS_PROVEEDOR_SMS=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` y `TWILIO_NUMERO`, el servidor envía cada SMS por la API de Twilio, al número en formato internacional (`5512345678` sale como `+525512345678`). Con `PASARELA_URL_PUBLICA`, Twilio avisa el estado de cada SMS en `/pasarela/sms/estado`: `sent` (lo entregó a la compañía), `delivered` (`ENTREGADA`) o `undelivered`/`failed` (`FALLIDA` y se reintenta; si el número no existe o es fijo, `DESCARTADA`). Algunas compañías nunca mandan `delivered`; esos SMS se quedan `ENVIADA` y no se repiten. Un número que Twilio no acepta (inválido, no es celular, pidió no recibir SMS, o no está verificado en una cuenta de prueba) se descarta. La cuenta de prueba "Limited trial" de Twilio solo manda sus plantillas, no un texto propio (error 572006); con ella los avisos se descartan y hay que usar el proveedor simulado o una cuenta "Full access".
 - **Token del teléfono.** La app lo registra con `PUT /api/v1/dispositivos/{id}/push` `{"fcmToken": "..."}` al iniciar sesión y cada vez que FCM lo rota. Solo el dueño del dispositivo; si otro dispositivo tenía ese token, se le quita.
 - Varios servidores pueden enviar a la vez sin repetir avisos.
+- Las pruebas automáticas descartan al terminar los avisos que crearon, para que el servidor no los mande al arrancar.
+- En el día a día conviene dejar `AVISOS_PROVEEDOR_SMS=simulado`. Con Twilio, cada alerta de prueba también intenta mandar SMS a los números de los datos de prueba. La cuenta de prueba de Twilio los rechaza porque no están verificados, pero una cuenta de pago sí los mandaría.
+
+## SMS de contingencia
+
+Cuando el teléfono no tiene internet ni malla, la app manda la alerta como un SMS `SS1|…` de 46 caracteres al número de Twilio (formato en `docs/api/README.md`). Twilio llama a `POST /api/v1/pasarela/sms/entrante` y el servidor:
+
+1. Valida la firma `X-Twilio-Signature` con `TWILIO_AUTH_TOKEN`. Si no coincide, responde 401 y no guarda nada.
+2. Guarda el mensaje en `mensaje_sms`, válido o no. Es válido si es un `SS1` con la verificación correcta, de las últimas 24 horas, y si el número de origen es el `telefono_movil` de una cuenta activa (con o sin `+52`).
+3. Si es de una alerta que ya existe (misma persona, mismo id corto y hora ±60 s), lo liga a ella. Así, si el teléfono reintenta el SMS, la alerta no se duplica.
+4. Si no existe, la registra con `canal_recepcion = SMS` y la despacha igual que una alerta por internet. El registro es del Módulo 2: implementa `RegistroAlertasSms` y se conecta en `Application.kt`. Mientras no exista, en local se usa un registro de prueba y en la nube los mensajes válidos quedan pendientes (`procesado_en` nulo) hasta que se conecte.
+
+Siempre responde 200 con TwiML vacío, así que a la persona no le llega ninguna respuesta por SMS. Para que Twilio llame al servidor, en la Console de Twilio el número debe tener como webhook de "A message comes in" la dirección `https://<dominio>/api/v1/pasarela/sms/entrante` (HTTP POST), y `PASARELA_URL_PUBLICA` debe ser `https://<dominio>/api/v1`.
+
+## Bitácora
+
+`bitacora` guarda las acciones que hay que poder auditar (RNF16). La base calcula un hash SHA-256 que encadena cada registro con el anterior y no deja cambiar ni borrar registros. Cualquier módulo escribe con `Bitacora.registrar`, dentro de la misma transacción que la acción:
+
+```kotlin
+dataSource.transaccion { conn ->
+    // ... la acción ...
+    Bitacora.registrar(conn, "CONSULTAR_HISTORIAL_AJENO", usuario.usuarioId,
+        entidad = "usuario", entidadId = id.toString(),
+        detalle = buildJsonObject { put("justificacion", justificacion) }, ip = call.ipCliente())
+}
+```
+
+Rutas, solo para el Administrador:
+- `GET /api/v1/bitacora`: registros del más nuevo al más viejo. Filtros `accion`, `entidad`, `entidadId`, `usuarioId`, `desde`, `hasta`, `limite` (1 a 200) y `cursor`.
+- `GET /api/v1/bitacora/verificar`: revisa toda la cadena con `fn_verificar_bitacora()`. `integra` es `false` si algún registro se alteró, y `primerIdAlterado` dice cuál.
+
+## Línea de tiempo de una alerta
+
+`GET /api/v1/alertas/{id}/timeline` junta en orden los cambios de estado, las asignaciones, los escalamientos, los avisos y los intentos de cancelación. La ven las mismas personas que `GET /alertas/{id}`:
+- **El Administrador y el operador cuya unidad tuvo la alerta** ven todo, con nombres y a quién se mandó cada aviso.
+- **Quien emitió la alerta** ve su versión. Incluye sus estados, la unidad asignada, sus intentos de cancelación y los avisos a su red de apoyo. No ve nombres de operadores, ni escalamientos ni datos internos. Si canceló con el PIN de coacción, su línea termina en `CANCELADA` en ese momento, aunque la alerta siga activa en silencio.
+
+Las pruebas automáticas escriben registros `PRUEBA_…` en la bitácora de la base local; por diseño no se pueden borrar.
 
 ## Configuración
 
@@ -192,8 +235,11 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `ENLACE_HORAS_MAX` | Vigencia máxima de un enlace | `24` |
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
 | `ENLACE_URL_WEBSOCKET` | Dirección pública de `/ws/enlace`, sin el token | `ws://localhost:8080/api/v1/ws/enlace`. En la nube, `wss://<dominio>/api/v1/ws/enlace`. |
-| `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal | `simulado` |
+| `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal: `simulado`, `fcm` (push) o `twilio` (SMS) | `simulado` |
 | `FCM_CREDENCIALES` | Ruta del `.json` de la cuenta de servicio de Firebase (con `AVISOS_PROVEEDOR_PUSH=fcm`) | vacío |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_NUMERO` | Cuenta de Twilio y número que manda y recibe los SMS (`+1...`) | vacío |
+| `TWILIO_AUTH_TOKEN` | Secreto de la cuenta de Twilio. Valida los webhooks y autentica los envíos. Sin él, los webhooks solo funcionan en local y sin firma. | vacío |
+| `PASARELA_URL_PUBLICA` | Dirección pública del servidor hasta `/api/v1`. Con ella se validan las firmas detrás de un proxy y Twilio avisa el estado de cada SMS. | vacío |
 | `AVISOS_MAX_REINTENTOS` | Fallas antes de descartar un aviso | `5` |
 | `AVISOS_ESPERA_BASE_SEG` | Espera antes del primer reintento; se duplica en cada falla | `15` |
 | `AVISOS_REVISION_MS` | Cada cuántos milisegundos se buscan avisos por enviar | `2000` |
@@ -261,10 +307,12 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | `EmisorTokens` para firmar los JWT que entrega el login | Listo |
 | Dispersión: aviso a la red de apoyo y enlace de ubicación (`GET /enlace/{token}`) | Listo |
 | Sincronización: `POST /sync/lote` | En desarrollo |
-| Ayuda para escribir en la bitácora | En desarrollo |
+| Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
 | Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |
-| Avisos: SMS con Twilio y WhatsApp opcional | En desarrollo |
+| Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo |
+| SMS de contingencia `SS1` (`/pasarela/sms/entrante`), con el registro del Módulo 2 por conectar | Listo |
+| Avisos: WhatsApp opcional | En desarrollo |
 | Tiempo real: WebSocket de la consola y del enlace | Listo |
 
 El detalle de cada punto está en `docs/api/README.md`.

@@ -15,6 +15,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.sql.Connection
+import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 import javax.sql.DataSource
 import kotlin.time.Duration
@@ -55,6 +57,9 @@ class EnvioAvisos(
     )
 
     private val log = LoggerFactory.getLogger(EnvioAvisos::class.java)
+
+    /** Hasta cuándo no se le manda nada a un proveedor que respondió que está saturado (429). */
+    private val pausas = ConcurrentHashMap<String, Instant>()
 
     fun iniciar(scope: CoroutineScope, cada: Duration) {
         scope.launch(Dispatchers.IO) {
@@ -112,8 +117,9 @@ class EnvioAvisos(
     /**
      * Confirmación del proveedor (webhook de estado del SMS). Regresa false si no hay un aviso con ese id del
      * proveedor. Una confirmación repetida o que llega tarde no cambia un aviso ya ENTREGADO o DESCARTADO.
+     * Con [definitivo] (por ejemplo, el número no existe) el aviso se descarta sin reintentar.
      */
-    fun confirmarEntrega(proveedorMensajeId: String, entregada: Boolean, error: String? = null): Boolean =
+    fun confirmarEntrega(proveedorMensajeId: String, entregada: Boolean, error: String? = null, definitivo: Boolean = false): Boolean =
         dataSource.transaccion { conn ->
             val aviso = conn.consultarUno(
                 "SELECT id, estado::text AS estado FROM notificacion WHERE proveedor_mensaje_id = ? FOR UPDATE",
@@ -128,10 +134,22 @@ class EnvioAvisos(
                     id,
                 )
             } else if (estado == "ENVIADA") {
-                fallo(conn, id, error ?: "El proveedor no pudo entregarlo", definitivo = false)
+                fallo(conn, id, error ?: "El proveedor no pudo entregarlo", definitivo)
             }
             true
         }
+
+    /**
+     * El proveedor ya entregó el SMS a la compañía telefónica (Twilio: `sent`). Algunas compañías nunca mandan el
+     * acuse final de entrega, así que desde aquí el aviso ya no vence por falta de confirmación: se queda ENVIADA
+     * hasta que llegue `delivered` (ENTREGADA) o `undelivered` (FALLIDA y se reintenta).
+     */
+    fun aceptadoPorOperador(proveedorMensajeId: String): Boolean = dataSource.transaccion { conn ->
+        conn.ejecutar(
+            "UPDATE notificacion SET proximo_reintento_en = NULL WHERE proveedor_mensaje_id = ? AND estado = 'ENVIADA'",
+            proveedorMensajeId,
+        ) > 0
+    }
 
     private fun enviar(id: Long) {
         val a = dataSource.connection.use { leer(it, id) } ?: return
@@ -162,6 +180,9 @@ class EnvioAvisos(
             }
         }
         val proveedor = if (mensaje.canal == "PUSH") push else sms
+        pausas[proveedor.nombre]?.takeIf { it.isAfter(Instant.now()) }?.let { hasta ->
+            return dataSource.connection.use { posponer(it, id, hasta, null) }
+        }
         val resultado = try {
             proveedor.enviar(mensaje)
         } catch (e: Exception) {
@@ -184,7 +205,13 @@ class EnvioAvisos(
                 }
                 is ResultadoEnvio.Fallo -> {
                     conn.ejecutar("UPDATE notificacion SET canal = ?::notificacion_canal WHERE id = ?", mensaje.canal, id)
-                    if (resultado.destinoInvalido && mensaje.canal == "PUSH") {
+                    if (resultado.esperarSeg != null) {
+                        // Saturado: se espera lo que pide el proveedor, sin contar reintento, y se pausan sus demás envíos.
+                        val hasta = Instant.now().plusSeconds(resultado.esperarSeg)
+                        pausas[proveedor.nombre] = hasta
+                        log.warn("{} pide esperar {} s ({}); se pausan sus envíos", proveedor.nombre, resultado.esperarSeg, resultado.error)
+                        posponer(conn, id, hasta, resultado.error)
+                    } else if (resultado.destinoInvalido && mensaje.canal == "PUSH") {
                         // El token ya no sirve: se borra y el siguiente intento elige otra vez canal (SMS), sin esperar.
                         conn.ejecutar("UPDATE dispositivo SET fcm_token = NULL WHERE fcm_token = ?", mensaje.destino)
                         fallo(conn, id, resultado.error, definitivo = false, sinEspera = true)
@@ -194,6 +221,14 @@ class EnvioAvisos(
                 }
             }
         }
+    }
+
+    /** Deja el aviso para [hasta] sin cambiar su estado ni contar reintento. */
+    private fun posponer(conn: Connection, id: Long, hasta: Instant, error: String?) {
+        conn.ejecutar(
+            "UPDATE notificacion SET proximo_reintento_en = ?::timestamptz, ultimo_error = coalesce(?, ultimo_error) WHERE id = ?",
+            hasta, error?.take(500), id,
+        )
     }
 
     /** E-03, FALLIDA: cuenta el reintento y programa el siguiente, o descarta si ya no quedan. */

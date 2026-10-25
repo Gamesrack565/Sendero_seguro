@@ -31,6 +31,7 @@ abstract class PruebaConBaseDatos {
     protected lateinit var dataSource: HikariDataSource
     protected lateinit var dispersion: DispersionServicio
     protected lateinit var enlaces: EnlacesServicio
+    private var inicio: String? = null
 
     @OptIn(DelicateCoroutinesApi::class)
     @BeforeAll
@@ -46,13 +47,27 @@ abstract class PruebaConBaseDatos {
         Flyway.configure().dataSource(dataSource)
             .locations("classpath:db/migration", "classpath:db/datos-prueba")
             .load().migrate()
+        inicio = texto("SELECT now()::text")
         enlaces = EnlacesServicio(dataSource, secreto = "secreto-de-prueba", horasMax = 24)
         dispersion = DispersionServicio(dataSource, GlobalScope, enlaces)
     }
 
+    /**
+     * Los avisos que crearon las pruebas y quedaron por enviar se descartan. Si no, el servidor los mandaría al
+     * arrancar, y con un proveedor real (Twilio, FCM) saldrían a los números de los datos de prueba.
+     */
     @AfterAll
     fun cerrar() {
-        if (::dataSource.isInitialized) dataSource.close()
+        if (!::dataSource.isInitialized) return
+        inicio?.let {
+            sql(
+                """UPDATE notificacion SET estado = 'DESCARTADA', ultimo_error = 'Creado por las pruebas', proximo_reintento_en = NULL
+                   WHERE (estado IN ('PENDIENTE', 'FALLIDA') OR (estado = 'ENVIADA' AND proximo_reintento_en IS NOT NULL))
+                     AND creada_en >= ?::timestamptz""",
+                it,
+            )
+        }
+        dataSource.close()
     }
 
     /** Cada prueba empieza con las unidades libres y sin alertas anteriores pendientes de escalar. */

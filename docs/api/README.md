@@ -37,6 +37,14 @@ interface Dispersion {
 
 La plataforma usa la misma llamada cuando la alerta entra por SMS o por el lote de sincronización. Así la dispersión vive en un solo lugar.
 
+**Alertas por SMS.** La pasarela valida el SMS `SS1` (sección 4) y, si la alerta no existe todavía, la pasa al registro de alertas por esta interfaz. El registro inserta la alerta en la transacción que recibe y regresa su id, que empieza con el id corto del SMS. La pasarela la despacha después.
+
+```kotlin
+fun interface RegistroAlertasSms {
+    fun registrar(conn: Connection, sms: AlertaSms): UUID   // AlertaSms: mensajeId, usuarioId y los datos del SS1
+}
+```
+
 **Sincronización.** `/sync/lote` recibe la cola del teléfono y la ordena por prioridad: `ALERTA`, `ACUSE`, `UBICACION`, `CANCELACION`, `REPORTE`, `TRAYECTO` y `CHECKIN`. Cada tipo se entrega al manejador que se registre en la plataforma para ese tipo.
 
 ## 3. WebSocket
@@ -84,7 +92,7 @@ Lo arma la app cuando no hay internet ni malla, y el servidor lo decodifica en e
 
 Ejemplo: `SS1|3f9a2c7101+1950431-09914632012TNJXWPe08c9d` es tipo 1, 19.50431, -99.14632, ±12 m.
 
-El servidor acepta el mensaje solo si la verificación coincide y el número de origen es el `telefono_movil` de una cuenta activa. Todo mensaje se guarda en `mensaje_sms`, sea válido o no.
+El servidor acepta el mensaje solo si la verificación coincide, la hora es de las últimas 24 horas (o a lo más 10 minutos adelantada) y el número de origen es el `telefono_movil` de una cuenta activa, con o sin `+52`. Todo mensaje se guarda en `mensaje_sms`, sea válido o no. Si el teléfono manda dos veces el mismo SMS, el segundo se liga a la misma alerta.
 
 ## 5. Decisiones del contrato
 Se sigue lo que dicen los documentos. Donde los documentos no dan el detalle, se tomó la opción más simple.
@@ -92,4 +100,4 @@ Se sigue lo que dicen los documentos. Donde los documentos no dan el detalle, se
 2. **El SMS lleva el "id corto"** (X-01), con los primeros 8 caracteres del UUID. Si después llega la misma alerta por internet o sincronización, el servidor la reconoce porque coinciden la persona, los 8 caracteres y la hora (±60 s). Responde con el id que ya tiene y no la duplica.
 3. **Verificación del SMS.** Se usa una suma de comprobación y se exige que el número de origen sea el de la cuenta, sin cambiar la base de datos. No es una firma criptográfica; se documenta como límite conocido.
 4. **El JWT dura 15 min** como propuesta.
-5. **Proveedor de SMS: sigue abierto**, porque ningún documento lo fija. Solo cambia el encabezado de la firma y el formato del webhook.
+5. **Proveedor de SMS: Twilio.** Ningún documento lo fijaba; se eligió porque su cuenta de prueba no cobra, manda y recibe SMS y avisa la entrega. Los webhooks `/pasarela/sms/*` usan su formato (formulario con `From`, `Body`, `MessageSid`, `MessageStatus`) y su firma `X-Twilio-Signature`.

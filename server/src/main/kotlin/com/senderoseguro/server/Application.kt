@@ -1,11 +1,16 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.auditoria.LineaDeTiempo
+import com.senderoseguro.server.auditoria.rutasBitacora
+import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
 import com.senderoseguro.server.avisos.EnvioAvisos
 import com.senderoseguro.server.avisos.ProveedorFcm
 import com.senderoseguro.server.avisos.rutasDispositivos
 import com.senderoseguro.server.avisos.Proveedor
 import com.senderoseguro.server.avisos.ProveedorSimulado
+import com.senderoseguro.server.avisos.ProveedorTwilio
+import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
 import com.senderoseguro.server.dispersion.AtencionServicio
 import com.senderoseguro.server.dispersion.ConsultaAlertas
@@ -15,6 +20,10 @@ import com.senderoseguro.server.dispersion.EscalamientoServicio
 import com.senderoseguro.server.dispersion.iniciarTemporizador
 import com.senderoseguro.server.dispersion.rutasAlertas
 import com.senderoseguro.server.dispersion.rutasEnlace
+import com.senderoseguro.server.pasarela.ConfigPasarela
+import com.senderoseguro.server.pasarela.RecepcionSms
+import com.senderoseguro.server.pasarela.RegistroAlertasSms
+import com.senderoseguro.server.pasarela.rutasPasarela
 import com.senderoseguro.server.plataforma.BaseDatos
 import com.senderoseguro.server.plataforma.EmisorTokens
 import com.senderoseguro.server.plataforma.configurarErrores
@@ -56,17 +65,30 @@ fun Application.module() {
     val tiempoReal = CentroTiempoReal(baseDatos.dataSource, consulta, enlaces)
     tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
     val tokens = EmisorTokens.desde(this)
-    EnvioAvisos(
+    val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
+    val sms = proveedorSms(config, urlPublica)
+    val envioAvisos = EnvioAvisos(
         baseDatos.dataSource,
         push = proveedorPush(config),
-        sms = proveedorSms(config),
+        sms = sms,
         enlaces,
         EnvioAvisos.Politica(
             maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
             esperaBase = config.property("avisos.esperaBaseSeg").getString().toInt().seconds,
         ),
         urlEnlace = config.property("avisos.urlEnlace").getString(),
-    ).iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
+    )
+    envioAvisos.iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
+    // Registro de las alertas que llegan por SMS: lo conecta el Módulo 2 (P4). Mientras, en desarrollo se usa el de prueba
+    // y en la nube los SMS válidos quedan pendientes en mensaje_sms hasta que exista.
+    val registroSms: RegistroAlertasSms? = if (modoDesarrollo) RegistroSmsPrueba else null
+    val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroSms)
+    recepcionSms.iniciar(scope = this, cada = 30.seconds)
+    val configPasarela = ConfigPasarela(
+        authToken = config.property("twilio.authToken").getString(),
+        urlPublica = urlPublica,
+        modoDesarrollo = modoDesarrollo,
+    )
 
     configurarSerializacion()
     configurarLogs()
@@ -81,8 +103,11 @@ fun Application.module() {
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)
             rutasDispositivos(baseDatos.dataSource)
+            rutasPasarela(recepcionSms, envioAvisos, configPasarela)
+            rutasBitacora(baseDatos.dataSource)
+            rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
             // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
-            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens)
+            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }
     }
 }
@@ -99,8 +124,20 @@ private fun proveedorPush(config: ApplicationConfig): Proveedor = when (val nomb
     else -> error("Proveedor de push desconocido: $nombre. Valores posibles: simulado, fcm")
 }
 
-/** El proveedor de SMS configurado. Twilio se agrega en su paso. */
-private fun proveedorSms(config: ApplicationConfig): Proveedor = when (val nombre = config.property("avisos.proveedorSms").getString().lowercase()) {
+/** El proveedor de SMS configurado: `simulado` (local) o `twilio`. */
+private fun proveedorSms(config: ApplicationConfig, urlPublica: String): Proveedor = when (val nombre = config.property("avisos.proveedorSms").getString().lowercase()) {
     "simulado" -> ProveedorSimulado()
-    else -> error("Proveedor de SMS desconocido: $nombre. Valores posibles: simulado")
+    "twilio" -> {
+        fun valor(clave: String, variable: String) = config.property("twilio.$clave").getString().trim().ifBlank {
+            error("AVISOS_PROVEEDOR_SMS=twilio necesita la variable $variable")
+        }
+        ProveedorTwilio(
+            cuenta = valor("accountSid", "TWILIO_ACCOUNT_SID"),
+            authToken = valor("authToken", "TWILIO_AUTH_TOKEN"),
+            numero = valor("numero", "TWILIO_NUMERO"),
+            // Twilio solo puede avisar la entrega a una dirección pública.
+            urlEstado = urlPublica.takeIf { it.isNotBlank() }?.let { "$it/pasarela/sms/estado" },
+        )
+    }
+    else -> error("Proveedor de SMS desconocido: $nombre. Valores posibles: simulado, twilio")
 }

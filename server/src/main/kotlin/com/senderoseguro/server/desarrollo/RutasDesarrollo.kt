@@ -1,10 +1,16 @@
 package com.senderoseguro.server.desarrollo
 
+import com.senderoseguro.server.avisos.Mensaje
+import com.senderoseguro.server.avisos.Proveedor
+import com.senderoseguro.server.avisos.ResultadoEnvio
 import com.senderoseguro.server.dispersion.DispersionServicio
 import com.senderoseguro.server.dispersion.EnlacesServicio
 import com.senderoseguro.server.dispersion.EscalamientoServicio
 import com.senderoseguro.server.dispersion.ResultadoDispersion
 import com.senderoseguro.server.dispersion.ResultadoEscalamiento
+import com.senderoseguro.server.pasarela.DatosSs1
+import com.senderoseguro.server.pasarela.Ss1
+import com.senderoseguro.server.pasarela.Telefonos
 import com.senderoseguro.server.plataforma.ApiException
 import com.senderoseguro.server.plataforma.EmisorTokens
 import com.senderoseguro.server.plataforma.Rol
@@ -20,13 +26,14 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.time.Instant
 import java.util.UUID
 import javax.sql.DataSource
 import kotlin.time.Duration.Companion.hours
 
 /**
  * Rutas solo para desarrollo. Se registran únicamente con `db.datosPrueba = true`, nunca en la nube.
- * Sirven para probar la dispersión sin esperar a `POST /alertas`.
+ * Sirven para probar la dispersión sin esperar a `POST /alertas`, y las pasarelas sin un teléfono real.
  */
 fun Route.rutasDesarrollo(
     dataSource: DataSource,
@@ -34,6 +41,7 @@ fun Route.rutasDesarrollo(
     escalamiento: EscalamientoServicio,
     enlaces: EnlacesServicio,
     tokens: EmisorTokens,
+    sms: Proveedor,
 ) {
     route("/dev") {
         // Entrega un JWT de una cuenta de prueba, para probar las rutas con sesión sin esperar el login (Módulo 1).
@@ -68,6 +76,38 @@ fun Route.rutasDesarrollo(
             call.respond(EscalamientoPruebaRespuesta.de(id, escalamiento.escalarPorFaltaDeAcuse(id)))
         }
 
+        // Arma el SMS SS1 que mandaría el teléfono de Ana sin internet, para probar la pasarela de entrada.
+        post("/sms/ss1") {
+            val texto = call.receiveText()
+            val p = if (texto.isBlank()) AlertaPrueba() else runCatching { json.decodeFromString<AlertaPrueba>(texto) }
+                .getOrElse { throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "Cuerpo inválido: ${it.message}") }
+            val (tipo, telefono) = dataSource.connection.use { conn ->
+                conn.consultarUno(
+                    "SELECT t.id, u.telefono_movil FROM tipo_incidente t, usuario u WHERE t.codigo = ? AND u.id = ?",
+                    p.tipo, AlertasPrueba.ANA,
+                ) { it.getInt("id") to it.getString("telefono_movil") }
+            } ?: throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "El tipo ${p.tipo} no existe")
+            val ss1 = Ss1.codificar(
+                DatosSs1(UUID.randomUUID().toString().take(8), tipo, p.latitud, p.longitud, 10, Instant.now()),
+            )
+            call.respond(Ss1Prueba(de = Telefonos.e164(telefono), texto = ss1))
+        }
+
+        // Manda un SMS de prueba con el proveedor configurado (simulado o Twilio), para probar la cuenta sin crear alertas.
+        post("/sms/prueba") {
+            val texto = call.receiveText()
+            val telefono = runCatching { json.decodeFromString<SmsPrueba>(texto).telefono.trim() }.getOrNull()
+                ?.takeIf { t -> t.count { it.isDigit() } in 10..15 }
+                ?: throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "telefono debe tener de 10 a 15 dígitos")
+            val r = sms.enviar(Mensaje(0, "SMS", telefono, "Sendero Seguro", "Sendero Seguro: SMS de prueba de la pasarela."))
+            call.respond(
+                when (r) {
+                    is ResultadoEnvio.Aceptado -> SmsPruebaRespuesta(sms.nombre, Telefonos.e164(telefono), aceptado = true, proveedorMensajeId = r.proveedorMensajeId)
+                    is ResultadoEnvio.Fallo -> SmsPruebaRespuesta(sms.nombre, Telefonos.e164(telefono), aceptado = false, error = r.error)
+                },
+            )
+        }
+
         // Regresa a DISPONIBLE las unidades ocupadas, para repetir la prueba.
         post("/unidades/liberar") {
             call.respond(mapOf("unidadesLiberadas" to AlertasPrueba.liberarUnidades(dataSource)))
@@ -79,6 +119,21 @@ private val json = Json { ignoreUnknownKeys = true }
 
 @Serializable
 data class TokenPrueba(val cuenta: String)
+
+@Serializable
+data class Ss1Prueba(val de: String, val texto: String)
+
+@Serializable
+data class SmsPrueba(val telefono: String)
+
+@Serializable
+data class SmsPruebaRespuesta(
+    val proveedor: String,
+    val para: String,
+    val aceptado: Boolean,
+    val proveedorMensajeId: String? = null,
+    val error: String? = null,
+)
 
 @Serializable
 data class TokenPruebaRespuesta(val token: String, val usuarioId: String, val rol: String, val expiraEn: String)
