@@ -16,6 +16,7 @@ import com.senderoseguro.server.avisos.Proveedor
 import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.avisos.ProveedorTwilio
 import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
+import com.senderoseguro.server.desarrollo.SyncAlertaPrueba
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
 import com.senderoseguro.server.dispersion.AtencionServicio
 import com.senderoseguro.server.dispersion.ConsultaAlertas
@@ -37,6 +38,10 @@ import com.senderoseguro.server.plataforma.configurarSeguridad
 import com.senderoseguro.server.plataforma.configurarSerializacion
 import com.senderoseguro.server.plataforma.problemasDeArranque
 import com.senderoseguro.server.plataforma.rutasSalud
+import com.senderoseguro.server.sincronizacion.ManejadorSync
+import com.senderoseguro.server.sincronizacion.Sincronizacion
+import com.senderoseguro.server.sincronizacion.TipoSync
+import com.senderoseguro.server.sincronizacion.rutasSync
 import com.senderoseguro.server.tiemporeal.CentroTiempoReal
 import com.senderoseguro.server.tiemporeal.configurarWebSockets
 import com.senderoseguro.server.tiemporeal.rutasTiempoReal
@@ -96,6 +101,10 @@ fun Application.module() {
     // y en la nube los SMS válidos quedan pendientes en mensaje_sms hasta que exista.
     val registroSms: RegistroAlertasSms? = if (modoDesarrollo) RegistroSmsPrueba else null
     val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroSms)
+    // Manejadores de /sync/lote: cada módulo registra el de su tipo, por ejemplo manejadoresSync[TipoSync.REPORTE] = ...
+    // Mientras, en desarrollo las ALERTA usan uno de prueba; un tipo sin manejador sale RECHAZADO temporal.
+    val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
+    if (modoDesarrollo) manejadoresSync[TipoSync.ALERTA] = SyncAlertaPrueba
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
     val configPasarela = ConfigPasarela(
         authToken = config.property("twilio.authToken").getString(),
@@ -117,6 +126,7 @@ fun Application.module() {
             rutasTiempoReal(tiempoReal, tokens)
             rutasDispositivos(baseDatos.dataSource)
             rutasPasarela(recepcionSms, envioAvisos, configPasarela)
+            rutasSync(Sincronizacion(baseDatos.dataSource, dispersion, manejadoresSync))
             rutasBitacora(baseDatos.dataSource)
             rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
             rutasHistorial(Historial(baseDatos.dataSource))

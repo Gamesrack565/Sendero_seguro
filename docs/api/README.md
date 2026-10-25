@@ -45,7 +45,14 @@ fun interface RegistroAlertasSms {
 }
 ```
 
-**Sincronización.** `/sync/lote` recibe la cola del teléfono y la ordena por prioridad: `ALERTA`, `ACUSE`, `UBICACION`, `CANCELACION`, `REPORTE`, `TRAYECTO` y `CHECKIN`. Cada tipo se entrega al manejador que se registre en la plataforma para ese tipo.
+**Sincronización.** `/sync/lote` recibe la cola del teléfono y la ordena por prioridad: `ALERTA`, `ACUSE`, `UBICACION`, `CANCELACION`, `REPORTE`, `TRAYECTO` y `CHECKIN`. Cada tipo se entrega, en su propia transacción, al manejador que se registre en la plataforma para ese tipo. El manejador tiene que ser idempotente, porque el teléfono puede reenviar. Una `ALERTA` que ya existe (por internet, SMS o un lote anterior) sale `DUPLICADO` sin llegar al manejador, y una nueva que se acepta la despacha la plataforma.
+
+```kotlin
+fun interface ManejadorSync {
+    fun procesar(conn: Connection, contexto: ContextoSync, elemento: ElementoSync): ResultadoManejo
+    // ResultadoManejo: Aceptado(referencia, despachar), Duplicado(referencia) o Rechazado(codigo, mensaje, temporal)
+}
+```
 
 ## 3. WebSocket
 Los mensajes son JSON con la forma `{ "tipo": "...", "ts": "<fecha UTC>", "datos": {...} }`. El navegador no puede mandar encabezados en un WebSocket, así que el token va en la URL.

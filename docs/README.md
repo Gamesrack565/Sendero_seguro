@@ -18,6 +18,7 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/avisos/          Envío de los avisos por push y SMS con reintentos (P16)
   src/main/kotlin/…/auditoria/       Bitácora, historial, línea de tiempo y estadísticas (P13)
   src/main/kotlin/…/pasarela/        Webhooks de Twilio: SMS de contingencia SS1 y estado de los SMS (P16)
+  src/main/kotlin/…/sincronizacion/  Recepción del lote offline del teléfono, /sync/lote (P14)
   src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
   src/main/resources/
     application.conf                 Configuración (puerto, base de datos, JWT)
@@ -185,6 +186,26 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 - Las pruebas automáticas descartan al terminar los avisos que crearon, para que el servidor no los mande al arrancar.
 - En el día a día conviene dejar `AVISOS_PROVEEDOR_SMS=simulado`. Con Twilio, cada alerta de prueba también intenta mandar SMS a los números de los datos de prueba. La cuenta de prueba de Twilio los rechaza porque no están verificados, pero una cuenta de pago sí los mandaría.
 
+## Sincronización
+
+`POST /api/v1/sync/lote` recibe la cola que el teléfono guardó sin internet: `{ dispositivoId, elementos: [{ tipo, id, creadoEn, datos }] }`, con 200 elementos y 1 MB como máximo (si pasa, responde 413). El dispositivo tiene que ser de la persona del token.
+
+- Procesa en este orden, sin importar cómo lleguen: `ALERTA`, `ACUSE`, `UBICACION`, `CANCELACION`, `REPORTE`, `TRAYECTO` y `CHECKIN`; dentro de cada tipo, del más viejo al más nuevo. Responde un resultado por elemento, en el orden en que llegaron.
+- `VENCIDO`: un acuse con más de 2 horas, un reporte con más de 6 días y lo demás con más de 72 horas. Un `creadoEn` más de 10 minutos en el futuro sale `RECHAZADO`.
+- Cada elemento va en su propia transacción: si uno falla, lo que escribió se deshace y los demás siguen. En un `RECHAZADO`, `error.detalle.temporal` dice si el teléfono debe conservarlo y reintentar (`true`) o borrarlo (`false`).
+- Una `ALERTA` que ya llegó por internet, por SMS o en un lote anterior sale `DUPLICADO` con su folio, sin llamar al manejador. Si se acepta una alerta nueva, la plataforma la despacha.
+
+Cada tipo lo guarda un manejador que se registra en `Application.kt`. Tiene que ser idempotente, porque el teléfono puede reenviar:
+
+```kotlin
+manejadoresSync[TipoSync.REPORTE] = ManejadorSync { conn, contexto, elemento ->
+    // contexto: usuarioId y dispositivoId. elemento: tipo, id, creadoEn y datos (el JSON del teléfono)
+    ResultadoManejo.Aceptado(referencia = folio)   // o Duplicado(folio), o Rechazado(codigo, mensaje, temporal)
+}
+```
+
+Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. En local, las `ALERTA` usan un manejador de prueba.
+
 ## SMS de contingencia
 
 Cuando el teléfono no tiene internet ni malla, la app manda la alerta como un SMS `SS1|…` de 46 caracteres al número de Twilio (formato en `docs/api/README.md`). Twilio llama a `POST /api/v1/pasarela/sms/entrante` y el servidor:
@@ -328,7 +349,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Consola: lista y detalle de alertas, acuse, cambios de estado y escalamiento manual | Listo |
 | `EmisorTokens` para firmar los JWT que entrega el login | Listo |
 | Dispersión: aviso a la red de apoyo y enlace de ubicación (`GET /enlace/{token}`) | Listo |
-| Sincronización: `POST /sync/lote` | En desarrollo |
+| Sincronización: `POST /sync/lote`, con los manejadores de cada tipo por conectar | Listo |
 | Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
 | Línea de tiempo de una alerta e historial de cada persona | Listo |
 | Estadísticas de alertas para el tablero y exportación en CSV y PDF | Listo |

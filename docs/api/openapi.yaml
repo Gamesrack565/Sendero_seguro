@@ -75,6 +75,10 @@ paths:
         La plataforma recibe el lote, lo ordena y entrega cada elemento al manejador
         registrado para su tipo. Cada elemento es independiente: si uno falla, los demás siguen.
         El `id` de cada elemento es su UUID, así que reenviar el lote completo es seguro.
+        Vence sin procesarse un `ACUSE` con más de 2 horas, un `REPORTE` con más de 6 días y lo demás con
+        más de 72 horas. En un `RECHAZADO`, `error.detalle.temporal` dice si el teléfono debe conservarlo y
+        reintentar (`true`) o borrarlo (`false`). Los resultados vienen en el orden en que llegaron.
+        El `dispositivoId` tiene que ser de la persona del token (si no, 403).
       x-proceso: P14, P11
       requestBody:
         required: true
@@ -89,6 +93,7 @@ paths:
               schema: { $ref: '#/components/schemas/ResultadoLoteSync' }
         '400': { $ref: '#/components/responses/Invalido' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '413':
           description: El lote pasa de 200 elementos o de 1 MB
           content:

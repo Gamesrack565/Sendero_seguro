@@ -1,5 +1,6 @@
 package com.senderoseguro.server.pasarela
 
+import com.senderoseguro.server.dispersion.AlertasRecibidas
 import com.senderoseguro.server.dispersion.Dispersion
 import com.senderoseguro.server.plataforma.consultar
 import com.senderoseguro.server.plataforma.consultarUno
@@ -142,13 +143,8 @@ class RecepcionSms(
                 return@transaccion null
             }
             // Dos SMS de la misma alerta (el teléfono reintenta) no deben registrarla dos veces.
-            conn.consultarUno("SELECT pg_advisory_xact_lock(hashtext(?::text))", usuarioId.toString()) { }
-            val existente = conn.consultarUno(
-                """SELECT id FROM alerta WHERE usuario_id = ? AND id::text LIKE ? || '%'
-                   AND activada_en BETWEEN ?::timestamptz - interval '60 seconds' AND ?::timestamptz + interval '60 seconds'
-                   ORDER BY registrada_en LIMIT 1""",
-                usuarioId, datos.idCorto, datos.activadaEn, datos.activadaEn,
-            ) { it.uuid("id") }
+            AlertasRecibidas.bloquear(conn, usuarioId)
+            val existente = AlertasRecibidas.buscar(conn, usuarioId, datos.idCorto, datos.activadaEn)
             val id = existente ?: registro?.registrar(conn, AlertaSms(mensajeId, usuarioId, datos))?.also { nueva = true }
                 ?: return@transaccion null
             conn.ejecutar("UPDATE mensaje_sms SET alerta_id = ?, procesado_en = now() WHERE id = ?", id, mensajeId)
