@@ -26,6 +26,8 @@ data class EnlacePublico(
     val venceEn: String,
     val activa: Boolean,
     val ultimaUbicacion: UbicacionJson? = null,
+    /** Dirección del WebSocket para recibir las actualizaciones (`WS /ws/enlace/{token}`). */
+    val websocket: String? = null,
 )
 
 /**
@@ -36,11 +38,13 @@ data class EnlacePublico(
  * cuando arma el mensaje para la red de apoyo. Sin el secreto, una copia de la base no sirve para abrir enlaces.
  *
  * El enlace deja de funcionar cuando la alerta se cierra o se cancela (`revocado_en`) o al llegar a `vence_en`.
+ * [urlWebSocket] es la dirección pública de `/ws/enlace` (sin el token), para el campo `websocket` de la respuesta.
  */
 class EnlacesServicio(
     private val dataSource: DataSource,
     secreto: String,
     private val horasMax: Int,
+    private val urlWebSocket: String? = null,
 ) {
     private val llave = SecretKeySpec(secreto.toByteArray(), "HmacSHA256")
 
@@ -97,10 +101,11 @@ class EnlacesServicio(
             else EnlacePublico(
                 tipo = "ALERTA",
                 primerNombre = rs.getString("primer_nombre"),
-                estado = ESTADO_LEGIBLE[estado] ?: "Activa",
+                estado = estadoLegible(estado),
                 venceEn = rs.instante("vence_en")!!.toString(),
                 activa = true,
                 ultimaUbicacion = UltimaUbicacion.leer(rs),
+                websocket = urlWebSocket?.let { "${it.trimEnd('/')}/$token" },
             )
         } ?: run {
             // Si el token existe pero el enlace ya no está vigente: 410. Si no existe: 404.
@@ -111,12 +116,27 @@ class EnlacesServicio(
         e
     }
 
+    /** El enlace y su alerta si el token es de un enlace vigente; null si no existe, venció o se revocó. */
+    internal fun vigente(token: String): Pair<UUID, UUID>? {
+        if (!Regex("^[A-Za-z0-9_-]{43}$").matches(token)) return null
+        return dataSource.connection.use { conn ->
+            conn.consultarUno(
+                """SELECT en.id, en.alerta_id FROM enlace_ubicacion en JOIN alerta a ON a.id = en.alerta_id
+                   WHERE en.token_hash = ? AND en.revocado_en IS NULL AND en.vence_en > now()
+                     AND a.estado NOT IN ('CERRADA', 'CANCELADA')""",
+                sha256(token),
+            ) { it.uuid("id") to it.uuid("alerta_id") }
+        }
+    }
+
     private fun noEncontrado() = ApiException(HttpStatusCode.NotFound, "NO_ENCONTRADO", "El enlace no existe")
 
     private fun sha256(texto: String): String =
         MessageDigest.getInstance("SHA-256").digest(texto.toByteArray()).joinToString("") { "%02x".format(it) }
 
-    private companion object {
+    internal companion object {
+        fun estadoLegible(estado: String) = ESTADO_LEGIBLE[estado] ?: "Activa"
+
         /** Estado en palabras para la red de apoyo, sin detalles internos. */
         val ESTADO_LEGIBLE = mapOf(
             "ENVIADA" to "Enviada",

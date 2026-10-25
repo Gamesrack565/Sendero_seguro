@@ -201,10 +201,14 @@ class AtencionTest : PruebaConBaseDatos() {
         val mias = List(3) { alertaEnCaseta().also { AlertasPrueba.liberarUnidades(dataSource) } }
         val pagina = consulta.listar(caseta, ConsultaAlertas.Filtros(listOf("ASIGNADA"), null, null, 2, null))
         assertEquals(2, pagina.elementos.size)
-        val cursor = (pagina.siguienteCursor as JsonPrimitive).content
-        val resto = consulta.listar(caseta, ConsultaAlertas.Filtros(listOf("ASIGNADA"), null, null, 200, cursor))
-        assertEquals(JsonNull, resto.siguienteCursor)
-        val ids = (pagina.elementos + resto.elementos).map { it.id }
+        // Se recorren las páginas hasta el final: la base de pruebas acumula alertas de corridas anteriores.
+        val ids = pagina.elementos.map { it.id }.toMutableList()
+        var siguiente = pagina.siguienteCursor
+        while (siguiente != JsonNull) {
+            val resto = consulta.listar(caseta, ConsultaAlertas.Filtros(listOf("ASIGNADA"), null, null, 200, (siguiente as JsonPrimitive).content))
+            ids += resto.elementos.map { it.id }
+            siguiente = resto.siguienteCursor
+        }
         assertTrue(ids.containsAll(mias.map { it.toString() }))
         assertEquals(ids.size, ids.distinct().size)
         // El operador de PBI no tuvo ninguna de estas.

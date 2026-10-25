@@ -142,6 +142,20 @@ Necesitan `Authorization: Bearer <JWT>`. En local el token sale de `POST /api/v1
 
 Al emisor se le avisa del acuse, de cada cambio de estado y del cierre, salvo que haya cancelado con el PIN de coacción.
 
+## Tiempo real
+
+Hay dos WebSocket. Sus mensajes tienen la forma `{ "tipo", "ts", "datos" }` y están en `api/README.md`.
+
+| Ruta | Quién | Qué recibe |
+|---|---|---|
+| `WS /api/v1/ws/consola?token=<JWT>` | Operador, Administrador | `alerta.nueva`, `alerta.estado`, `alerta.escalada`, `alerta.ubicacion` y `alerta.sin_acuse`. El Administrador recibe todas las alertas; el operador, las que se asignaron a su unidad. |
+| `WS /api/v1/ws/enlace/{token}` | Público (red de apoyo) | Al conectarse, el estado y la última ubicación. Después, cada ubicación nueva y cada cambio de estado en palabras. Al terminar, `fin` con `CERRADA`, `CANCELADA` o `VENCIDA`, y se cierra la conexión. |
+
+- El JWT va en la URL porque el navegador no puede mandar encabezados en un WebSocket. Si falta, no es válido o el rol no es de la consola, la conexión se cierra con el código `1008` y el motivo (`NO_AUTENTICADO` o `SIN_PERMISO`). Un enlace que no existe o ya no está vigente se cierra igual, con `ENLACE_NO_DISPONIBLE`.
+- Cada 25 s el servidor manda `ping` y el cliente contesta `{"tipo":"pong"}`. Si pasan dos pings sin nada del cliente, se cierra con `1001`. Si vence el JWT, se cierra con `1008 TOKEN_VENCIDO` y la consola vuelve a conectarse con un token nuevo.
+- El servidor lee cada segundo las filas nuevas de `alerta`, `asignacion`, `escalamiento`, `evento_alerta` y `ubicacion_alerta`. Así llegan también las ubicaciones que guarda el registro de alertas y lo que pasa en otro servidor, sin Redis. Una vez conectado, la consola carga lo anterior con `GET /alertas`.
+- `GET /enlace/{token}` trae en `websocket` la dirección para conectarse. Se arma con `ENLACE_URL_WEBSOCKET`.
+
 ## Configuración
 
 Los valores de `application.conf` sirven para desarrollo. En la nube se reemplazan con variables de entorno:
@@ -155,6 +169,8 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `ENLACE_SECRETO` | Llave para calcular los tokens de los enlaces de ubicación | Valor de desarrollo. En la nube es obligatorio cambiarla. |
 | `ENLACE_HORAS_MAX` | Vigencia máxima de un enlace | `24` |
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
+| `ENLACE_URL_WEBSOCKET` | Dirección pública de `/ws/enlace`, sin el token | `ws://localhost:8080/api/v1/ws/enlace`. En la nube, `wss://<dominio>/api/v1/ws/enlace`. |
+| `TIEMPO_REAL_REVISION_MS` | Cada cuántos milisegundos se buscan cambios para los WebSocket | `1000` |
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
 
@@ -219,6 +235,6 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Ayuda para escribir en la bitácora | En desarrollo |
 | Avisos: push (FCM), SMS y WhatsApp opcional | En desarrollo |
-| Tiempo real: WebSocket de la consola y del enlace | En desarrollo |
+| Tiempo real: WebSocket de la consola y del enlace | Listo |
 
 El detalle de cada punto está en `docs/api/README.md`.

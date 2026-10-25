@@ -30,8 +30,24 @@ data class UsuarioToken(
 
 const val AUTH_JWT = "jwt"
 
-/** Firma los JWT con la misma llave, emisor y audiencia con que el servidor los valida. Lo usa el login. */
+/**
+ * Firma los JWT con la misma llave, emisor y audiencia con que el servidor los valida (lo usa el login),
+ * y valida tokens que no llegan en el encabezado, como el `?token=` del WebSocket.
+ */
 class EmisorTokens(private val secreto: String, private val emisor: String, private val audiencia: String) {
+
+    private val verificador = JWT.require(Algorithm.HMAC256(secreto)).withIssuer(emisor).withAudience(audiencia).build()
+
+    /** El usuario del token, o null si la firma no es válida, ya venció o el rol no existe. */
+    fun verificar(token: String): UsuarioToken? = runCatching {
+        val p = verificador.verify(token)
+        UsuarioToken(
+            usuarioId = UUID.fromString(p.subject),
+            rol = Rol.valueOf(p.getClaim("rol").asString()),
+            dispositivoId = p.getClaim("disp").asString()?.let(UUID::fromString),
+            sesionId = p.getClaim("sid").asString()?.let(UUID::fromString),
+        )
+    }.getOrNull()
 
     fun emitir(usuario: UsuarioToken, duracion: Duration): Pair<String, Instant> {
         val expira = Instant.now().plus(duracion.toJavaDuration())

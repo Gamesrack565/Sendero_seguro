@@ -65,6 +65,10 @@ class ConsultaAlertas(private val dataSource: DataSource) {
         PaginaAlertas(filas.take(f.limite), if (hayMas) escribirCursor(inicio + f.limite) else null)
     }
 
+    /** Resumen de una alerta tal como lo ve la consola, sin revisar permisos. Lo usa el tiempo real. */
+    internal fun resumen(conn: Connection, alertaId: UUID): AlertaResumen? =
+        conn.consultarUno("$SELECT_ALERTA WHERE a.id = ?", alertaId) { resumen(it, vistaEmisor = false) }
+
     /** Detalle de una alerta, con la vista que le toca a quien pregunta. */
     fun detalle(usuario: UsuarioToken, alertaId: UUID): AlertaDetalle = dataSource.connection.use { detalle(it, usuario, alertaId) }
 

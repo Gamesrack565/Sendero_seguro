@@ -16,10 +16,14 @@ import com.senderoseguro.server.plataforma.configurarLogs
 import com.senderoseguro.server.plataforma.configurarSeguridad
 import com.senderoseguro.server.plataforma.configurarSerializacion
 import com.senderoseguro.server.plataforma.rutasSalud
+import com.senderoseguro.server.tiemporeal.CentroTiempoReal
+import com.senderoseguro.server.tiemporeal.configurarWebSockets
+import com.senderoseguro.server.tiemporeal.rutasTiempoReal
 import io.ktor.server.application.Application
 import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 fun main(args: Array<String>) = EngineMain.main(args)
@@ -34,6 +38,7 @@ fun Application.module() {
         baseDatos.dataSource,
         secreto = config.property("enlace.secreto").getString(),
         horasMax = config.property("enlace.horasMax").getString().toInt(),
+        urlWebSocket = config.property("enlace.urlWebSocket").getString(),
     )
     val dispersion = DispersionServicio(baseDatos.dataSource, scope = this, enlaces)
     val escalamiento = EscalamientoServicio(baseDatos.dataSource)
@@ -41,19 +46,24 @@ fun Application.module() {
     iniciarTemporizador(scope = this, cada = revision, dispersion, escalamiento)
     val consulta = ConsultaAlertas(baseDatos.dataSource)
     val atencion = AtencionServicio(baseDatos.dataSource, consulta, escalamiento, enlaces)
+    val tiempoReal = CentroTiempoReal(baseDatos.dataSource, consulta, enlaces)
+    tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
+    val tokens = EmisorTokens.desde(this)
 
     configurarSerializacion()
     configurarLogs()
     configurarErrores()
     configurarSeguridad()
+    configurarWebSockets()
 
     routing {
         route("/api/v1") {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
+            rutasTiempoReal(tiempoReal, tokens)
             // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
-            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, EmisorTokens.desde(this@module))
+            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens)
         }
     }
 }

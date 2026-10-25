@@ -53,6 +53,14 @@ class DispersionServicio(
         ) { true } ?: false
         if (yaAvisada) return@transaccion
 
+        // El cambio a CANCELADA queda en el historial (y llega a la consola). Si quien canceló ya lo registró, no se repite.
+        conn.ejecutar(
+            """INSERT INTO evento_alerta (alerta_id, estado_anterior, estado_nuevo, detalle)
+               SELECT ?, (SELECT estado_nuevo FROM evento_alerta WHERE alerta_id = ? ORDER BY id DESC LIMIT 1),
+                      'CANCELADA', '{"motivo":"CANCELACION"}'::jsonb
+               WHERE NOT EXISTS (SELECT 1 FROM evento_alerta WHERE alerta_id = ? AND estado_nuevo = 'CANCELADA')""",
+            alertaId, alertaId, alertaId,
+        )
         conn.ejecutar(
             """INSERT INTO notificacion (alerta_id, usuario_id, tipo, canal)
                SELECT DISTINCT ?::uuid, o.usuario_id, 'CANCELACION'::notificacion_tipo, 'PUSH'::notificacion_canal

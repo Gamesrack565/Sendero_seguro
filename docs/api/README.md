@@ -47,7 +47,7 @@ Solo para OPERADOR y ADMINISTRADOR. Un operador recibe solo lo de las alertas as
 
 | `tipo` | Cuándo | `datos` |
 |---|---|---|
-| `alerta.nueva` | Se asignó una alerta a la unidad | `AlertaResumen` |
+| `alerta.nueva` | Se asignó una alerta a la unidad. Al Administrador, cada alerta que se registra. | `AlertaResumen` |
 | `alerta.estado` | Cambió el estado | `{ alertaId, estadoAnterior, estadoNuevo }` |
 | `alerta.escalada` | Escaló por falta de acuse o a mano | `{ alertaId, escalamiento: Escalamiento }` |
 | `alerta.ubicacion` | Llegó una lectura nueva | `{ alertaId, ubicacion: Ubicacion }` |
@@ -63,7 +63,9 @@ Público, de solo lectura, para la red de apoyo.
 | `estado` | `{ estado }`, en texto legible |
 | `fin` | `{ motivo: "CERRADA" \| "CANCELADA" \| "VENCIDA" }`. Después el servidor cierra la conexión. |
 
-Para poder correr más de un servidor, los eventos se reparten entre instancias con Redis pub/sub.
+El servidor saca estos mensajes de la base de datos cada segundo, así que funciona igual con uno o con varios servidores y recibe también lo que guardan otros módulos (por ejemplo las ubicaciones).
+
+Si el token no sirve, el servidor cierra la conexión con el código `1008` y el motivo: `NO_AUTENTICADO`, `SIN_PERMISO`, `ENLACE_NO_DISPONIBLE` o `TOKEN_VENCIDO`. Si el cliente no contesta dos pings seguidos, cierra con `1001`.
 
 ## 4. SMS de contingencia `SS1` (46 caracteres)
 Lo arma la app cuando no hay internet ni malla, y el servidor lo decodifica en el webhook. Después de `SS1|` todos los campos son de ancho fijo y sin separadores:

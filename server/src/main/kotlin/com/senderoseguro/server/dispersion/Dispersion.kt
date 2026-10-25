@@ -13,7 +13,8 @@ interface Dispersion {
 
     /**
      * La cancelación (Módulo 1, CU-21) la llama después de marcar la alerta como CANCELADA. Avisa a los operadores
-     * asignados y a la red de apoyo, libera las unidades y apaga el enlace. Con el PIN de coacción no se llama,
+     * asignados y a la red de apoyo, libera las unidades, apaga el enlace y deja el cambio en `evento_alerta`
+     * (si todavía no estaba). Con el PIN de coacción no se llama,
      * porque la alerta sigue activa en silencio.
      */
     fun cancelada(alertaId: UUID)
