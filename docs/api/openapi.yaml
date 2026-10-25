@@ -457,7 +457,7 @@ paths:
     get:
       tags: [Auditoría]
       summary: Historial propio (alertas, reportes con nombre y trayectos)
-      description: Lee `v_historial_usuario` de la persona del token. Los reportes anónimos no aparecen.
+      description: Lee `v_historial_usuario` de la persona del token. Los reportes anónimos no aparecen. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`.
       x-proceso: P13
       parameters:
         - name: tipo
@@ -483,7 +483,7 @@ paths:
     get:
       tags: [Auditoría]
       summary: Historial de otra persona (solo Administrador, con justificación)
-      description: La consulta y su justificación quedan en `bitacora`.
+      description: La consulta y su justificación quedan en `bitacora` (`CONSULTAR_HISTORIAL_AJENO`). Muestra el estado real de cada alerta.
       x-proceso: P13
       parameters:
         - name: id
@@ -494,6 +494,15 @@ paths:
           in: header
           required: true
           schema: { type: string, minLength: 10, maxLength: 500 }
+        - name: tipo
+          in: query
+          schema: { type: string, enum: [ALERTA, REPORTE, TRAYECTO] }
+        - name: desde
+          in: query
+          schema: { type: string, format: date-time }
+        - name: hasta
+          in: query
+          schema: { type: string, format: date-time }
         - $ref: '#/components/parameters/Limite'
         - $ref: '#/components/parameters/Cursor'
       responses:

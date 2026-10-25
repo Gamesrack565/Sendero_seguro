@@ -213,13 +213,20 @@ Rutas, solo para el Administrador:
 - `GET /api/v1/bitacora`: registros del más nuevo al más viejo. Filtros `accion`, `entidad`, `entidadId`, `usuarioId`, `desde`, `hasta`, `limite` (1 a 200) y `cursor`.
 - `GET /api/v1/bitacora/verificar`: revisa toda la cadena con `fn_verificar_bitacora()`. `integra` es `false` si algún registro se alteró, y `primerIdAlterado` dice cuál.
 
+Las pruebas automáticas escriben registros `PRUEBA_…` y `CONSULTAR_HISTORIAL_AJENO` en la bitácora de la base local; por diseño no se pueden borrar.
+
 ## Línea de tiempo de una alerta
 
 `GET /api/v1/alertas/{id}/timeline` junta en orden los cambios de estado, las asignaciones, los escalamientos, los avisos y los intentos de cancelación. La ven las mismas personas que `GET /alertas/{id}`:
 - **El Administrador y el operador cuya unidad tuvo la alerta** ven todo, con nombres y a quién se mandó cada aviso.
 - **Quien emitió la alerta** ve su versión. Incluye sus estados, la unidad asignada, sus intentos de cancelación y los avisos a su red de apoyo. No ve nombres de operadores, ni escalamientos ni datos internos. Si canceló con el PIN de coacción, su línea termina en `CANCELADA` en ese momento, aunque la alerta siga activa en silencio.
 
-Las pruebas automáticas escriben registros `PRUEBA_…` en la bitácora de la base local; por diseño no se pueden borrar.
+
+## Historial
+
+Lee `v_historial_usuario`: alertas, reportes con nombre y trayectos, del más nuevo al más viejo. Los reportes anónimos no aparecen. Filtros `tipo` (`ALERTA`, `REPORTE` o `TRAYECTO`), `desde`, `hasta`, `limite` (1 a 200) y `cursor`.
+- `GET /api/v1/historial`: el de la persona del token. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`, igual que en el detalle y la línea de tiempo.
+- `GET /api/v1/usuarios/{id}/historial`: el de otra persona, solo para el Administrador. Pide el encabezado `X-Justificacion` (10 a 500 caracteres) y cada consulta queda en la bitácora como `CONSULTAR_HISTORIAL_AJENO`, con la justificación y la IP. Muestra el estado real de cada alerta.
 
 ## Configuración
 
@@ -308,6 +315,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Dispersión: aviso a la red de apoyo y enlace de ubicación (`GET /enlace/{token}`) | Listo |
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
+| Línea de tiempo de una alerta e historial de cada persona | Listo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
 | Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |
 | Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo |

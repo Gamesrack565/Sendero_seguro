@@ -1,7 +1,9 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.auditoria.Historial
 import com.senderoseguro.server.auditoria.LineaDeTiempo
 import com.senderoseguro.server.auditoria.rutasBitacora
+import com.senderoseguro.server.auditoria.rutasHistorial
 import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
 import com.senderoseguro.server.avisos.EnvioAvisos
@@ -106,6 +108,7 @@ fun Application.module() {
             rutasPasarela(recepcionSms, envioAvisos, configPasarela)
             rutasBitacora(baseDatos.dataSource)
             rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
+            rutasHistorial(Historial(baseDatos.dataSource))
             // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }
