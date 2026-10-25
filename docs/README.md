@@ -87,7 +87,7 @@ También se activan dos rutas que no existen en la nube:
 | Ruta | Qué hace |
 |---|---|
 | `POST /api/v1/dev/token` | Entrega un JWT de 8 horas de una cuenta de prueba. Cuerpo: `{"cuenta":"caseta"}`. Cuentas: `ana`, `beto`, `admin`, `caseta`, `c5`, `erum`, `pbi`. |
-| `POST /api/v1/dev/alertas` | Crea una alerta de Ana y la despacha. Cuerpo opcional: `{"tipo":"EMERGENCIA_MEDICA","latitud":19.5045,"longitud":-99.1469}`. Sin cuerpo es una alerta genérica frente a la ESCOM. |
+| `POST /api/v1/dev/alertas` | Crea una alerta de Ana y la despacha. La respuesta trae `enlace`, la ruta que vería la red de apoyo. Cuerpo opcional: `{"tipo":"EMERGENCIA_MEDICA","latitud":19.5045,"longitud":-99.1469}`. Sin cuerpo es una alerta genérica frente a la ESCOM. |
 | `POST /api/v1/dev/alertas/{id}/vencer` | Vence ya el plazo de acuse de esa alerta y la escala, sin esperar el tiempo de la regla. |
 | `POST /api/v1/dev/unidades/liberar` | Regresa a DISPONIBLE las unidades ocupadas, para repetir la prueba. |
 
@@ -107,6 +107,14 @@ Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo d
 3. Crea la `asignacion`, pasa la unidad y la alerta a `ASIGNADA` y fija `acuse_limite_en` con el tiempo de la regla.
 
 Al asignar, el operador de la unidad recibe un aviso `ALERTA_PRIORITARIA` y los demás operadores de la corporación uno `ALERTA_INFORMATIVA`. Si la corporación no tiene unidades disponibles, la alerta se queda en `ENVIADA`, el motivo queda en `evento_alerta`, se avisa a todo el canal y a los Administradores, y el plazo se marca como vencido para que se escale. Despachar dos veces la misma alerta no la asigna dos veces. Si una alerta se queda en `ENVIADA` sin despachar (por ejemplo, porque el servidor se reinició justo después de registrarla), la revisión periódica la despacha.
+
+**Red de apoyo (RF-9).** Al despachar la alerta, al mismo tiempo que se busca la unidad, se crea un enlace de ubicación y se deja un aviso `RED_APOYO` para:
+- los contactos de confianza activos y confirmados, por su canal preferido (si el canal es push, a su cuenta);
+- los integrantes y el coordinador de los círculos de la persona, por push.
+
+Cada persona recibe un solo aviso. Los contactos `SOLO_AVISO` no reciben el enlace. Al cerrar la alerta, el enlace se apaga y la red de apoyo recibe un aviso `CIERRE`. Quien cancela una alerta (cancelación, Módulo 1) la marca como `CANCELADA` y llama a `dispersion.cancelada(alertaId)`: se avisa a los operadores asignados y a la red de apoyo, se liberan las unidades y se apaga el enlace. Con el PIN de coacción no se llama, porque la alerta sigue en silencio.
+
+**Enlace de ubicación.** `GET /api/v1/enlace/{token}` no pide sesión. Muestra el primer nombre, el estado en palabras y la última ubicación (con velocidad, rumbo y batería), sin datos del perfil. Si la alerta ya terminó responde `410`. La base solo guarda el SHA-256 del token; el token se calcula con `ENLACE_SECRETO`, así que una copia de la base no basta para abrir enlaces.
 
 **Escalamiento.** Cada 5 segundos el servidor busca las alertas sin acuse cuyo `acuse_limite_en` ya pasó y las manda al siguiente paso de `paso_escalamiento` de su regla:
 
@@ -144,6 +152,8 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `DB_URL` | Conexión JDBC a PostgreSQL | `jdbc:postgresql://localhost:5432/sendero_seguro` |
 | `DB_USUARIO` / `DB_PASSWORD` | Credenciales de la base | `postgres` / `sendero` |
 | `DB_POOL_MAX` | Conexiones máximas | `10` |
+| `ENLACE_SECRETO` | Llave para calcular los tokens de los enlaces de ubicación | Valor de desarrollo. En la nube es obligatorio cambiarla. |
+| `ENLACE_HORAS_MAX` | Vigencia máxima de un enlace | `24` |
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
@@ -205,7 +215,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Dispersión: `Dispersion.despachar(alertaId)`, canalización, asignación y escalamiento automático | Listo |
 | Consola: lista y detalle de alertas, acuse, cambios de estado y escalamiento manual | Listo |
 | `EmisorTokens` para firmar los JWT que entrega el login | Listo |
-| Dispersión: aviso a la red de apoyo y enlace de ubicación | En desarrollo |
+| Dispersión: aviso a la red de apoyo y enlace de ubicación (`GET /enlace/{token}`) | Listo |
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Ayuda para escribir en la bitácora | En desarrollo |
 | Avisos: push (FCM), SMS y WhatsApp opcional | En desarrollo |

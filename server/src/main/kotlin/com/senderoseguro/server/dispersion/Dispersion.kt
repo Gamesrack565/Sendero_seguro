@@ -10,6 +10,13 @@ import java.util.UUID
 interface Dispersion {
     /** Canaliza la alerta y le asigna la unidad disponible más cercana. No bloquea a quien la llama. */
     fun despachar(alertaId: UUID)
+
+    /**
+     * La cancelación (Módulo 1, CU-21) la llama después de marcar la alerta como CANCELADA. Avisa a los operadores
+     * asignados y a la red de apoyo, libera las unidades y apaga el enlace. Con el PIN de coacción no se llama,
+     * porque la alerta sigue activa en silencio.
+     */
+    fun cancelada(alertaId: UUID)
 }
 
 /** Qué pasó al despachar una alerta. */

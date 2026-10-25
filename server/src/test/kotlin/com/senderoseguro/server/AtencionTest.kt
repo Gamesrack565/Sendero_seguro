@@ -26,7 +26,7 @@ class AtencionTest : PruebaConBaseDatos() {
 
     private val escalamiento by lazy { EscalamientoServicio(dataSource) }
     private val consulta by lazy { ConsultaAlertas(dataSource) }
-    private val atencion by lazy { AtencionServicio(dataSource, consulta, escalamiento) }
+    private val atencion by lazy { AtencionServicio(dataSource, consulta, escalamiento, enlaces) }
 
     private fun cuenta(nombre: String, rol: Rol) = UsuarioToken(AlertasPrueba.CUENTAS.getValue(nombre), rol, null, null)
     private val caseta = cuenta("caseta", Rol.OPERADOR)
@@ -100,7 +100,7 @@ class AtencionTest : PruebaConBaseDatos() {
         assertNotNull(cerrada.cerradaEn)
         assertEquals("DISPONIBLE", texto("SELECT estado::text FROM unidad_atencion WHERE nombre = 'Caseta ESCOM'"))
         assertEquals(0, numero("SELECT count(*) FROM asignacion WHERE alerta_id = ? AND liberada_en IS NULL", id))
-        assertEquals(1, numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND tipo = 'CIERRE'", id))
+        assertEquals(1, numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND usuario_id = ? AND tipo = 'CIERRE'", id, ana.usuarioId))
         assertEquals(2, numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND tipo = 'CAMBIO_ESTADO'", id))
         // Ya cerrada: la unidad que la atendió recibe 409, no 403.
         assertEquals("TRANSICION_INVALIDA", codigoDe { atencion.cambiarEstado(caseta, id, CambioEstado("ATENDIDA")) })

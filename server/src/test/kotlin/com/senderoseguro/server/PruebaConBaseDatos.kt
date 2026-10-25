@@ -3,6 +3,7 @@ package com.senderoseguro.server
 import com.senderoseguro.server.desarrollo.AlertaPrueba
 import com.senderoseguro.server.desarrollo.AlertasPrueba
 import com.senderoseguro.server.dispersion.DispersionServicio
+import com.senderoseguro.server.dispersion.EnlacesServicio
 import com.senderoseguro.server.plataforma.consultarUno
 import com.senderoseguro.server.plataforma.ejecutar
 import com.zaxxer.hikari.HikariConfig
@@ -29,6 +30,7 @@ abstract class PruebaConBaseDatos {
 
     protected lateinit var dataSource: HikariDataSource
     protected lateinit var dispersion: DispersionServicio
+    protected lateinit var enlaces: EnlacesServicio
 
     @OptIn(DelicateCoroutinesApi::class)
     @BeforeAll
@@ -44,7 +46,8 @@ abstract class PruebaConBaseDatos {
         Flyway.configure().dataSource(dataSource)
             .locations("classpath:db/migration", "classpath:db/datos-prueba")
             .load().migrate()
-        dispersion = DispersionServicio(dataSource, GlobalScope)
+        enlaces = EnlacesServicio(dataSource, secreto = "secreto-de-prueba", horasMax = 24)
+        dispersion = DispersionServicio(dataSource, GlobalScope, enlaces)
     }
 
     @AfterAll

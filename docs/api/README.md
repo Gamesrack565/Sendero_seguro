@@ -29,6 +29,9 @@ Cada ruta del YAML trae `x-proceso`, que indica el proceso al que pertenece seg√
 interface Dispersion {
     /** Canaliza, asigna, avisa a la red de apoyo y crea el enlace. No bloquea la respuesta. */
     fun despachar(alertaId: UUID)
+
+    /** Despu√©s de marcar la alerta CANCELADA: avisa a la unidad y a la red de apoyo, libera unidades y apaga el enlace. */
+    fun cancelada(alertaId: UUID)
 }
 ```
 

@@ -28,6 +28,7 @@ import javax.sql.DataSource
 class DispersionServicio(
     private val dataSource: DataSource,
     private val scope: CoroutineScope,
+    private val enlaces: EnlacesServicio,
 ) : Dispersion {
 
     private val log = LoggerFactory.getLogger(DispersionServicio::class.java)
@@ -41,6 +42,28 @@ class DispersionServicio(
                 log.error("Falló la dispersión de {}", alertaId, e)
             }
         }
+    }
+
+    override fun cancelada(alertaId: UUID) = dataSource.transaccion { conn ->
+        val estado = conn.consultarUno("SELECT estado::text FROM alerta WHERE id = ? FOR UPDATE", alertaId) { it.getString(1) }
+        if (estado != "CANCELADA") return@transaccion
+        // Una sola vez, aunque la llamen de nuevo.
+        val yaAvisada = conn.consultarUno(
+            "SELECT 1 FROM notificacion WHERE alerta_id = ? AND tipo = 'CANCELACION' LIMIT 1", alertaId,
+        ) { true } ?: false
+        if (yaAvisada) return@transaccion
+
+        conn.ejecutar(
+            """INSERT INTO notificacion (alerta_id, usuario_id, tipo, canal)
+               SELECT DISTINCT ?::uuid, o.usuario_id, 'CANCELACION'::notificacion_tipo, 'PUSH'::notificacion_canal
+               FROM asignacion s JOIN operador o ON o.unidad_id = s.unidad_id AND o.activo
+               WHERE s.alerta_id = ? AND s.liberada_en IS NULL""",
+            alertaId, alertaId,
+        )
+        RedDeApoyo.avisarFin(conn, alertaId, "CANCELACION")
+        Canalizacion.liberarAsignaciones(conn, alertaId)
+        enlaces.revocar(conn, alertaId)
+        conn.ejecutar("UPDATE alerta SET acuse_limite_en = NULL WHERE id = ?", alertaId)
     }
 
     /**
@@ -70,13 +93,16 @@ class DispersionServicio(
     /** Hace la dispersión en el mismo hilo y regresa el resultado. Lo usan las pruebas y la ruta de desarrollo. */
     fun despacharAhora(alertaId: UUID): ResultadoDispersion = dataSource.transaccion { conn ->
         val alerta = conn.consultarUno(
-            "SELECT estado::text AS estado, tipo_incidente_id, version_catalogo_id FROM alerta WHERE id = ? FOR UPDATE",
+            "SELECT estado::text AS estado, usuario_id, tipo_incidente_id, version_catalogo_id FROM alerta WHERE id = ? FOR UPDATE",
             alertaId,
-        ) { Triple(it.getString("estado"), it.getShort("tipo_incidente_id"), it.getInt("version_catalogo_id")) }
+        ) { AlertaPorDespachar(it.getString("estado"), it.uuid("usuario_id"), it.getShort("tipo_incidente_id"), it.getInt("version_catalogo_id")) }
             ?: return@transaccion ResultadoDispersion.NoExiste
-        val (estado, tipoId, versionId) = alerta
+        val (estado, emisorId, tipoId, versionId) = alerta
 
         if (estado != "ENVIADA") return@transaccion ResultadoDispersion.YaDespachada(estado)
+
+        // RF-9: en paralelo a la unidad, la red de apoyo recibe el aviso con el enlace. Solo la primera vez.
+        if (enlaces.crear(conn, alertaId)) RedDeApoyo.avisar(conn, alertaId, emisorId)
 
         val regla = Canalizacion.buscarRegla(conn, versionId, tipoId) ?: run {
             // Sin regla no hay a quién escalar: se marca sin acuse para que no se reintente y se avisa a los Administradores.
@@ -117,4 +143,6 @@ class DispersionServicio(
 
         ResultadoDispersion.Asignada(unidad.id, unidad.nombre, regla.corporacion, unidad.distanciaM, acuseLimite)
     }
+
+    private data class AlertaPorDespachar(val estado: String, val emisorId: UUID, val tipoId: Short, val versionId: Int)
 }

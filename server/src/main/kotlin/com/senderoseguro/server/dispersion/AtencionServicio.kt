@@ -28,6 +28,7 @@ class AtencionServicio(
     private val dataSource: DataSource,
     private val consulta: ConsultaAlertas,
     private val escalamiento: EscalamientoServicio,
+    private val enlaces: EnlacesServicio,
 ) {
 
     /** El operador confirma que recibió la alerta. Idempotente: si su unidad ya la acusó, regresa el detalle. */
@@ -118,6 +119,9 @@ class AtencionServicio(
                     usuario.usuarioId, resultado, cambio.observaciones, alertaId,
                 )
                 Canalizacion.liberarAsignaciones(conn, alertaId)
+                // RF-9 y CU-19 paso 4: el enlace deja de funcionar y la red de apoyo recibe el aviso de cierre.
+                enlaces.revocar(conn, alertaId)
+                RedDeApoyo.avisarFin(conn, alertaId, "CIERRE")
             }
         }
         Canalizacion.registrarEvento(conn, alertaId, alerta.estado, cambio.estado, buildJsonObject {

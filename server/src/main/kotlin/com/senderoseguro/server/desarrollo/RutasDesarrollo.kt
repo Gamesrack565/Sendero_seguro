@@ -1,6 +1,7 @@
 package com.senderoseguro.server.desarrollo
 
 import com.senderoseguro.server.dispersion.DispersionServicio
+import com.senderoseguro.server.dispersion.EnlacesServicio
 import com.senderoseguro.server.dispersion.EscalamientoServicio
 import com.senderoseguro.server.dispersion.ResultadoDispersion
 import com.senderoseguro.server.dispersion.ResultadoEscalamiento
@@ -31,6 +32,7 @@ fun Route.rutasDesarrollo(
     dataSource: DataSource,
     dispersion: DispersionServicio,
     escalamiento: EscalamientoServicio,
+    enlaces: EnlacesServicio,
     tokens: EmisorTokens,
 ) {
     route("/dev") {
@@ -53,7 +55,9 @@ fun Route.rutasDesarrollo(
             val peticion = if (texto.isBlank()) AlertaPrueba() else runCatching { json.decodeFromString<AlertaPrueba>(texto) }
                 .getOrElse { throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "Cuerpo inválido: ${it.message}") }
             val (alertaId, folio) = AlertasPrueba.crear(dataSource, peticion)
-            call.respond(HttpStatusCode.Created, AlertaPruebaRespuesta.de(alertaId, folio, dispersion.despacharAhora(alertaId)))
+            val respuesta = AlertaPruebaRespuesta.de(alertaId, folio, dispersion.despacharAhora(alertaId))
+            // Para abrir en el navegador lo que vería la red de apoyo.
+            call.respond(HttpStatusCode.Created, respuesta.copy(enlace = enlaces.tokenDeAlerta(alertaId)?.let { "/api/v1/enlace/$it" }))
         }
 
         // Vence ya el plazo de acuse de la alerta y la escala, sin esperar al temporizador.
@@ -96,6 +100,7 @@ data class AlertaPruebaRespuesta(
     val corporacion: String? = null,
     val distanciaM: Double? = null,
     val acuseLimiteEn: String? = null,
+    val enlace: String? = null,
 ) {
     companion object {
         fun de(alertaId: UUID, folio: String, r: ResultadoDispersion) = when (r) {

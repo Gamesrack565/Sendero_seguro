@@ -125,7 +125,6 @@ class ConsultaAlertas(private val dataSource: DataSource) {
 
     private fun resumen(rs: ResultSet, vistaEmisor: Boolean): AlertaResumen {
         val coaccion = rs.getBoolean("coaccion_detectada")
-        val lat = rs.dobleONulo("ub_lat")
         return AlertaResumen(
             id = rs.getObject("id").toString(),
             folio = rs.getString("folio"),
@@ -140,9 +139,7 @@ class ConsultaAlertas(private val dataSource: DataSource) {
             acuseLimiteEn = rs.instante("acuse_limite_en")?.toString(),
             nivelEscalamiento = rs.getInt("nivel_escalamiento"),
             sinAcuse = rs.getBoolean("sin_acuse"),
-            ultimaUbicacion = lat?.let {
-                UbicacionJson(it, rs.getDouble("ub_lon"), rs.dobleONulo("ub_precision"), rs.getString("ub_fuente"), rs.instante("ub_capturada")!!.toString())
-            },
+            ultimaUbicacion = UltimaUbicacion.leer(rs),
         )
     }
 
@@ -165,12 +162,11 @@ class ConsultaAlertas(private val dataSource: DataSource) {
                    COALESCE(a.prioridad_ia, (6 - tv.prioridad) * 20) AS prioridad,
                    us.nombre AS emisor_nombre, us.telefono_movil AS emisor_telefono,
                    us.identificador_institucional AS emisor_identificador, e.nombre AS emisor_escuela,
-                   ub.latitud::double precision AS ub_lat, ub.longitud::double precision AS ub_lon,
-                   ub.precision_m::double precision AS ub_precision, ub.fuente::text AS ub_fuente, ub.capturada_en AS ub_capturada
+                   ${UltimaUbicacion.COLUMNAS}
             FROM alerta a
             JOIN tipo_incidente_version tv ON tv.version_catalogo_id = a.version_catalogo_id AND tv.tipo_incidente_id = a.tipo_incidente_id
             JOIN usuario us ON us.id = a.usuario_id
             JOIN escuela e ON e.id = us.escuela_id
-            LEFT JOIN v_ubicacion_actual_alerta ub ON ub.alerta_id = a.id"""
+            ${UltimaUbicacion.JOIN}"""
     }
 }
