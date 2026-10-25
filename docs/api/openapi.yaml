@@ -607,8 +607,11 @@ paths:
   /estadisticas/exportar:
     get:
       tags: [Auditoría]
-      summary: Exporta las estadísticas en CSV (X-02) o PDF tamaño carta (X-03)
-      description: Mismos filtros que `/estadisticas/alertas`. Cada exportación queda en `bitacora`.
+      summary: Exporta las estadísticas en CSV (X-02) o PDF tamaño carta (X-03), solo Administrador
+      description: |
+        Mismos filtros y números que `/estadisticas/alertas`. Cada exportación queda en `bitacora` como
+        `EXPORTAR_ESTADISTICAS`. El archivo llega como descarga (`Content-Disposition: attachment`). El CSV
+        tiene una fila por dato (`seccion,concepto,valor,mediana_acuse_seg`) en UTF-8 con BOM.
       x-proceso: P13
       parameters:
         - name: formato

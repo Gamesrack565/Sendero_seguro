@@ -1,6 +1,7 @@
 package com.senderoseguro.server
 
 import com.senderoseguro.server.auditoria.Estadisticas
+import com.senderoseguro.server.auditoria.Exportacion
 import com.senderoseguro.server.auditoria.FiltrosEstadisticas
 import com.senderoseguro.server.auditoria.rutasEstadisticas
 import com.senderoseguro.server.desarrollo.AlertaPrueba
@@ -112,7 +113,7 @@ class EstadisticasTest : PruebaConBaseDatos() {
             configurarSerializacion()
             configurarErrores()
             configurarSeguridad()
-            routing { route("/api/v1") { rutasEstadisticas(estadisticas) } }
+            routing { route("/api/v1") { rutasEstadisticas(estadisticas, Exportacion(dataSource, estadisticas)) } }
         }
         val tokens = EmisorTokens("secreto-estadisticas", "sendero-seguro", "sendero-seguro-api")
         suspend fun estado(consulta: String, cuenta: String = "admin", rol: Rol = Rol.ADMINISTRADOR): HttpStatusCode {

@@ -1,6 +1,7 @@
 package com.senderoseguro.server
 
 import com.senderoseguro.server.auditoria.Estadisticas
+import com.senderoseguro.server.auditoria.Exportacion
 import com.senderoseguro.server.auditoria.Historial
 import com.senderoseguro.server.auditoria.LineaDeTiempo
 import com.senderoseguro.server.auditoria.rutasBitacora
@@ -119,7 +120,8 @@ fun Application.module() {
             rutasBitacora(baseDatos.dataSource)
             rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
             rutasHistorial(Historial(baseDatos.dataSource))
-            rutasEstadisticas(Estadisticas(baseDatos.dataSource))
+            val estadisticas = Estadisticas(baseDatos.dataSource)
+            rutasEstadisticas(estadisticas, Exportacion(baseDatos.dataSource, estadisticas))
             // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }

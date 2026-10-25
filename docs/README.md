@@ -237,6 +237,10 @@ Lee `v_historial_usuario`: alertas, reportes con nombre y trayectos, del más nu
 - `pctCumpleMetaAcuse`: de las alertas que se acusaron o a las que se les pasó la meta (`meta_acuse_seg`, 120 s) sin acuse, cuántas se acusaron a tiempo. Las canceladas antes de la meta y las que todavía van dentro de ella no cuentan.
 - `pctEscaladas`: las que escalaron al menos una vez. `porSemana` trae todas las semanas ISO del periodo, también las que no tuvieron alertas.
 
+`GET /api/v1/estadisticas/exportar?formato=csv` (o `pdf`) descarga los mismos números, con los mismos filtros. Solo el Administrador, y cada exportación queda en la bitácora como `EXPORTAR_ESTADISTICAS` con el formato y los filtros; si no se puede registrar, no se entrega el archivo.
+- **CSV:** una fila por dato (`seccion,concepto,valor,mediana_acuse_seg`), en UTF-8 con BOM para que Excel lea los acentos. Un texto que empieza con `=`, `+`, `-` o `@` se escribe con un apóstrofo delante para que Excel no lo ejecute como fórmula.
+- **PDF:** tamaño carta, con el resumen, los repartos y una barra por semana. Usa Apache PDFBox y las fuentes estándar del PDF; un carácter que no traen (un emoji) sale como `?`.
+
 ## Configuración
 
 Los valores de `application.conf` sirven para desarrollo. En la nube se reemplazan con variables de entorno:
@@ -327,7 +331,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
 | Línea de tiempo de una alerta e historial de cada persona | Listo |
-| Estadísticas de alertas para el tablero | Listo |
+| Estadísticas de alertas para el tablero y exportación en CSV y PDF | Listo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
 | Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |
 | Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo |

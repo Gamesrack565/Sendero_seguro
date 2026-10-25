@@ -8,11 +8,17 @@ import com.senderoseguro.server.plataforma.consultarUno
 import com.senderoseguro.server.plataforma.dobleONulo
 import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.exigirRol
+import com.senderoseguro.server.plataforma.ipCliente
 import com.senderoseguro.server.plataforma.transaccion
+import io.ktor.http.ContentDisposition
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.auth.authenticate
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
@@ -157,11 +163,22 @@ class Estadisticas(private val dataSource: DataSource) {
     }
 }
 
-fun Route.rutasEstadisticas(estadisticas: Estadisticas) {
+fun Route.rutasEstadisticas(estadisticas: Estadisticas, exportacion: Exportacion) {
     authenticate(AUTH_JWT) {
         get("/estadisticas/alertas") {
             call.exigirRol(Rol.ADMINISTRADOR)
             call.respond(estadisticas.alertas(call.filtrosEstadisticas()))
+        }
+        get("/estadisticas/exportar") {
+            val admin = call.exigirRol(Rol.ADMINISTRADOR)
+            val formato = FormatoExportacion.entries.firstOrNull { it.extension == call.request.queryParameters["formato"]?.lowercase() }
+                ?: throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "formato debe ser csv o pdf")
+            val archivo = exportacion.exportar(admin, call.filtrosEstadisticas(), formato, call.ipCliente())
+            call.response.header(
+                HttpHeaders.ContentDisposition,
+                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, archivo.nombre).toString(),
+            )
+            call.respondBytes(archivo.bytes, ContentType.parse(formato.tipoContenido))
         }
     }
 }

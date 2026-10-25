@@ -31,6 +31,8 @@ dependencies {
     implementation(libs.flyway.postgresql)
     implementation(libs.postgresql)
     implementation(libs.logback)
+    // PDF de las estadísticas (P13). Va aquí y no en libs.versions.toml porque solo lo usa el servidor.
+    implementation("org.apache.pdfbox:pdfbox:3.0.8")
 
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit5)
