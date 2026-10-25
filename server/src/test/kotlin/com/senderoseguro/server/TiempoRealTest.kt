@@ -210,6 +210,22 @@ class TiempoRealTest : PruebaConBaseDatos() {
     }
 
     @Test
+    fun `un aviso descartado llega solo a los administradores`() = conServidor { cliente ->
+        val caseta = cliente.abrir("/api/v1/ws/consola?token=${jwt("caseta", Rol.OPERADOR)}")
+        val admin = cliente.abrir("/api/v1/ws/consola?token=${jwt("admin", Rol.ADMINISTRADOR)}")
+        val id = alertaEnCaseta()
+        sql(
+            """INSERT INTO evento_alerta (alerta_id, estado_anterior, estado_nuevo, detalle)
+               VALUES (?, 'ASIGNADA', 'ASIGNADA', '{"accion":"ENTREGA_DESCARTADA","notificacionId":7,"tipo":"RED_APOYO","canal":"SMS","error":"Número no disponible"}')""",
+            id,
+        )
+        val m = admin.esperar("alerta.entrega_fallida", id).datos
+        assertEquals("RED_APOYO", m.getValue("tipo").jsonPrimitive.content)
+        assertEquals("7", m.getValue("notificacionId").jsonPrimitive.content)
+        assertTrue(caseta.recibirDurante(800).none { it.tipo == "alerta.entrega_fallida" })
+    }
+
+    @Test
     fun `el enlace vencido avisa fin VENCIDA y uno que no existe se rechaza`() = conServidor { cliente ->
         val id = alertaEnCaseta()
         val ws = cliente.abrir("/api/v1/ws/enlace/${enlaces.tokenDeAlerta(id)!!}")

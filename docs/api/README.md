@@ -52,6 +52,7 @@ Solo para OPERADOR y ADMINISTRADOR. Un operador recibe solo lo de las alertas as
 | `alerta.escalada` | Escaló por falta de acuse o a mano | `{ alertaId, escalamiento: Escalamiento }` |
 | `alerta.ubicacion` | Llegó una lectura nueva | `{ alertaId, ubicacion: Ubicacion }` |
 | `alerta.sin_acuse` | Se agotó la cadena de escalamiento | `{ alertaId }` |
+| `alerta.entrega_fallida` | Solo al Administrador: un aviso de la alerta se descartó después de los reintentos | `{ alertaId, notificacionId, tipo, canal, error }` |
 | `ping` | Cada 25 s | `{}`. El cliente contesta `{ "tipo": "pong" }`. |
 
 ### `WS /api/v1/ws/enlace/{token}`

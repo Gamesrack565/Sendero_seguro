@@ -19,6 +19,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
@@ -192,10 +196,12 @@ class CentroTiempoReal(
             }
         }
         conn.consultar(
-            """SELECT id, alerta_id, estado_anterior::text AS anterior, estado_nuevo::text AS nuevo, detalle->>'motivo' AS motivo
+            """SELECT id, alerta_id, estado_anterior::text AS anterior, estado_nuevo::text AS nuevo, detalle::text AS detalle
                FROM evento_alerta WHERE id > ? ORDER BY id""",
             eventos.desde(),
-        ) { rs -> Evento(rs.getLong("id"), rs.uuid("alerta_id"), rs.getString("anterior"), rs.getString("nuevo"), rs.getString("motivo")) }
+        ) { rs ->
+            Evento(rs.getLong("id"), rs.uuid("alerta_id"), rs.getString("anterior"), rs.getString("nuevo"), formato.parseToJsonElement(rs.getString("detalle")).jsonObject)
+        }
             .forEach { e ->
                 if (!eventos.nuevo(e.id)) return@forEach
                 enviarEvento(e, destinos)
@@ -217,7 +223,9 @@ class CentroTiempoReal(
         cerrarEnlacesVencidos(conn)
     }
 
-    private data class Evento(val id: Long, val alertaId: UUID, val anterior: String?, val nuevo: String, val motivo: String?)
+    private data class Evento(val id: Long, val alertaId: UUID, val anterior: String?, val nuevo: String, val detalle: JsonObject) {
+        fun texto(campo: String): String? = (detalle[campo] as? JsonPrimitive)?.contentOrNull
+    }
 
     private fun enviarEvento(e: Evento, destinos: Destinos) {
         if (e.anterior != null && e.anterior != e.nuevo) {
@@ -234,9 +242,20 @@ class CentroTiempoReal(
             }
         }
         // Sin acuse: se agotó la cadena de escalamiento, o no había regla para canalizarla.
-        if (e.motivo == "CADENA_AGOTADA" || e.motivo == "SIN_REGLA") {
+        if (e.texto("motivo") == "CADENA_AGOTADA" || e.texto("motivo") == "SIN_REGLA") {
             val m = mensaje("alerta.sin_acuse", buildJsonObject { put("alertaId", e.alertaId.toString()) })
             destinos.consolas(e.alertaId).forEach { it.mandar(m) }
+        }
+        // Un aviso de la alerta no se pudo entregar después de los reintentos (E-03): solo a los Administradores.
+        if (e.texto("accion") == "ENTREGA_DESCARTADA") {
+            val m = mensaje("alerta.entrega_fallida", buildJsonObject {
+                put("alertaId", e.alertaId.toString())
+                put("notificacionId", e.texto("notificacionId")?.toLongOrNull())
+                put("tipo", e.texto("tipo"))
+                put("canal", e.texto("canal"))
+                put("error", e.texto("error"))
+            })
+            consolas.filter { it.esAdministrador }.forEach { it.mandar(m) }
         }
     }
 

@@ -1,5 +1,8 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.avisos.EnvioAvisos
+import com.senderoseguro.server.avisos.Proveedor
+import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
 import com.senderoseguro.server.dispersion.AtencionServicio
 import com.senderoseguro.server.dispersion.ConsultaAlertas
@@ -49,6 +52,17 @@ fun Application.module() {
     val tiempoReal = CentroTiempoReal(baseDatos.dataSource, consulta, enlaces)
     tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
     val tokens = EmisorTokens.desde(this)
+    EnvioAvisos(
+        baseDatos.dataSource,
+        push = proveedor(config.property("avisos.proveedorPush").getString(), "PUSH"),
+        sms = proveedor(config.property("avisos.proveedorSms").getString(), "SMS"),
+        enlaces,
+        EnvioAvisos.Politica(
+            maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
+            esperaBase = config.property("avisos.esperaBaseSeg").getString().toInt().seconds,
+        ),
+        urlEnlace = config.property("avisos.urlEnlace").getString(),
+    ).iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
 
     configurarSerializacion()
     configurarLogs()
@@ -66,4 +80,10 @@ fun Application.module() {
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens)
         }
     }
+}
+
+/** El proveedor configurado para un canal. Los reales (FCM y Twilio) se agregan en sus pasos. */
+private fun proveedor(nombre: String, canal: String): Proveedor = when (nombre.lowercase()) {
+    "simulado" -> ProveedorSimulado()
+    else -> error("Proveedor de $canal desconocido: $nombre. Valores posibles: simulado")
 }

@@ -14,10 +14,13 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/Application.kt   Arranque y registro de rutas
   src/main/kotlin/…/plataforma/      Base de datos, errores, JWT, logs, /salud y ayudas de SQL
   src/main/kotlin/…/dispersion/      Canalización, asignación de la unidad más cercana y escalamiento (P5)
+  src/main/kotlin/…/tiemporeal/      WebSocket de la consola y del enlace (P16)
+  src/main/kotlin/…/avisos/          Envío de los avisos por push y SMS con reintentos (P16)
   src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
   src/main/resources/
     application.conf                 Configuración (puerto, base de datos, JWT)
     db/migration/V1__esquema_inicial.sql   Base de datos del servidor (PostgreSQL 16): 53 tablas, vistas, triggers y datos iniciales
+    db/migration/V2__indices_avisos.sql    Índices para el envío de avisos
     db/datos-prueba/R__datos_prueba.sql    Usuarios, unidades y operadores de prueba (solo en local)
 db/
   sendero_seguro_local_sqlite.sql    Base de datos local del teléfono (SQLite): 16 tablas
@@ -156,6 +159,23 @@ Hay dos WebSocket. Sus mensajes tienen la forma `{ "tipo", "ts", "datos" }` y es
 - El servidor lee cada segundo las filas nuevas de `alerta`, `asignacion`, `escalamiento`, `evento_alerta` y `ubicacion_alerta`. Así llegan también las ubicaciones que guarda el registro de alertas y lo que pasa en otro servidor, sin Redis. Una vez conectado, la consola carga lo anterior con `GET /alertas`.
 - `GET /enlace/{token}` trae en `websocket` la dirección para conectarse. Se arma con `ENLACE_URL_WEBSOCKET`.
 
+## Avisos
+
+Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la envía en unos 2 segundos. Sigue el diagrama E-03:
+
+| Estado | Qué pasa |
+|---|---|
+| `PENDIENTE` | Se elige el canal. Push si la cuenta tiene un teléfono con token FCM; si no, SMS a su número. Los contactos sin app reciben SMS (WhatsApp también sale por SMS mientras no haya proveedor de WhatsApp). Una alerta informativa sin push se descarta, porque el operador ya la ve en la consola. |
+| `ENVIADA` | El proveedor aceptó el mensaje. Si el proveedor confirma entregas (el SMS con webhook de estado) y la confirmación no llega en 10 minutos, pasa a `FALLIDA`. |
+| `ENTREGADA` | El proveedor confirmó la entrega. |
+| `FALLIDA` | Se cuenta el reintento y se espera 15 s, 30 s, 1 min, 2 min… antes de volver a intentar. |
+| `DESCARTADA` | Se llegó a 5 fallas, o el error no tiene caso reintentarlo (token o número inválido). Se avisa a los Administradores: queda en la historia de la alerta (`ENTREGA_DESCARTADA`) y la consola recibe `alerta.entrega_fallida`. |
+
+- Los SMS van sin acentos ni eñes para caber en 160 caracteres. A la red de apoyo con acceso de seguimiento le llega el enlace de ubicación.
+- No se envían los avisos para atender una alerta que ya terminó (alerta asignada o informativa, escalamiento, sin acuse), ni los que tienen más de 24 horas (por ejemplo, si el servidor estuvo apagado). Se marcan `DESCARTADA` sin avisar.
+- En local el proveedor es `simulado`: no manda nada y escribe cada mensaje en el log del servidor con `[SIMULADO]`. Los proveedores reales (FCM y Twilio) se eligen con `AVISOS_PROVEEDOR_PUSH` y `AVISOS_PROVEEDOR_SMS`.
+- Varios servidores pueden enviar a la vez sin repetir avisos.
+
 ## Configuración
 
 Los valores de `application.conf` sirven para desarrollo. En la nube se reemplazan con variables de entorno:
@@ -170,6 +190,11 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `ENLACE_HORAS_MAX` | Vigencia máxima de un enlace | `24` |
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
 | `ENLACE_URL_WEBSOCKET` | Dirección pública de `/ws/enlace`, sin el token | `ws://localhost:8080/api/v1/ws/enlace`. En la nube, `wss://<dominio>/api/v1/ws/enlace`. |
+| `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal | `simulado` |
+| `AVISOS_MAX_REINTENTOS` | Fallas antes de descartar un aviso | `5` |
+| `AVISOS_ESPERA_BASE_SEG` | Espera antes del primer reintento; se duplica en cada falla | `15` |
+| `AVISOS_REVISION_MS` | Cada cuántos milisegundos se buscan avisos por enviar | `2000` |
+| `AVISOS_URL_ENLACE` | Página de seguimiento que se manda a la red de apoyo, sin el token | `http://localhost:8080/api/v1/enlace` |
 | `TIEMPO_REAL_REVISION_MS` | Cada cuántos milisegundos se buscan cambios para los WebSocket | `1000` |
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
@@ -234,7 +259,8 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Dispersión: aviso a la red de apoyo y enlace de ubicación (`GET /enlace/{token}`) | Listo |
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Ayuda para escribir en la bitácora | En desarrollo |
-| Avisos: push (FCM), SMS y WhatsApp opcional | En desarrollo |
+| Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
+| Avisos: push con FCM, SMS con Twilio y WhatsApp opcional | En desarrollo |
 | Tiempo real: WebSocket de la consola y del enlace | Listo |
 
 El detalle de cada punto está en `docs/api/README.md`.
