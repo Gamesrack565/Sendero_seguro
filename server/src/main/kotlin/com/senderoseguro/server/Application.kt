@@ -1,8 +1,10 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.auditoria.Estadisticas
 import com.senderoseguro.server.auditoria.Historial
 import com.senderoseguro.server.auditoria.LineaDeTiempo
 import com.senderoseguro.server.auditoria.rutasBitacora
+import com.senderoseguro.server.auditoria.rutasEstadisticas
 import com.senderoseguro.server.auditoria.rutasHistorial
 import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
@@ -32,11 +34,13 @@ import com.senderoseguro.server.plataforma.configurarErrores
 import com.senderoseguro.server.plataforma.configurarLogs
 import com.senderoseguro.server.plataforma.configurarSeguridad
 import com.senderoseguro.server.plataforma.configurarSerializacion
+import com.senderoseguro.server.plataforma.problemasDeArranque
 import com.senderoseguro.server.plataforma.rutasSalud
 import com.senderoseguro.server.tiemporeal.CentroTiempoReal
 import com.senderoseguro.server.tiemporeal.configurarWebSockets
 import com.senderoseguro.server.tiemporeal.rutasTiempoReal
 import io.ktor.server.application.Application
+import io.ktor.server.application.log
 import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
@@ -48,8 +52,14 @@ fun main(args: Array<String>) = EngineMain.main(args)
 
 /** Punto de entrada de Ktor (se declara en application.conf). */
 fun Application.module() {
-    val baseDatos = BaseDatos.iniciar(this)
     val modoDesarrollo = environment.config.property("db.datosPrueba").getString().toBoolean()
+    // Se revisa antes de tocar la base: un servidor en la nube con las llaves del repo no debe arrancar.
+    val problemas = problemasDeArranque(environment.config, modoDesarrollo)
+    check(problemas.isEmpty()) { "El servidor no arranca: " + problemas.joinToString("; ") }
+    if (modoDesarrollo) {
+        log.warn("Modo de prueba: rutas /dev y cuentas de prueba activas. En la nube usa DB_DATOS_PRUEBA=false.")
+    }
+    val baseDatos = BaseDatos.iniciar(this)
     // Los módulos que registran alertas reciben `dispersion` y llaman a dispersion.despachar(alertaId).
     val config = environment.config
     val enlaces = EnlacesServicio(
@@ -109,6 +119,7 @@ fun Application.module() {
             rutasBitacora(baseDatos.dataSource)
             rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
             rutasHistorial(Historial(baseDatos.dataSource))
+            rutasEstadisticas(Estadisticas(baseDatos.dataSource))
             // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }

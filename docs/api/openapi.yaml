@@ -583,8 +583,11 @@ paths:
   /estadisticas/alertas:
     get:
       tags: [Auditoría]
-      summary: Indicadores de alertas para el tablero (RF-26, W-08)
-      description: Sale de `v_alerta_tiempos`. Sin datos personales.
+      summary: Indicadores de alertas para el tablero (RF-26, W-08), solo Administrador
+      description: |
+        Sale de `v_alerta_tiempos`. Sin datos personales. El periodo va por días completos en la hora de la
+        Ciudad de México y no puede pasar de 366 días. La zona se toma de la primera ubicación de la alerta.
+        `pctCumpleMetaAcuse` cuenta las alertas acusadas y las que pasaron la meta sin acuse.
       x-proceso: P13
       parameters:
         - $ref: '#/components/parameters/FiltroDesde'

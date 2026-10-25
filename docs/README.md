@@ -228,6 +228,15 @@ Lee `v_historial_usuario`: alertas, reportes con nombre y trayectos, del más nu
 - `GET /api/v1/historial`: el de la persona del token. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`, igual que en el detalle y la línea de tiempo.
 - `GET /api/v1/usuarios/{id}/historial`: el de otra persona, solo para el Administrador. Pide el encabezado `X-Justificacion` (10 a 500 caracteres) y cada consulta queda en la bitácora como `CONSULTAR_HISTORIAL_AJENO`, con la justificación y la IP. Muestra el estado real de cada alerta.
 
+## Estadísticas
+
+`GET /api/v1/estadisticas/alertas?desde=2026-10-01&hasta=2026-10-31` da los indicadores del tablero a partir de `v_alerta_tiempos`. Solo la ve el Administrador y no trae datos de personas. Filtros opcionales `tipoIncidenteId` y `zonaId`.
+- El periodo va por días completos en la hora de la Ciudad de México, de `desde` a `hasta` incluidos, y no puede pasar de 366 días.
+- La zona es la caja de `zona_geografica` que contiene la primera ubicación de la alerta.
+- `medianaAcuseSeg`: mediana del tiempo entre que se activó y se acusó.
+- `pctCumpleMetaAcuse`: de las alertas que se acusaron o a las que se les pasó la meta (`meta_acuse_seg`, 120 s) sin acuse, cuántas se acusaron a tiempo. Las canceladas antes de la meta y las que todavía van dentro de ella no cuentan.
+- `pctEscaladas`: las que escalaron al menos una vez. `porSemana` trae todas las semanas ISO del periodo, también las que no tuvieron alertas.
+
 ## Configuración
 
 Los valores de `application.conf` sirven para desarrollo. En la nube se reemplazan con variables de entorno:
@@ -254,6 +263,8 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `TIEMPO_REAL_REVISION_MS` | Cada cuántos milisegundos se buscan cambios para los WebSocket | `1000` |
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
+
+Con `DB_DATOS_PRUEBA=false`, el servidor no arranca si `JWT_SECRETO` o `ENLACE_SECRETO` tienen el valor de desarrollo o menos de 32 caracteres, y el log dice cuál falta. Se puede generar una llave con `openssl rand -hex 32`. Con `DB_DATOS_PRUEBA=true`, el log avisa al arrancar que las rutas `/dev` están activas.
 
 ## Cambios a la base de datos
 
@@ -316,6 +327,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
 | Línea de tiempo de una alerta e historial de cada persona | Listo |
+| Estadísticas de alertas para el tablero | Listo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
 | Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |
 | Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo |
