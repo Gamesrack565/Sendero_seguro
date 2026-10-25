@@ -18,8 +18,11 @@ sealed interface ResultadoEnvio {
     /** Lo aceptó. [entregado] es true si el proveedor ya confirma la entrega en la misma respuesta. */
     data class Aceptado(val proveedorMensajeId: String?, val entregado: Boolean = false) : ResultadoEnvio
 
-    /** No lo aceptó. Con [definitivo] no tiene caso reintentar (token o número inválido). */
-    data class Fallo(val error: String, val definitivo: Boolean = false) : ResultadoEnvio
+    /**
+     * No lo aceptó. Con [definitivo] no tiene caso reintentar. Con [destinoInvalido] el token o el número ya no
+     * sirve: un token de push se borra y el aviso sale por SMS; un número de SMS inválido se descarta.
+     */
+    data class Fallo(val error: String, val definitivo: Boolean = false, val destinoInvalido: Boolean = false) : ResultadoEnvio
 }
 
 /** Un servicio que entrega mensajes de un canal: FCM para PUSH y la pasarela (Twilio) para SMS. */

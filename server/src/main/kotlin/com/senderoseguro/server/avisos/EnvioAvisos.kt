@@ -184,21 +184,27 @@ class EnvioAvisos(
                 }
                 is ResultadoEnvio.Fallo -> {
                     conn.ejecutar("UPDATE notificacion SET canal = ?::notificacion_canal WHERE id = ?", mensaje.canal, id)
-                    fallo(conn, id, resultado.error, resultado.definitivo)
+                    if (resultado.destinoInvalido && mensaje.canal == "PUSH") {
+                        // El token ya no sirve: se borra y el siguiente intento elige otra vez canal (SMS), sin esperar.
+                        conn.ejecutar("UPDATE dispositivo SET fcm_token = NULL WHERE fcm_token = ?", mensaje.destino)
+                        fallo(conn, id, resultado.error, definitivo = false, sinEspera = true)
+                    } else {
+                        fallo(conn, id, resultado.error, resultado.definitivo || resultado.destinoInvalido)
+                    }
                 }
             }
         }
     }
 
     /** E-03, FALLIDA: cuenta el reintento y programa el siguiente, o descarta si ya no quedan. */
-    private fun fallo(conn: Connection, id: Long, error: String, definitivo: Boolean) {
+    private fun fallo(conn: Connection, id: Long, error: String, definitivo: Boolean, sinEspera: Boolean = false) {
         val a = leer(conn, id) ?: return
         val reintentos = a.reintentos + 1
         if (definitivo || reintentos >= politica.maxReintentos) {
             descartar(conn, a, reintentos, error, avisar = true)
             return
         }
-        val espera = politica.esperaBase * (1 shl (reintentos - 1))
+        val espera = if (sinEspera) Duration.ZERO else politica.esperaBase * (1 shl (reintentos - 1))
         conn.ejecutar(
             """UPDATE notificacion SET estado = 'FALLIDA', reintentos = ?, ultimo_error = ?,
                       proximo_reintento_en = now() + make_interval(secs => ?) WHERE id = ?""",

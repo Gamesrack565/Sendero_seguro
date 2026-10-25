@@ -207,6 +207,26 @@ class AvisosTest : PruebaConBaseDatos() {
     }
 
     @Test
+    fun `si el token de push ya no sirve se borra y el aviso sale por SMS`() {
+        vaciarCola()
+        val id = alertaDespachada()
+        sql("INSERT INTO notificacion (alerta_id, usuario_id, tipo, canal) VALUES (?, ?, 'ACUSE', 'PUSH')", id, AlertasPrueba.ANA)
+        try {
+            val (e, _) = envio(esperaBase = 60.seconds)
+            push.respuesta = { ResultadoEnvio.Fallo("FCM 404 UNREGISTERED", destinoInvalido = true) }
+            e.procesarPendientes()
+            assertNull(texto("SELECT fcm_token FROM dispositivo WHERE usuario_id = ?", AlertasPrueba.ANA))
+            // Sin espera: en la siguiente vuelta se elige otra vez el canal y ya no hay push.
+            e.procesarPendientes()
+            assertEquals("ENTREGADA", estado(id, "ACUSE"))
+            assertEquals("SMS", texto("SELECT canal::text FROM notificacion WHERE alerta_id = ? AND tipo = 'ACUSE'", id))
+            assertTrue(sms.enviados.any { it.destino == "5510000001" && it.texto.contains("recibio tu alerta") })
+        } finally {
+            sql("UPDATE dispositivo SET fcm_token = 'token-fcm-de-prueba-ana' WHERE id = '00000000-0000-4000-8000-0000000000d1'")
+        }
+    }
+
+    @Test
     fun `un aviso de hace mas de 24 horas se descarta sin enviarlo`() {
         vaciarCola()
         val id = alertaDespachada()

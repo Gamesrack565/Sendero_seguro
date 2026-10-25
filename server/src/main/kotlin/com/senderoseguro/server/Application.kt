@@ -1,6 +1,9 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.avisos.CredencialesFcm
 import com.senderoseguro.server.avisos.EnvioAvisos
+import com.senderoseguro.server.avisos.ProveedorFcm
+import com.senderoseguro.server.avisos.rutasDispositivos
 import com.senderoseguro.server.avisos.Proveedor
 import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
@@ -23,6 +26,7 @@ import com.senderoseguro.server.tiemporeal.CentroTiempoReal
 import com.senderoseguro.server.tiemporeal.configurarWebSockets
 import com.senderoseguro.server.tiemporeal.rutasTiempoReal
 import io.ktor.server.application.Application
+import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
@@ -54,8 +58,8 @@ fun Application.module() {
     val tokens = EmisorTokens.desde(this)
     EnvioAvisos(
         baseDatos.dataSource,
-        push = proveedor(config.property("avisos.proveedorPush").getString(), "PUSH"),
-        sms = proveedor(config.property("avisos.proveedorSms").getString(), "SMS"),
+        push = proveedorPush(config),
+        sms = proveedorSms(config),
         enlaces,
         EnvioAvisos.Politica(
             maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
@@ -76,14 +80,27 @@ fun Application.module() {
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)
+            rutasDispositivos(baseDatos.dataSource)
             // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens)
         }
     }
 }
 
-/** El proveedor configurado para un canal. Los reales (FCM y Twilio) se agregan en sus pasos. */
-private fun proveedor(nombre: String, canal: String): Proveedor = when (nombre.lowercase()) {
+/** El proveedor de push configurado: `simulado` (local) o `fcm`. */
+private fun proveedorPush(config: ApplicationConfig): Proveedor = when (val nombre = config.property("avisos.proveedorPush").getString().lowercase()) {
     "simulado" -> ProveedorSimulado()
-    else -> error("Proveedor de $canal desconocido: $nombre. Valores posibles: simulado")
+    "fcm" -> {
+        val ruta = config.property("avisos.fcmCredenciales").getString().ifBlank {
+            error("AVISOS_PROVEEDOR_PUSH=fcm necesita FCM_CREDENCIALES con la ruta del .json de la cuenta de servicio")
+        }
+        ProveedorFcm(CredencialesFcm.desdeArchivo(ruta))
+    }
+    else -> error("Proveedor de push desconocido: $nombre. Valores posibles: simulado, fcm")
+}
+
+/** El proveedor de SMS configurado. Twilio se agrega en su paso. */
+private fun proveedorSms(config: ApplicationConfig): Proveedor = when (val nombre = config.property("avisos.proveedorSms").getString().lowercase()) {
+    "simulado" -> ProveedorSimulado()
+    else -> error("Proveedor de SMS desconocido: $nombre. Valores posibles: simulado")
 }

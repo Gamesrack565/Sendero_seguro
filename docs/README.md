@@ -174,6 +174,8 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 - Los SMS van sin acentos ni eñes para caber en 160 caracteres. A la red de apoyo con acceso de seguimiento le llega el enlace de ubicación.
 - No se envían los avisos para atender una alerta que ya terminó (alerta asignada o informativa, escalamiento, sin acuse), ni los que tienen más de 24 horas (por ejemplo, si el servidor estuvo apagado). Se marcan `DESCARTADA` sin avisar.
 - En local el proveedor es `simulado`: no manda nada y escribe cada mensaje en el log del servidor con `[SIMULADO]`. Los proveedores reales (FCM y Twilio) se eligen con `AVISOS_PROVEEDOR_PUSH` y `AVISOS_PROVEEDOR_SMS`.
+- **Push con FCM.** Con `AVISOS_PROVEEDOR_PUSH=fcm` y `FCM_CREDENCIALES` (ruta del `.json` de la cuenta de servicio de Firebase, que nunca se sube al repo), el servidor envía por la API HTTP v1 de FCM con prioridad alta. FCM no confirma la entrega, así que el push queda `ENVIADA`. Si FCM responde que el token ya no sirve, se borra del dispositivo y el aviso sale por SMS en el siguiente intento.
+- **Token del teléfono.** La app lo registra con `PUT /api/v1/dispositivos/{id}/push` `{"fcmToken": "..."}` al iniciar sesión y cada vez que FCM lo rota. Solo el dueño del dispositivo; si otro dispositivo tenía ese token, se le quita.
 - Varios servidores pueden enviar a la vez sin repetir avisos.
 
 ## Configuración
@@ -191,6 +193,7 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
 | `ENLACE_URL_WEBSOCKET` | Dirección pública de `/ws/enlace`, sin el token | `ws://localhost:8080/api/v1/ws/enlace`. En la nube, `wss://<dominio>/api/v1/ws/enlace`. |
 | `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal | `simulado` |
+| `FCM_CREDENCIALES` | Ruta del `.json` de la cuenta de servicio de Firebase (con `AVISOS_PROVEEDOR_PUSH=fcm`) | vacío |
 | `AVISOS_MAX_REINTENTOS` | Fallas antes de descartar un aviso | `5` |
 | `AVISOS_ESPERA_BASE_SEG` | Espera antes del primer reintento; se duplica en cada falla | `15` |
 | `AVISOS_REVISION_MS` | Cada cuántos milisegundos se buscan avisos por enviar | `2000` |
@@ -260,7 +263,8 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Ayuda para escribir en la bitácora | En desarrollo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
-| Avisos: push con FCM, SMS con Twilio y WhatsApp opcional | En desarrollo |
+| Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |
+| Avisos: SMS con Twilio y WhatsApp opcional | En desarrollo |
 | Tiempo real: WebSocket de la consola y del enlace | Listo |
 
 El detalle de cada punto está en `docs/api/README.md`.
