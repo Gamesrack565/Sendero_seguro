@@ -3,6 +3,7 @@ package com.senderoseguro.server
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
 import com.senderoseguro.server.dispersion.DispersionServicio
 import com.senderoseguro.server.dispersion.EscalamientoServicio
+import com.senderoseguro.server.dispersion.iniciarTemporizador
 import com.senderoseguro.server.plataforma.BaseDatos
 import com.senderoseguro.server.plataforma.configurarErrores
 import com.senderoseguro.server.plataforma.configurarLogs
@@ -24,7 +25,8 @@ fun Application.module() {
     // Los módulos que registran alertas reciben `dispersion` y llaman a dispersion.despachar(alertaId).
     val dispersion = DispersionServicio(baseDatos.dataSource, scope = this)
     val escalamiento = EscalamientoServicio(baseDatos.dataSource)
-    escalamiento.iniciar(scope = this, cada = environment.config.property("dispersion.revisionSeg").getString().toInt().seconds)
+    val revision = environment.config.property("dispersion.revisionSeg").getString().toInt().seconds
+    iniciarTemporizador(scope = this, cada = revision, dispersion, escalamiento)
 
     configurarSerializacion()
     configurarLogs()

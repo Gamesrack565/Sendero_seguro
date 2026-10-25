@@ -1,9 +1,11 @@
 package com.senderoseguro.server.dispersion
 
+import com.senderoseguro.server.plataforma.consultar
 import com.senderoseguro.server.plataforma.consultarUno
 import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.instante
 import com.senderoseguro.server.plataforma.transaccion
+import com.senderoseguro.server.plataforma.uuid
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -41,6 +43,30 @@ class DispersionServicio(
         }
     }
 
+    /**
+     * Despacha las alertas que se quedaron en ENVIADA sin plazo de acuse, por ejemplo porque el servidor se reinició
+     * justo después de registrarlas. Lo llama el temporizador. Regresa cuántas despachó.
+     */
+    fun despacharPendientes(): Int {
+        val pendientes = dataSource.connection.use { conn ->
+            conn.consultar(
+                """SELECT id FROM alerta
+                   WHERE estado = 'ENVIADA' AND acuse_limite_en IS NULL AND NOT sin_acuse
+                     AND registrada_en < now() - interval '10 seconds'
+                   ORDER BY registrada_en
+                   LIMIT 100""",
+            ) { it.uuid("id") }
+        }
+        pendientes.forEach { id ->
+            try {
+                log.info("Dispersión pendiente de {}: {}", id, despacharAhora(id))
+            } catch (e: Exception) {
+                log.error("Falló la dispersión pendiente de {}", id, e)
+            }
+        }
+        return pendientes.size
+    }
+
     /** Hace la dispersión en el mismo hilo y regresa el resultado. Lo usan las pruebas y la ruta de desarrollo. */
     fun despacharAhora(alertaId: UUID): ResultadoDispersion = dataSource.transaccion { conn ->
         val alerta = conn.consultarUno(
@@ -53,6 +79,8 @@ class DispersionServicio(
         if (estado != "ENVIADA") return@transaccion ResultadoDispersion.YaDespachada(estado)
 
         val regla = Canalizacion.buscarRegla(conn, versionId, tipoId) ?: run {
+            // Sin regla no hay a quién escalar: se marca sin acuse para que no se reintente y se avisa a los Administradores.
+            conn.ejecutar("UPDATE alerta SET sin_acuse = true WHERE id = ?", alertaId)
             Canalizacion.registrarEvento(conn, alertaId, "ENVIADA", "ENVIADA", buildJsonObject { put("motivo", "SIN_REGLA") })
             Canalizacion.avisarAdministradores(conn, alertaId, "SIN_ACUSE")
             return@transaccion ResultadoDispersion.SinRegla
@@ -66,10 +94,13 @@ class DispersionServicio(
                     put("motivo", "SIN_UNIDAD_DISPONIBLE")
                     put("corporacion", regla.corporacion)
                 })
+                Canalizacion.avisarOperadores(conn, alertaId, regla.corporacionId, unidadAsignada = null)
+                Canalizacion.avisarAdministradores(conn, alertaId, "ALERTA_INFORMATIVA")
                 return@transaccion ResultadoDispersion.SinUnidad(regla.corporacion)
             }
 
         Canalizacion.asignar(conn, alertaId, unidad, nivel = 0)
+        Canalizacion.avisarOperadores(conn, alertaId, regla.corporacionId, unidad.id)
         val acuseLimite = conn.consultarUno(
             """UPDATE alerta SET estado = 'ASIGNADA', acuse_limite_en = now() + make_interval(secs => ?)
                WHERE id = ? RETURNING acuse_limite_en""",

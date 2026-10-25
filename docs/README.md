@@ -105,7 +105,7 @@ Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo d
 2. Elige la unidad `DISPONIBLE` más cercana de la corporación destino, según la última ubicación de la alerta.
 3. Crea la `asignacion`, pasa la unidad y la alerta a `ASIGNADA` y fija `acuse_limite_en` con el tiempo de la regla.
 
-Si la corporación no tiene unidades disponibles, la alerta se queda en `ENVIADA`, el motivo queda en `evento_alerta` y el plazo se marca como vencido para que se escale. Despachar dos veces la misma alerta no la asigna dos veces.
+Al asignar, el operador de la unidad recibe un aviso `ALERTA_PRIORITARIA` y los demás operadores de la corporación uno `ALERTA_INFORMATIVA`. Si la corporación no tiene unidades disponibles, la alerta se queda en `ENVIADA`, el motivo queda en `evento_alerta`, se avisa a todo el canal y a los Administradores, y el plazo se marca como vencido para que se escale. Despachar dos veces la misma alerta no la asigna dos veces. Si una alerta se queda en `ENVIADA` sin despachar (por ejemplo, porque el servidor se reinició justo después de registrarla), la revisión periódica la despacha.
 
 **Escalamiento.** Cada 5 segundos el servidor busca las alertas sin acuse cuyo `acuse_limite_en` ya pasó y las manda al siguiente paso de `paso_escalamiento` de su regla:
 

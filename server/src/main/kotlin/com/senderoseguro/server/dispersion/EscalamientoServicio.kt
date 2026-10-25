@@ -7,11 +7,6 @@ import com.senderoseguro.server.plataforma.instante
 import com.senderoseguro.server.plataforma.transaccion
 import com.senderoseguro.server.plataforma.uuid
 import com.senderoseguro.server.plataforma.uuidONulo
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
@@ -19,7 +14,6 @@ import java.sql.Connection
 import java.time.Instant
 import java.util.UUID
 import javax.sql.DataSource
-import kotlin.time.Duration
 
 /** Qué pasó al escalar una alerta. */
 sealed interface ResultadoEscalamiento {
@@ -42,7 +36,7 @@ sealed interface ResultadoEscalamiento {
 /**
  * Escalamiento por falta de acuse (P5, RF-12, CU-20, A-03).
  *
- * Cada [cada] tiempo busca las alertas cuyo `acuse_limite_en` ya pasó sin acuse y las manda al siguiente paso
+ * El temporizador (ver `Temporizador.kt`) llama a [escalarVencidas], que busca las alertas cuyo `acuse_limite_en` ya pasó sin acuse y las manda al siguiente paso
  * de `paso_escalamiento` de su regla:
  * - CORPORACION: asigna la unidad disponible más cercana de esa corporación. La unidad anterior se libera.
  * - OPERADOR: asigna la unidad del operador indicado.
@@ -58,21 +52,6 @@ sealed interface ResultadoEscalamiento {
 class EscalamientoServicio(private val dataSource: DataSource) {
 
     private val log = LoggerFactory.getLogger(EscalamientoServicio::class.java)
-
-    /** Arranca la revisión periódica. Se detiene sola cuando se apaga el servidor. */
-    fun iniciar(scope: CoroutineScope, cada: Duration) {
-        scope.launch(Dispatchers.IO) {
-            while (isActive) {
-                try {
-                    val n = escalarVencidas()
-                    if (n > 0) log.info("Escalamiento: {} alertas procesadas", n)
-                } catch (e: Exception) {
-                    log.error("Falló la revisión de escalamiento", e)
-                }
-                delay(cada)
-            }
-        }
-    }
 
     /** Escala todas las alertas con el plazo vencido. Regresa cuántas procesó. */
     fun escalarVencidas(): Int {
@@ -131,10 +110,16 @@ class EscalamientoServicio(private val dataSource: DataSource) {
 
             val recibio = when (paso.destino) {
                 "CORPORACION" -> Canalizacion.buscarUnidad(conn, paso.corporacionId!!, alerta.tipoIncidenteId, ubicacion)
-                    ?.also { Canalizacion.asignar(conn, alertaId, it, paso.orden.toInt()) }
+                    ?.also {
+                        Canalizacion.asignar(conn, alertaId, it, paso.orden.toInt())
+                        Canalizacion.avisarOperadores(conn, alertaId, paso.corporacionId, it.id)
+                    }
                     ?.let { Destino(it.nombre) }
                 "OPERADOR" -> unidadDelOperador(conn, paso.operadorId!!, ubicacion)
-                    ?.also { Canalizacion.asignar(conn, alertaId, it, paso.orden.toInt()) }
+                    ?.also {
+                        Canalizacion.asignar(conn, alertaId, it, paso.orden.toInt())
+                        Canalizacion.avisar(conn, alertaId, paso.operadorId, "ALERTA_PRIORITARIA")
+                    }
                     ?.let { Destino(it.nombre) }
                 else -> coordinadores(conn, alerta.usuarioId)
                     .onEach { Canalizacion.avisar(conn, alertaId, it, "ALERTA_PRIORITARIA") }

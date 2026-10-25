@@ -95,6 +95,24 @@ internal object Canalizacion {
         )
     }
 
+    /**
+     * Avisa a los operadores de la corporación (CU-15 pasos 4 y 5): ALERTA_PRIORITARIA a los de la unidad asignada
+     * y ALERTA_INFORMATIVA al resto. Sin [unidadAsignada], todos reciben la informativa (CU-15 2a).
+     */
+    fun avisarOperadores(conn: Connection, alertaId: UUID, corporacionId: Short, unidadAsignada: UUID?) {
+        conn.ejecutar(
+            """INSERT INTO notificacion (alerta_id, usuario_id, tipo, canal)
+               SELECT ?, o.usuario_id,
+                      CASE WHEN o.unidad_id = ? THEN 'ALERTA_PRIORITARIA' ELSE 'ALERTA_INFORMATIVA' END::notificacion_tipo,
+                      'PUSH'
+               FROM operador o
+               JOIN unidad_atencion u ON u.id = o.unidad_id
+               JOIN usuario us ON us.id = o.usuario_id
+               WHERE o.activo AND u.activa AND u.corporacion_id = ? AND us.estado = 'ACTIVA'""",
+            alertaId, unidadAsignada, corporacionId,
+        )
+    }
+
     /** Avisa a todos los administradores activos (RF-12). Regresa a cuántos avisó. */
     fun avisarAdministradores(conn: Connection, alertaId: UUID, tipo: String): Int = conn.ejecutar(
         """INSERT INTO notificacion (alerta_id, usuario_id, tipo, canal)
