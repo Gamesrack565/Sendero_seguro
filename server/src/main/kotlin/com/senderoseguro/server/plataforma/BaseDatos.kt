@@ -25,9 +25,15 @@ class BaseDatos(val dataSource: DataSource) {
             }
             val dataSource = HikariDataSource(hikari)
 
+            // Los datos de prueba solo se cargan en desarrollo (db.datosPrueba = true).
+            val ubicaciones = buildList {
+                add("classpath:db/migration")
+                if (config.property("db.datosPrueba").getString().toBoolean()) add("classpath:db/datos-prueba")
+            }
             Flyway.configure()
                 .dataSource(dataSource)
-                .locations("classpath:db/migration")
+                .locations(*ubicaciones.toTypedArray())
+                .ignoreMigrationPatterns("*:missing")  // apagar los datos de prueba no rompe la validación
                 .load()
                 .migrate()
 

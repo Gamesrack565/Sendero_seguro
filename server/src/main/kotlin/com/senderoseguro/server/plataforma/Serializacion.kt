@@ -1,5 +1,7 @@
 package com.senderoseguro.server.plataforma
 
+import io.ktor.http.ContentType
+import io.ktor.http.withCharset
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
@@ -11,10 +13,11 @@ import org.slf4j.event.Level
 
 fun Application.configurarSerializacion() {
     install(ContentNegotiation) {
+        // El charset explícito evita que algunos clientes (como PowerShell 5) lean mal los acentos.
         json(Json {
             ignoreUnknownKeys = true   // la app puede mandar campos nuevos sin romper el servidor
             explicitNulls = false
-        })
+        }, contentType = ContentType.Application.Json.withCharset(Charsets.UTF_8))
     }
 }
 

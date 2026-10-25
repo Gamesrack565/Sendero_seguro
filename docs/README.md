@@ -12,10 +12,13 @@ Con esto ya puedes:
 ```
 server/                              Servidor Ktor (módulo de Gradle, junto a app/)
   src/main/kotlin/…/Application.kt   Arranque y registro de rutas
-  src/main/kotlin/…/plataforma/      Base de datos, errores, JWT, logs y /salud
+  src/main/kotlin/…/plataforma/      Base de datos, errores, JWT, logs, /salud y ayudas de SQL
+  src/main/kotlin/…/dispersion/      Canalización, asignación de la unidad más cercana y escalamiento (P5)
+  src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
   src/main/resources/
     application.conf                 Configuración (puerto, base de datos, JWT)
     db/migration/V1__esquema_inicial.sql   Base de datos del servidor (PostgreSQL 16): 53 tablas, vistas, triggers y datos iniciales
+    db/datos-prueba/R__datos_prueba.sql    Usuarios, unidades y operadores de prueba (solo en local)
 db/
   sendero_seguro_local_sqlite.sql    Base de datos local del teléfono (SQLite): 16 tablas
 docs/
@@ -51,7 +54,14 @@ Para apagar todo: `docker compose down`. Para borrar también los datos y empeza
 
 Los datos iniciales ya traen la escuela, el catálogo de incidentes publicado, las corporaciones, las reglas de canalización, los parámetros del sistema y los modelos de IA.
 
-**Pruebas:** `./gradlew :server:test` (en Windows: `.\gradlew.bat :server:test`).
+**Pruebas:** `./gradlew :server:test` (en Windows: `.\gradlew.bat :server:test`). Las pruebas que usan la base de datos solo corren si defines `SENDERO_TEST_DB_URL`; sin ella salen como omitidas. Con Docker levantado, en PowerShell:
+
+```powershell
+$env:SENDERO_TEST_DB_URL="jdbc:postgresql://localhost:5432/sendero_seguro"
+.\gradlew.bat :server:test --rerun
+```
+
+Apaga el servidor antes de correrlas, para que su revisión de plazos no tome las alertas de las pruebas.
 
 **Si Gradle usa un Java incompleto** (por ejemplo, el error `jlink executable ... does not exist`), apunta `JAVA_HOME` al Java de Android Studio. En Windows, desde PowerShell:
 
@@ -60,6 +70,54 @@ Los datos iniciales ya traen la escuela, el catálogo de incidentes publicado, l
 ```
 
 Después cierra y vuelve a abrir la terminal (y VS Code), y corre `.\gradlew.bat --stop`.
+
+## Datos y rutas de prueba
+
+En local (`DB_DATOS_PRUEBA` sin definir o en `true`) el servidor carga usuarios, unidades y operadores de prueba. La contraseña de todas las cuentas es `sendero123`.
+
+| Cuenta | Rol |
+|---|---|
+| Ana (`5510000001`) | Integrante, con contactos y círculo |
+| Beto | Coordinador del círculo de Ana |
+| Admin | Administrador |
+| Operadores de Caseta ESCOM, Patrulla Lindavista, Ambulancia ERUM 12 y PBI Zacatenco | Operador |
+
+También se activan dos rutas que no existen en la nube:
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /api/v1/dev/alertas` | Crea una alerta de Ana y la despacha. Cuerpo opcional: `{"tipo":"EMERGENCIA_MEDICA","latitud":19.5045,"longitud":-99.1469}`. Sin cuerpo es una alerta genérica frente a la ESCOM. |
+| `POST /api/v1/dev/alertas/{id}/vencer` | Vence ya el plazo de acuse de esa alerta y la escala, sin esperar el tiempo de la regla. |
+| `POST /api/v1/dev/unidades/liberar` | Regresa a DISPONIBLE las unidades ocupadas, para repetir la prueba. |
+
+Ejemplo en PowerShell:
+
+```powershell
+Invoke-RestMethod -Method Post http://localhost:8080/api/v1/dev/alertas
+Invoke-RestMethod -Method Post http://localhost:8080/api/v1/dev/alertas -ContentType application/json -Body '{"tipo":"EMERGENCIA_MEDICA"}'
+```
+
+## Dispersión
+
+Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo después de guardarla. La llamada regresa de inmediato y la dispersión corre aparte:
+
+1. Busca la regla de `regla_canalizacion` para el tipo de la alerta. Si el tipo no tiene regla, usa la de la alerta genérica.
+2. Elige la unidad `DISPONIBLE` más cercana de la corporación destino, según la última ubicación de la alerta.
+3. Crea la `asignacion`, pasa la unidad y la alerta a `ASIGNADA` y fija `acuse_limite_en` con el tiempo de la regla.
+
+Si la corporación no tiene unidades disponibles, la alerta se queda en `ENVIADA`, el motivo queda en `evento_alerta` y el plazo se marca como vencido para que se escale. Despachar dos veces la misma alerta no la asigna dos veces.
+
+**Escalamiento.** Cada 5 segundos el servidor busca las alertas sin acuse cuyo `acuse_limite_en` ya pasó y las manda al siguiente paso de `paso_escalamiento` de su regla:
+
+| Destino del paso | Qué hace |
+|---|---|
+| `CORPORACION` | Asigna la unidad disponible más cercana de esa corporación. La unidad anterior se libera. |
+| `OPERADOR` | Asigna la unidad de ese operador. |
+| `COORDINADOR_CIRCULO` | Deja un aviso para el Coordinador del círculo de quien envió la alerta. |
+
+Si el destino no puede recibirla (no tiene unidades o no hay coordinador), se pasa al siguiente paso en la misma revisión. En cada escalamiento la alerta queda `ESCALADA`, se reinicia el plazo con el tiempo de la regla, se registra en `escalamiento` y `evento_alerta` y se avisa a los Administradores. Cuando ya no quedan pasos, la alerta queda con `sin_acuse = true` y se avisa a los Administradores.
+
+El plazo vive en la base de datos, así que reiniciar el servidor no pierde ningún temporizador. Los avisos se guardan en `notificacion` como `PENDIENTE`; el servicio de avisos es el que los envía.
 
 ## Configuración
 
@@ -71,6 +129,8 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `DB_URL` | Conexión JDBC a PostgreSQL | `jdbc:postgresql://localhost:5432/sendero_seguro` |
 | `DB_USUARIO` / `DB_PASSWORD` | Credenciales de la base | `postgres` / `sendero` |
 | `DB_POOL_MAX` | Conexiones máximas | `10` |
+| `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
+| `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
 
 ## Cambios a la base de datos
@@ -127,7 +187,8 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 |---|---|
 | Arranque, base de datos con Flyway, errores del contrato, logs y `GET /salud` | Listo |
 | Validación del JWT y de los roles (`authenticate`, `exigirRol`) | Listo |
-| Dispersión: `Dispersion.despachar(alertaId)` | En desarrollo |
+| Dispersión: `Dispersion.despachar(alertaId)`, canalización, asignación y escalamiento automático | Listo |
+| Dispersión: acuse, cambios de estado y aviso a la red de apoyo | En desarrollo |
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Ayuda para escribir en la bitácora | En desarrollo |
 | Avisos: push (FCM), SMS y WhatsApp opcional | En desarrollo |
