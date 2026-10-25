@@ -24,4 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Sendero_seguro"
 include(":app")
- 
+include(":server")

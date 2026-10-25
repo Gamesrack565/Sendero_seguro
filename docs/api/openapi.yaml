@@ -1,0 +1,1046 @@
+openapi: 3.1.0
+info:
+  title: Sendero Seguro · API del servidor
+  version: 0.1.0-borrador
+  description: |
+    Contrato de la API central (P14). Responsable: Módulo 4 de backend.
+
+    **Estado:** borrador para revisión del equipo. Cuando se congele pasa a `1.0.0`.
+
+    **Qué contiene:**
+    - Las rutas de P5 Dispersión, P13 Auditoría, P14 Plataforma y P16 Pasarelas.
+    - `POST /alertas` y `POST /alertas/{id}/ubicaciones` como propuesta de referencia
+      (P4 y P6 escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después
+      del registro.
+    - Los componentes comunes: errores, paginación y enumerados.
+
+    Cada ruta lleva `x-proceso`.
+
+    **Convenciones:**
+    - Prefijo `/api/v1`. JSON en camelCase. Fechas ISO 8601 en UTC (`2026-10-25T05:58:01Z`).
+    - Los ids de alertas, reportes, trayectos y contactos son UUID generados en el teléfono.
+      Un reenvío con el mismo id no duplica: responde `200` con el recurso existente.
+    - Los enumerados se mandan tal como están en la base de datos (`EN_ATENCION`, `PUSH`…).
+    - Toda respuesta de error usa el esquema `Error`.
+    - Paginación por cursor: `?limite=50&cursor=…`; la respuesta trae `siguienteCursor` o `null`.
+    - Tiempo real por WebSocket (`/ws/consola`, `/ws/enlace/{token}`). Sus mensajes están en `README.md`.
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local con docker-compose
+  - url: https://api.sendero-seguro.example/api/v1
+    description: Nube (dominio por definir)
+
+tags:
+  - name: Plataforma
+    description: P14 · salud y sincronización diferida
+  - name: Alertas
+    description: P4 registra; P5 canaliza, asigna, acusa y escala
+  - name: Enlace
+    description: P5 y P16 · enlace público de ubicación en vivo para la red de apoyo
+  - name: Pasarelas
+    description: P16 · FCM y webhooks del proveedor de SMS
+  - name: Auditoría
+    description: P13 · historial, timeline, bitácora, estadísticas y exportación
+
+security:
+  - jwt: []
+
+paths:
+  /salud:
+    get:
+      tags: [Plataforma]
+      summary: Estado del servidor y de sus dependencias
+      x-proceso: P14
+      security: []
+      responses:
+        '200':
+          description: Todo responde
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Salud' }
+        '503':
+          description: Alguna dependencia no responde (mismo cuerpo, con el componente caído)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Salud' }
+
+  /sync/lote:
+    post:
+      tags: [Plataforma]
+      summary: Recibe la cola offline del teléfono (RF-17, A-05)
+      description: |
+        El servidor procesa los elementos en este orden, sin importar cómo lleguen:
+        `ALERTA` → `ACUSE` → `UBICACION` → `CANCELACION` → `REPORTE` → `TRAYECTO` → `CHECKIN`.
+
+        La plataforma recibe el lote, lo ordena y entrega cada elemento al manejador
+        registrado para su tipo. Cada elemento es independiente: si uno falla, los demás siguen.
+        El `id` de cada elemento es su UUID, así que reenviar el lote completo es seguro.
+      x-proceso: P14, P11
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoteSync' }
+      responses:
+        '200':
+          description: Resultado por elemento
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResultadoLoteSync' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '413':
+          description: El lote pasa de 200 elementos o de 1 MB
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /alertas:
+    post:
+      tags: [Alertas]
+      summary: Registra una alerta (propuesta de referencia)
+      description: |
+        Idempotente por `id`. La primera vez responde `201` con el folio que asigna el servidor;
+        un reenvío responde `200` con la misma alerta y no consume folio.
+
+        Después de insertar, el servidor llama a la dispersión (P5)
+        (canalización, asignación, red de apoyo y enlace) sin que la app espere a que termine.
+        Meta: responder en 2 s o menos (RNF3).
+      x-proceso: P4
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertaNueva' }
+      responses:
+        '201':
+          description: Alerta registrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaRegistrada' }
+        '200':
+          description: Reenvío; la alerta ya existía
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaRegistrada' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '409':
+          description: El id ya existe pero pertenece a otra persona
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Alertas]
+      summary: Lista de alertas para la consola (W-02)
+      description: |
+        Un OPERADOR solo ve las alertas asignadas a su unidad. Un ADMINISTRADOR ve todas.
+        Orden: activas primero, luego por `prioridadIa` (o la del catálogo) y por antigüedad.
+      x-proceso: P5
+      parameters:
+        - name: estado
+          in: query
+          description: Uno o varios estados separados por coma. `ACTIVAS` equivale a ENVIADA, ASIGNADA, ESCALADA, ACUSADA y EN_ATENCION.
+          schema: { type: string, example: ACTIVAS }
+        - name: desde
+          in: query
+          schema: { type: string, format: date-time }
+        - name: hasta
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limite'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Página de alertas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [elementos, siguienteCursor]
+                properties:
+                  elementos:
+                    type: array
+                    items: { $ref: '#/components/schemas/AlertaResumen' }
+                  siguienteCursor: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /alertas/{id}:
+    get:
+      tags: [Alertas]
+      summary: Detalle de una alerta (W-03 en la consola, A-13 en la app)
+      description: |
+        El emisor ve su propia alerta. El operador de una unidad asignada y el Administrador ven el detalle completo.
+        Si la alerta tiene `coaccionDetectada`, el emisor la ve como CANCELADA (la pantalla simula la cancelación);
+        la consola ve el estado real.
+      x-proceso: P5
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      responses:
+        '200':
+          description: Alerta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaDetalle' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /alertas/{id}/ubicaciones:
+    post:
+      tags: [Alertas]
+      summary: Agrega lecturas de ubicación (propuesta de referencia)
+      description: Idempotente por (`capturadaEn`, `fuente`). Cada lectura nueva se reenvía por WebSocket a la consola y al enlace.
+      x-proceso: P6
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lecturas]
+              properties:
+                lecturas:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { $ref: '#/components/schemas/Ubicacion' }
+      responses:
+        '200':
+          description: Cuántas entraron y cuántas ya existían
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [insertadas, duplicadas]
+                properties:
+                  insertadas: { type: integer }
+                  duplicadas: { type: integer }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409':
+          description: La alerta ya está cerrada o cancelada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /alertas/{id}/acuse:
+    post:
+      tags: [Alertas]
+      summary: El operador acusa la alerta y se detiene el escalamiento (CU-17)
+      description: Idempotente. Si ya estaba acusada responde `200` con el acuse original.
+      x-proceso: P5
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      responses:
+        '200':
+          description: Alerta acusada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaDetalle' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /alertas/{id}/estado:
+    patch:
+      tags: [Alertas]
+      summary: Cambia el estado de atención (E-01)
+      description: |
+        Transiciones permitidas desde la consola:
+        `ACUSADA → EN_ATENCION → ATENDIDA → CERRADA`.
+        Para `CERRADA` son obligatorios `resultadoCierre` y la persona que cierra (sale del token).
+        La cancelación por el emisor **no** va aquí: es de P8.
+      x-proceso: P5
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CambioEstado' }
+      responses:
+        '200':
+          description: Estado actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaDetalle' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /alertas/{id}/escalar:
+    post:
+      tags: [Alertas]
+      summary: Escalamiento manual al siguiente nivel (motivo MANUAL)
+      x-proceso: P5
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comentario: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Nuevo escalamiento registrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Escalamiento' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409':
+          description: No hay más pasos en la cadena de escalamiento, o la alerta ya no está activa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /alertas/{id}/timeline:
+    get:
+      tags: [Auditoría]
+      summary: Línea de tiempo de una alerta (A-13, W-03)
+      description: Une `evento_alerta`, `asignacion`, `escalamiento`, `notificacion` e `intento_cancelacion` en orden cronológico.
+      x-proceso: P13
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      responses:
+        '200':
+          description: Eventos en orden
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alertaId, eventos]
+                properties:
+                  alertaId: { type: string, format: uuid }
+                  eventos:
+                    type: array
+                    items: { $ref: '#/components/schemas/EventoTimeline' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /enlace/{token}:
+    get:
+      tags: [Enlace]
+      summary: Página pública de ubicación en vivo (CU-16)
+      description: |
+        Sin cuenta. El token viaja en el SMS o push de la red de apoyo; el servidor solo guarda su hash.
+        No muestra datos del perfil (X-01). Para recibir actualizaciones se abre `WS /ws/enlace/{token}`.
+      x-proceso: P5, P16
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Token'
+      responses:
+        '200':
+          description: Enlace vigente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnlacePublico' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '410':
+          description: El enlace venció o se revocó porque la alerta se cerró o canceló
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /dispositivos/{id}/push:
+    put:
+      tags: [Pasarelas]
+      summary: Registra o renueva el token de FCM del dispositivo
+      description: Solo el dueño del dispositivo. La app lo llama al iniciar sesión y cada vez que FCM rota el token.
+      x-proceso: P16
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fcmToken]
+              properties:
+                fcmToken: { type: string, minLength: 20, maxLength: 4096 }
+      responses:
+        '204': { description: Guardado }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /pasarela/sms/entrante:
+    post:
+      tags: [Pasarelas]
+      summary: Webhook del proveedor para SMS recibidos (CU-25)
+      description: |
+        Lo llama el proveedor de SMS, no la app. Se valida con la firma del proveedor
+        (encabezado según el proveedor elegido; en el ejemplo, `X-Firma-Proveedor`).
+
+        Cada mensaje se guarda en `mensaje_sms`, válido o no. Si es un `SS1|…` válido,
+        se registra la alerta con `canalRecepcion = SMS` y sigue el mismo flujo de dispersión.
+        El formato `SS1` está en `README.md`. Siempre responde `200` para que el proveedor no reintente
+        un mensaje que ya se guardó.
+      x-proceso: P16, P5
+      security:
+        - firmaProveedor: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SmsEntrante' }
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/SmsEntrante' }
+      responses:
+        '200':
+          description: Mensaje guardado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mensajeId, valido]
+                properties:
+                  mensajeId: { type: integer, format: int64 }
+                  valido: { type: boolean }
+                  alertaId: { type: [string, 'null'], format: uuid }
+        '401':
+          description: Firma del proveedor inválida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pasarela/sms/estado:
+    post:
+      tags: [Pasarelas]
+      summary: Webhook del proveedor con el estado de entrega de un SMS enviado
+      description: Actualiza `notificacion.estado` (E-03) buscando por `proveedorMensajeId`.
+      x-proceso: P16
+      security:
+        - firmaProveedor: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [proveedorMensajeId, estado]
+              properties:
+                proveedorMensajeId: { type: string, maxLength: 120 }
+                estado: { type: string, enum: [ENTREGADA, FALLIDA] }
+                error: { type: string }
+      responses:
+        '204': { description: Actualizado (o ignorado si no se encontró) }
+        '401':
+          description: Firma del proveedor inválida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /historial:
+    get:
+      tags: [Auditoría]
+      summary: Historial propio (alertas, reportes con nombre y trayectos)
+      description: Lee `v_historial_usuario` de la persona del token. Los reportes anónimos no aparecen.
+      x-proceso: P13
+      parameters:
+        - name: tipo
+          in: query
+          schema: { type: string, enum: [ALERTA, REPORTE, TRAYECTO] }
+        - name: desde
+          in: query
+          schema: { type: string, format: date-time }
+        - name: hasta
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limite'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Página del historial
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginaHistorial' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /usuarios/{id}/historial:
+    get:
+      tags: [Auditoría]
+      summary: Historial de otra persona (solo Administrador, con justificación)
+      description: La consulta y su justificación quedan en `bitacora`.
+      x-proceso: P13
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: X-Justificacion
+          in: header
+          required: true
+          schema: { type: string, minLength: 10, maxLength: 500 }
+        - $ref: '#/components/parameters/Limite'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Página del historial
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginaHistorial' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /bitacora:
+    get:
+      tags: [Auditoría]
+      summary: Consulta de la bitácora (solo Administrador)
+      x-proceso: P13
+      parameters:
+        - name: accion
+          in: query
+          schema: { type: string }
+        - name: entidad
+          in: query
+          schema: { type: string }
+        - name: entidadId
+          in: query
+          schema: { type: string }
+        - name: usuarioId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: desde
+          in: query
+          schema: { type: string, format: date-time }
+        - name: hasta
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limite'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Página de registros
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [elementos, siguienteCursor]
+                properties:
+                  elementos:
+                    type: array
+                    items: { $ref: '#/components/schemas/RegistroBitacora' }
+                  siguienteCursor: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /bitacora/verificar:
+    get:
+      tags: [Auditoría]
+      summary: Verifica la cadena de hashes de la bitácora (solo Administrador)
+      description: Llama `fn_verificar_bitacora()`. `integra` es verdadero si no hay registros alterados.
+      x-proceso: P13
+      responses:
+        '200':
+          description: Resultado de la verificación
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [integra, registrosRevisados, primerIdAlterado, verificadaEn]
+                properties:
+                  integra: { type: boolean }
+                  registrosRevisados: { type: integer, format: int64 }
+                  primerIdAlterado: { type: [integer, 'null'], format: int64 }
+                  verificadaEn: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /estadisticas/alertas:
+    get:
+      tags: [Auditoría]
+      summary: Indicadores de alertas para el tablero (RF-26, W-08)
+      description: Sale de `v_alerta_tiempos`. Sin datos personales.
+      x-proceso: P13
+      parameters:
+        - $ref: '#/components/parameters/FiltroDesde'
+        - $ref: '#/components/parameters/FiltroHasta'
+        - $ref: '#/components/parameters/FiltroTipo'
+        - $ref: '#/components/parameters/FiltroZona'
+      responses:
+        '200':
+          description: Indicadores
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Estadisticas' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /estadisticas/exportar:
+    get:
+      tags: [Auditoría]
+      summary: Exporta las estadísticas en CSV (X-02) o PDF tamaño carta (X-03)
+      description: Mismos filtros que `/estadisticas/alertas`. Cada exportación queda en `bitacora`.
+      x-proceso: P13
+      parameters:
+        - name: formato
+          in: query
+          required: true
+          schema: { type: string, enum: [csv, pdf] }
+        - $ref: '#/components/parameters/FiltroDesde'
+        - $ref: '#/components/parameters/FiltroHasta'
+        - $ref: '#/components/parameters/FiltroTipo'
+        - $ref: '#/components/parameters/FiltroZona'
+      responses:
+        '200':
+          description: Archivo
+          content:
+            text/csv:
+              schema: { type: string }
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+components:
+  securitySchemes:
+    jwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token de acceso firmado por el servidor (el login es de P1).
+        Reclamos: `sub` (usuario.id), `rol` (INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR),
+        `disp` (dispositivo.id, solo en la app), `sid` (sesion.id), `exp`.
+        Vida propuesta: 15 min; se renueva con el token de sesión.
+    firmaProveedor:
+      type: apiKey
+      in: header
+      name: X-Firma-Proveedor
+      description: Firma HMAC del proveedor de SMS sobre el cuerpo. El nombre real depende del proveedor elegido.
+
+  parameters:
+    IdAlerta:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Token:
+      name: token
+      in: path
+      required: true
+      description: Token aleatorio de 32 bytes en base64url (43 caracteres)
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    Limite:
+      name: limite
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    FiltroDesde:
+      name: desde
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    FiltroHasta:
+      name: hasta
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    FiltroTipo:
+      name: tipoIncidenteId
+      in: query
+      schema: { type: integer }
+    FiltroZona:
+      name: zonaId
+      in: query
+      description: zona_geografica.id
+      schema: { type: integer }
+
+  responses:
+    Invalido:
+      description: El cuerpo o los parámetros no son válidos
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            codigo: VALIDACION
+            mensaje: La latitud debe estar entre -90 y 90
+            detalle: { campo: ubicacion.latitud }
+    NoAutenticado:
+      description: Falta el token o venció
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SinPermiso:
+      description: El rol del token no puede hacer esto
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NoEncontrado:
+      description: No existe (o no es visible para quien pregunta)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TransicionInvalida:
+      description: El cambio de estado no está permitido desde el estado actual (E-01)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            codigo: TRANSICION_INVALIDA
+            mensaje: No se puede pasar de ENVIADA a ATENDIDA
+            detalle: { estadoActual: ENVIADA, estadoPedido: ATENDIDA }
+
+  schemas:
+    Error:
+      type: object
+      required: [codigo, mensaje]
+      properties:
+        codigo:
+          type: string
+          description: Código estable en mayúsculas, para que la app decida qué hacer
+          enum: [VALIDACION, NO_AUTENTICADO, SIN_PERMISO, NO_ENCONTRADO, CONFLICTO,
+                 TRANSICION_INVALIDA, VENCIDO, DEMASIADAS_PETICIONES, ERROR_INTERNO]
+        mensaje: { type: string, description: Texto para mostrar o registrar }
+        detalle: { type: object, additionalProperties: true }
+
+    Salud:
+      type: object
+      required: [estado, version, componentes]
+      properties:
+        estado: { type: string, enum: [OK, DEGRADADO, CAIDO] }
+        version: { type: string, example: 0.1.0 }
+        componentes:
+          type: object
+          properties:
+            baseDatos: { type: string, enum: [OK, CAIDO] }
+            redis: { type: string, enum: [OK, CAIDO] }
+            almacenObjetos: { type: string, enum: [OK, CAIDO] }
+
+    # ---- Enumerados (copiados de la base de datos) ----
+    AlertaEstado:
+      type: string
+      enum: [CREADA, EN_CUENTA_REGRESIVA, PENDIENTE_ENVIO, EXPIRADA, ENVIADA, ASIGNADA,
+             ESCALADA, ACUSADA, EN_ATENCION, ATENDIDA, CERRADA, CANCELADA]
+    CanalRecepcion:
+      type: string
+      enum: [INTERNET, MALLA, SMS]
+    Detonador:
+      type: string
+      enum: [BOTON, ATAJO_FISICO, WIDGET, VOZ, CAIDA, TEMPORIZADOR]
+    FuenteUbicacion:
+      type: string
+      enum: [GNSS, WIFI, CELULAR, ULTIMA_CONOCIDA]
+    AsignacionRol:
+      type: string
+      enum: [PRINCIPAL, INFORMATIVA]
+    DestinoEscalamiento:
+      type: string
+      enum: [OPERADOR, CORPORACION, COORDINADOR_CIRCULO]
+    NotificacionCanal:
+      type: string
+      enum: [PUSH, SMS, WHATSAPP]
+    NotificacionEstado:
+      type: string
+      enum: [PENDIENTE, ENVIADA, ENTREGADA, FALLIDA, DESCARTADA]
+
+    Ubicacion:
+      type: object
+      required: [latitud, longitud, fuente, capturadaEn]
+      properties:
+        latitud: { type: number, minimum: -90, maximum: 90 }
+        longitud: { type: number, minimum: -180, maximum: 180 }
+        precisionM: { type: number, minimum: 0 }
+        velocidadMs: { type: number, minimum: 0 }
+        rumboGrados: { type: integer, minimum: 0, maximum: 359 }
+        bateria: { type: integer, minimum: 0, maximum: 100 }
+        fuente: { $ref: '#/components/schemas/FuenteUbicacion' }
+        capturadaEn: { type: string, format: date-time }
+
+    AlertaNueva:
+      type: object
+      required: [id, tipoIncidenteId, versionCatalogoId, canalRecepcion, detonador, activadaEn, ubicacion]
+      properties:
+        id: { type: string, format: uuid, description: UUID generado en el teléfono }
+        tipoIncidenteId: { type: integer, description: Usar el de la genérica si la persona no eligió tipo (RF-6) }
+        versionCatalogoId: { type: integer, description: Versión del catálogo que tenía el teléfono }
+        tipoSugeridoId: { type: integer, description: Sugerencia de IA-1; va junto con confianzaSugerencia }
+        confianzaSugerencia: { type: number, minimum: 0, maximum: 1 }
+        descripcion: { type: string, maxLength: 2000 }
+        canalRecepcion: { $ref: '#/components/schemas/CanalRecepcion' }
+        saltosMalla: { type: integer, minimum: 0, description: Solo si llegó por malla }
+        firmaPaquete: { type: string, description: Solo si llegó por malla; se verifica con la llave pública del dispositivo }
+        detonador: { $ref: '#/components/schemas/Detonador' }
+        nivelBateria: { type: integer, minimum: 0, maximum: 100 }
+        trayectoId: { type: string, format: uuid, description: Obligatorio si detonador = TEMPORIZADOR }
+        activadaEn: { type: string, format: date-time, description: Reloj del teléfono }
+        enviadaEn: { type: string, format: date-time }
+        ubicacion: { $ref: '#/components/schemas/Ubicacion' }
+
+    AlertaRegistrada:
+      type: object
+      required: [id, folio, estado, registradaEn]
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string, example: ALR-2026-000001 }
+        estado: { $ref: '#/components/schemas/AlertaEstado' }
+        registradaEn: { type: string, format: date-time }
+        enlaceSeguimiento:
+          type: [string, 'null']
+          description: URL pública para compartir; null mientras la dispersión aún no la genera
+          example: https://sendero-seguro.example/e/3q2-…
+
+    AlertaResumen:
+      type: object
+      required: [id, folio, estado, tipoIncidente, canalRecepcion, activadaEn, nivelEscalamiento]
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string }
+        estado: { $ref: '#/components/schemas/AlertaEstado' }
+        tipoIncidente: { $ref: '#/components/schemas/TipoIncidenteRef' }
+        prioridad:
+          type: integer
+          description: prioridadIa (0–100) si IA-4 respondió; si no, se deriva de la prioridad del catálogo
+        canalRecepcion: { $ref: '#/components/schemas/CanalRecepcion' }
+        activadaEn: { type: string, format: date-time }
+        acuseLimiteEn: { type: [string, 'null'], format: date-time }
+        nivelEscalamiento: { type: integer }
+        sinAcuse: { type: boolean }
+        ultimaUbicacion:
+          oneOf:
+            - $ref: '#/components/schemas/Ubicacion'
+            - type: 'null'
+
+    AlertaDetalle:
+      allOf:
+        - $ref: '#/components/schemas/AlertaResumen'
+        - type: object
+          properties:
+            emisor:
+              type: object
+              description: Solo para la consola. La app del emisor no recibe este bloque.
+              properties:
+                nombre: { type: string }
+                telefonoMovil: { type: string }
+                identificadorInstitucional: { type: string }
+                escuela: { type: string }
+            descripcion: { type: [string, 'null'] }
+            detonador: { $ref: '#/components/schemas/Detonador' }
+            nivelBateria: { type: [integer, 'null'] }
+            coaccionDetectada: { type: boolean, description: Solo para la consola }
+            prioridadMotivos: { type: array, items: { type: string } }
+            asignaciones:
+              type: array
+              items: { $ref: '#/components/schemas/Asignacion' }
+            registradaEn: { type: string, format: date-time }
+            acusadaEn: { type: [string, 'null'], format: date-time }
+            cerradaEn: { type: [string, 'null'], format: date-time }
+            resultadoCierre: { type: [string, 'null'] }
+            canceladaEn: { type: [string, 'null'], format: date-time }
+
+    TipoIncidenteRef:
+      type: object
+      required: [id, nombre]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        categoria: { type: [string, 'null'], enum: [FISICO, SOCIAL, DIGITAL, null] }
+        esGenerica: { type: boolean }
+
+    Asignacion:
+      type: object
+      required: [unidadId, unidadNombre, corporacion, rol, nivelEscalamiento, asignadaEn]
+      properties:
+        unidadId: { type: string, format: uuid }
+        unidadNombre: { type: string }
+        corporacion: { type: string }
+        rol: { $ref: '#/components/schemas/AsignacionRol' }
+        nivelEscalamiento: { type: integer }
+        distanciaM: { type: [number, 'null'] }
+        asignadaEn: { type: string, format: date-time }
+        liberadaEn: { type: [string, 'null'], format: date-time }
+
+    Escalamiento:
+      type: object
+      required: [nivel, destinoTipo, motivo, escaladaEn]
+      properties:
+        nivel: { type: integer, minimum: 1 }
+        destinoTipo: { $ref: '#/components/schemas/DestinoEscalamiento' }
+        corporacion: { type: [string, 'null'] }
+        operadorId: { type: [string, 'null'], format: uuid }
+        motivo: { type: string, enum: [SIN_ACUSE, MANUAL] }
+        escaladaEn: { type: string, format: date-time }
+
+    CambioEstado:
+      type: object
+      required: [estado]
+      properties:
+        estado: { type: string, enum: [EN_ATENCION, ATENDIDA, CERRADA] }
+        resultadoCierre: { type: string, maxLength: 500, description: Obligatorio si estado = CERRADA }
+        observaciones: { type: string, maxLength: 2000 }
+
+    EventoTimeline:
+      type: object
+      required: [tipo, ocurridoEn]
+      properties:
+        tipo:
+          type: string
+          enum: [CAMBIO_ESTADO, ASIGNACION, ESCALAMIENTO, NOTIFICACION, INTENTO_CANCELACION]
+        ocurridoEn: { type: string, format: date-time }
+        actor: { type: [string, 'null'], description: Nombre o rol de quien lo hizo; null si fue el sistema }
+        estadoAnterior: { $ref: '#/components/schemas/AlertaEstado' }
+        estadoNuevo: { $ref: '#/components/schemas/AlertaEstado' }
+        detalle: { type: object, additionalProperties: true }
+
+    EnlacePublico:
+      type: object
+      required: [tipo, venceEn, activa]
+      properties:
+        tipo: { type: string, enum: [ALERTA, TRAYECTO] }
+        primerNombre: { type: string, description: Solo el primer nombre del emisor, para que el contacto sepa de quién es }
+        estado: { type: string, description: Estado legible (Enviada, En atención…), sin detalles internos }
+        venceEn: { type: string, format: date-time }
+        activa: { type: boolean }
+        ultimaUbicacion:
+          oneOf:
+            - $ref: '#/components/schemas/Ubicacion'
+            - type: 'null'
+        websocket: { type: string, example: wss://api.sendero-seguro.example/api/v1/ws/enlace/… }
+
+    SmsEntrante:
+      type: object
+      required: [de, texto]
+      properties:
+        de: { type: string, pattern: '^\+?[0-9]{10,15}$', description: Número de origen }
+        texto: { type: string, maxLength: 160 }
+        proveedorMensajeId: { type: string }
+        recibidoEn: { type: string, format: date-time }
+
+    LoteSync:
+      type: object
+      required: [dispositivoId, elementos]
+      properties:
+        dispositivoId: { type: string, format: uuid }
+        elementos:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/ElementoSync' }
+
+    ElementoSync:
+      type: object
+      required: [tipo, id, creadoEn, datos]
+      properties:
+        tipo: { type: string, enum: [ALERTA, ACUSE, UBICACION, CANCELACION, REPORTE, TRAYECTO, CHECKIN] }
+        id: { type: string, format: uuid, description: Id de cola_sincronizacion en el teléfono }
+        creadoEn: { type: string, format: date-time }
+        datos:
+          type: object
+          description: |
+            El mismo cuerpo que la ruta normal de ese tipo. Por ejemplo, para ALERTA es `AlertaNueva`;
+            para UBICACION es `{ alertaId, lecturas[] }`. Cada módulo documenta el suyo.
+          additionalProperties: true
+
+    ResultadoLoteSync:
+      type: object
+      required: [resultados]
+      properties:
+        resultados:
+          type: array
+          items:
+            type: object
+            required: [id, resultado]
+            properties:
+              id: { type: string, format: uuid }
+              resultado:
+                type: string
+                enum: [ACEPTADO, DUPLICADO, RECHAZADO, VENCIDO]
+                description: El teléfono borra de su cola todo lo que no sea RECHAZADO con error temporal
+              error: { $ref: '#/components/schemas/Error' }
+              referencia: { type: string, description: 'Folio asignado, por ejemplo ALR-2026-000001' }
+
+    ElementoHistorial:
+      type: object
+      required: [tipo, id, estado, ocurridoEn]
+      properties:
+        tipo: { type: string, enum: [ALERTA, REPORTE, TRAYECTO] }
+        id: { type: string, format: uuid }
+        referencia: { type: [string, 'null'], description: Folio; null en trayectos }
+        estado: { type: string }
+        ocurridoEn: { type: string, format: date-time }
+
+    PaginaHistorial:
+      type: object
+      required: [elementos, siguienteCursor]
+      properties:
+        elementos:
+          type: array
+          items: { $ref: '#/components/schemas/ElementoHistorial' }
+        siguienteCursor: { type: [string, 'null'] }
+
+    RegistroBitacora:
+      type: object
+      required: [id, ocurridaEn, accion, hash]
+      properties:
+        id: { type: integer, format: int64 }
+        ocurridaEn: { type: string, format: date-time }
+        usuarioId: { type: [string, 'null'], format: uuid }
+        accion: { type: string, example: EXPORTAR_ESTADISTICAS }
+        entidad: { type: [string, 'null'] }
+        entidadId: { type: [string, 'null'] }
+        detalle: { type: object, additionalProperties: true }
+        ip: { type: [string, 'null'] }
+        hash: { type: string, description: SHA-256 en hexadecimal }
+
+    Estadisticas:
+      type: object
+      required: [periodo, totalAlertas, porEstado, porTipo, porSemana]
+      properties:
+        periodo:
+          type: object
+          properties:
+            desde: { type: string, format: date }
+            hasta: { type: string, format: date }
+        totalAlertas: { type: integer }
+        medianaAcuseSeg: { type: [integer, 'null'] }
+        pctCumpleMetaAcuse: { type: [number, 'null'], description: Porcentaje que acusó dentro de meta_acuse_seg (120 s) }
+        pctEscaladas: { type: number }
+        pctCanceladas: { type: number }
+        porCanal:
+          type: object
+          additionalProperties: { type: integer }
+          example: { INTERNET: 120, MALLA: 8, SMS: 3 }
+        porEstado:
+          type: object
+          additionalProperties: { type: integer }
+        porTipo:
+          type: array
+          items:
+            type: object
+            properties:
+              tipoIncidenteId: { type: integer }
+              nombre: { type: string }
+              total: { type: integer }
+              medianaAcuseSeg: { type: [integer, 'null'] }
+        porSemana:
+          type: array
+          items:
+            type: object
+            properties:
+              semana: { type: string, example: 2026-W43 }
+              total: { type: integer }
