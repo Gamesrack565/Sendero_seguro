@@ -17,13 +17,19 @@ import javax.sql.DataSource
 
 /** Qué pasó al escalar una alerta. */
 sealed interface ResultadoEscalamiento {
-    /** La alerta pasó al nivel [nivel] de la cadena. [unidad] es null cuando el destino es el Coordinador del círculo. */
+    /**
+     * La alerta pasó al nivel [nivel] de la cadena. [unidad] es null cuando el destino es el Coordinador del círculo.
+     * [acuseLimiteEn] es null cuando la alerta ya tenía acuse (escalamiento manual de apoyo): no corre plazo nuevo.
+     */
     data class Escalada(
         val nivel: Int,
         val destino: String,
         val corporacion: String?,
+        val operadorId: UUID?,
         val unidad: String?,
-        val acuseLimiteEn: Instant,
+        val motivo: String,
+        val escaladaEn: Instant,
+        val acuseLimiteEn: Instant?,
     ) : ResultadoEscalamiento
 
     /** Ya no quedan pasos en la cadena: la alerta queda marcada como sin acuse y se avisa a los Administradores. */
@@ -34,16 +40,16 @@ sealed interface ResultadoEscalamiento {
 }
 
 /**
- * Escalamiento por falta de acuse (P5, RF-12, CU-20, A-03).
+ * Escalamiento (P5, RF-12, CU-19 2a, CU-20, A-03).
  *
- * El temporizador (ver `Temporizador.kt`) llama a [escalarVencidas], que busca las alertas cuyo `acuse_limite_en` ya pasó sin acuse y las manda al siguiente paso
- * de `paso_escalamiento` de su regla:
- * - CORPORACION: asigna la unidad disponible más cercana de esa corporación. La unidad anterior se libera.
+ * El temporizador (ver `Temporizador.kt`) llama a [escalarVencidas], que busca las alertas cuyo `acuse_limite_en`
+ * ya pasó sin acuse y las manda al siguiente paso de `paso_escalamiento` de su regla:
+ * - CORPORACION: asigna la unidad disponible más cercana de esa corporación.
  * - OPERADOR: asigna la unidad del operador indicado.
  * - COORDINADOR_CIRCULO: avisa al Coordinador del círculo de quien envió la alerta.
  *
  * Si el destino no puede recibirla (sin unidad o sin coordinador), pasa al siguiente paso en la misma vuelta.
- * En cada escalamiento se reinicia el plazo con el mismo tiempo de la regla y se avisa a los Administradores.
+ * Por falta de acuse, la unidad anterior se libera y se reinicia el plazo con el mismo tiempo de la regla.
  * Al agotar la cadena, la alerta queda con `sin_acuse = true` y se avisa a los Administradores.
  *
  * El plazo vive en la base de datos, así que un reinicio del servidor no pierde ningún temporizador.
@@ -58,8 +64,7 @@ class EscalamientoServicio(private val dataSource: DataSource) {
         val vencidas = dataSource.connection.use { conn ->
             conn.consultar(
                 """SELECT id FROM alerta
-                   WHERE acusada_en IS NULL AND NOT sin_acuse AND acuse_limite_en <= now()
-                     AND estado IN ('ENVIADA', 'ASIGNADA', 'ESCALADA')
+                   WHERE NOT sin_acuse AND acuse_limite_en <= now() AND estado IN ('ENVIADA', 'ASIGNADA', 'ESCALADA')
                    ORDER BY acuse_limite_en
                    LIMIT 100""",
             ) { it.uuid("id") }
@@ -82,31 +87,64 @@ class EscalamientoServicio(private val dataSource: DataSource) {
     /** Escala una alerta si sigue sin acuse y con el plazo vencido. Todo en una transacción. */
     fun escalarPorFaltaDeAcuse(alertaId: UUID): ResultadoEscalamiento = dataSource.transaccion { conn ->
         val alerta = conn.consultarUno(
-            """SELECT estado::text AS estado, usuario_id, tipo_incidente_id, version_catalogo_id, nivel_escalamiento
-               FROM alerta
-               WHERE id = ? AND acusada_en IS NULL AND NOT sin_acuse AND acuse_limite_en <= now()
-                 AND estado IN ('ENVIADA', 'ASIGNADA', 'ESCALADA')
+            """SELECT $COLUMNAS FROM alerta
+               WHERE id = ? AND NOT sin_acuse AND acuse_limite_en <= now() AND estado IN ('ENVIADA', 'ASIGNADA', 'ESCALADA')
                FOR UPDATE SKIP LOCKED""",
             alertaId,
-        ) {
-            AlertaVencida(
-                it.getString("estado"), it.uuid("usuario_id"), it.getShort("tipo_incidente_id"),
-                it.getInt("version_catalogo_id"), it.getInt("nivel_escalamiento"),
-            )
-        } ?: return@transaccion ResultadoEscalamiento.NoAplica
+        ) { leer(it) } ?: return@transaccion ResultadoEscalamiento.NoAplica
 
-        val regla = Canalizacion.buscarRegla(conn, alerta.versionCatalogoId, alerta.tipoIncidenteId)
-        val pasos = regla?.let { pasosDesde(conn, it.id, alerta.nivel + 1) }.orEmpty()
+        siguienteNivel(conn, alertaId, alerta, "SIN_ACUSE", conservarUnidades = false, actor = null, comentario = null)?.let {
+            return@transaccion it
+        }
+
+        // Se agotó la cadena (o la regla no tiene pasos): CU-20 2a.
+        Canalizacion.liberarAsignaciones(conn, alertaId)
+        conn.ejecutar("UPDATE alerta SET sin_acuse = true, acuse_limite_en = NULL WHERE id = ?", alertaId)
+        Canalizacion.registrarEvento(conn, alertaId, alerta.estado, alerta.estado, buildJsonObject { put("motivo", "CADENA_AGOTADA") })
+        Canalizacion.avisarAdministradores(conn, alertaId, "SIN_ACUSE")
+        ResultadoEscalamiento.CadenaAgotada
+    }
+
+    /**
+     * Escalamiento manual desde la consola (motivo MANUAL), dentro de la transacción de quien llama, que ya bloqueó la alerta.
+     * - Sin acuse todavía (ENVIADA, ASIGNADA, ESCALADA): igual que por falta de acuse.
+     * - Con acuse (ACUSADA, EN_ATENCION): la unidad que atiende se queda y el siguiente nivel llega como apoyo (CU-19 2a).
+     * Regresa null si ya no quedan pasos; en ese caso no cambia nada.
+     */
+    internal fun escalarManual(conn: Connection, alertaId: UUID, actor: UUID, comentario: String?): ResultadoEscalamiento.Escalada? {
+        val alerta = conn.consultarUno("SELECT $COLUMNAS FROM alerta WHERE id = ?", alertaId) { leer(it) } ?: return null
+        val conAcuse = alerta.estado in setOf("ACUSADA", "EN_ATENCION")
+        return siguienteNivel(conn, alertaId, alerta, "MANUAL", conservarUnidades = conAcuse, actor = actor, comentario = comentario)
+    }
+
+    /**
+     * Recorre los pasos que siguen al nivel actual hasta que uno pueda recibir la alerta.
+     * Regresa null si ningún paso pudo; los pasos intentados quedan registrados.
+     */
+    private fun siguienteNivel(
+        conn: Connection,
+        alertaId: UUID,
+        alerta: AlertaPorEscalar,
+        motivo: String,
+        conservarUnidades: Boolean,
+        actor: UUID?,
+        comentario: String?,
+    ): ResultadoEscalamiento.Escalada? {
+        val regla = Canalizacion.buscarRegla(conn, alerta.versionCatalogoId, alerta.tipoIncidenteId) ?: return null
+        val pasos = pasosDesde(conn, regla.id, alerta.nivel + 1)
+        if (pasos.isEmpty()) return null
         val ubicacion = Canalizacion.ubicacionActual(conn, alertaId)
+        var estado = alerta.estado
 
         for (paso in pasos) {
             // Cada paso intentado queda en `escalamiento`, aunque su destino no pueda recibir la alerta.
-            conn.ejecutar(
+            val escaladaEn = conn.consultarUno(
                 """INSERT INTO escalamiento (alerta_id, nivel, paso_escalamiento_id, destino_tipo, corporacion_id, operador_id, motivo)
-                   VALUES (?, ?, ?, ?::destino_escalamiento, ?, ?, 'SIN_ACUSE')""",
-                alertaId, paso.orden, paso.id, paso.destino, paso.corporacionId, paso.operadorId,
-            )
-            Canalizacion.liberarAsignaciones(conn, alertaId)
+                   VALUES (?, ?, ?, ?::destino_escalamiento, ?, ?, ?)
+                   RETURNING escalada_en""",
+                alertaId, paso.orden, paso.id, paso.destino, paso.corporacionId, paso.operadorId, motivo,
+            ) { it.instante("escalada_en")!! }!!
+            if (!conservarUnidades) Canalizacion.liberarAsignaciones(conn, alertaId)
 
             val recibio = when (paso.destino) {
                 "CORPORACION" -> Canalizacion.buscarUnidad(conn, paso.corporacionId!!, alerta.tipoIncidenteId, ubicacion)
@@ -127,36 +165,36 @@ class EscalamientoServicio(private val dataSource: DataSource) {
                     ?.let { Destino(null) }
             }
 
+            // Con acuse, la alerta conserva su estado (sigue EN_ATENCION); sin acuse pasa a ESCALADA.
+            val estadoNuevo = if (conservarUnidades) estado else "ESCALADA"
             val detalle = buildJsonObject {
-                put("motivo", "SIN_ACUSE")
+                put("motivo", motivo)
                 put("nivel", paso.orden.toInt())
                 put("destino", paso.destino)
                 paso.corporacion?.let { put("corporacion", it) }
                 recibio?.unidad?.let { put("unidad", it) }
+                comentario?.let { put("comentario", it) }
                 if (recibio == null) put("resultado", if (paso.destino == "COORDINADOR_CIRCULO") "SIN_COORDINADOR" else "SIN_UNIDAD_DISPONIBLE")
             }
-            Canalizacion.registrarEvento(conn, alertaId, alerta.estado, "ESCALADA", detalle)
-            alerta.estado = "ESCALADA"
-            conn.ejecutar("UPDATE alerta SET estado = 'ESCALADA', nivel_escalamiento = ? WHERE id = ?", paso.orden, alertaId)
+            Canalizacion.registrarEvento(conn, alertaId, estado, estadoNuevo, detalle, actor)
+            estado = estadoNuevo
+            conn.ejecutar(
+                "UPDATE alerta SET estado = ?::alerta_estado, nivel_escalamiento = ? WHERE id = ?",
+                estadoNuevo, paso.orden, alertaId,
+            )
 
             if (recibio != null) {
-                val limite = conn.consultarUno(
+                val limite = if (conservarUnidades) null else conn.consultarUno(
                     "UPDATE alerta SET acuse_limite_en = now() + make_interval(secs => ?) WHERE id = ? RETURNING acuse_limite_en",
-                    regla!!.tiempoMaxAcuseSeg.toDouble(), alertaId,
-                ) { it.instante("acuse_limite_en")!! }!!
+                    regla.tiempoMaxAcuseSeg.toDouble(), alertaId,
+                ) { it.instante("acuse_limite_en")!! }
                 Canalizacion.avisarAdministradores(conn, alertaId, "ESCALAMIENTO")
-                return@transaccion ResultadoEscalamiento.Escalada(
-                    paso.orden.toInt(), paso.destino, paso.corporacion, recibio.unidad, limite,
+                return ResultadoEscalamiento.Escalada(
+                    paso.orden.toInt(), paso.destino, paso.corporacion, paso.operadorId, recibio.unidad, motivo, escaladaEn, limite,
                 )
             }
         }
-
-        // Se agotó la cadena (o la regla no tiene pasos): CU-20 2a.
-        Canalizacion.liberarAsignaciones(conn, alertaId)
-        conn.ejecutar("UPDATE alerta SET sin_acuse = true, acuse_limite_en = NULL WHERE id = ?", alertaId)
-        Canalizacion.registrarEvento(conn, alertaId, alerta.estado, alerta.estado, buildJsonObject { put("motivo", "CADENA_AGOTADA") })
-        Canalizacion.avisarAdministradores(conn, alertaId, "SIN_ACUSE")
-        ResultadoEscalamiento.CadenaAgotada
+        return null
     }
 
     private fun pasosDesde(conn: Connection, reglaId: Int, orden: Int): List<Paso> = conn.consultar(
@@ -194,8 +232,13 @@ class EscalamientoServicio(private val dataSource: DataSource) {
         usuarioId, usuarioId,
     ) { it.uuid("coordinador_id") }
 
-    private class AlertaVencida(
-        var estado: String,
+    private fun leer(rs: java.sql.ResultSet) = AlertaPorEscalar(
+        rs.getString("estado"), rs.uuid("usuario_id"), rs.getShort("tipo_incidente_id"),
+        rs.getInt("version_catalogo_id"), rs.getInt("nivel_escalamiento"),
+    )
+
+    private class AlertaPorEscalar(
+        val estado: String,
         val usuarioId: UUID,
         val tipoIncidenteId: Short,
         val versionCatalogoId: Int,
@@ -206,4 +249,8 @@ class EscalamientoServicio(private val dataSource: DataSource) {
         val corporacionId: Short?, val corporacion: String?, val operadorId: UUID?,
     )
     private data class Destino(val unidad: String?)
+
+    private companion object {
+        const val COLUMNAS = "estado::text AS estado, usuario_id, tipo_incidente_id, version_catalogo_id, nivel_escalamiento"
+    }
 }

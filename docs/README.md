@@ -86,6 +86,7 @@ También se activan dos rutas que no existen en la nube:
 
 | Ruta | Qué hace |
 |---|---|
+| `POST /api/v1/dev/token` | Entrega un JWT de 8 horas de una cuenta de prueba. Cuerpo: `{"cuenta":"caseta"}`. Cuentas: `ana`, `beto`, `admin`, `caseta`, `c5`, `erum`, `pbi`. |
 | `POST /api/v1/dev/alertas` | Crea una alerta de Ana y la despacha. Cuerpo opcional: `{"tipo":"EMERGENCIA_MEDICA","latitud":19.5045,"longitud":-99.1469}`. Sin cuerpo es una alerta genérica frente a la ESCOM. |
 | `POST /api/v1/dev/alertas/{id}/vencer` | Vence ya el plazo de acuse de esa alerta y la escala, sin esperar el tiempo de la regla. |
 | `POST /api/v1/dev/unidades/liberar` | Regresa a DISPONIBLE las unidades ocupadas, para repetir la prueba. |
@@ -118,6 +119,20 @@ Al asignar, el operador de la unidad recibe un aviso `ALERTA_PRIORITARIA` y los 
 Si el destino no puede recibirla (no tiene unidades o no hay coordinador), se pasa al siguiente paso en la misma revisión. En cada escalamiento la alerta queda `ESCALADA`, se reinicia el plazo con el tiempo de la regla, se registra en `escalamiento` y `evento_alerta` y se avisa a los Administradores. Cuando ya no quedan pasos, la alerta queda con `sin_acuse = true` y se avisa a los Administradores.
 
 El plazo vive en la base de datos, así que reiniciar el servidor no pierde ningún temporizador. Los avisos se guardan en `notificacion` como `PENDIENTE`; el servicio de avisos es el que los envía.
+
+## Rutas de la consola
+
+Necesitan `Authorization: Bearer <JWT>`. En local el token sale de `POST /api/v1/dev/token`.
+
+| Ruta | Quién | Qué hace |
+|---|---|---|
+| `GET /alertas` | Operador, Administrador | Lista con `estado` (por ejemplo `ACTIVAS` o `ASIGNADA,ESCALADA`), `desde`, `hasta`, `limite` y `cursor`. El operador solo ve las alertas que tuvieron asignada a su unidad. |
+| `GET /alertas/{id}` | Operador, Administrador y el emisor | Detalle. El emisor no recibe los datos de la consola y, si canceló con el PIN de coacción, la ve como `CANCELADA`. |
+| `POST /alertas/{id}/acuse` | Operador de la unidad asignada | Acuse: la alerta pasa a `ACUSADA` y se detiene el plazo. Si llega cuando la alerta ya se escaló a otra unidad, se registra y responde `409 VENCIDO`. |
+| `PATCH /alertas/{id}/estado` | Operador de la unidad asignada, Administrador | `ACUSADA → EN_ATENCION → ATENDIDA → CERRADA`. Para cerrar se pide `resultadoCierre`. Al cerrar se liberan las unidades. |
+| `POST /alertas/{id}/escalar` | Operador de la unidad asignada, Administrador | Escala a mano al siguiente nivel. Sin acuse, igual que el automático. Con la alerta acusada o en atención, la unidad que atiende se queda y el siguiente nivel llega de apoyo. |
+
+Al emisor se le avisa del acuse, de cada cambio de estado y del cierre, salvo que haya cancelado con el PIN de coacción.
 
 ## Configuración
 
@@ -188,7 +203,9 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Arranque, base de datos con Flyway, errores del contrato, logs y `GET /salud` | Listo |
 | Validación del JWT y de los roles (`authenticate`, `exigirRol`) | Listo |
 | Dispersión: `Dispersion.despachar(alertaId)`, canalización, asignación y escalamiento automático | Listo |
-| Dispersión: acuse, cambios de estado y aviso a la red de apoyo | En desarrollo |
+| Consola: lista y detalle de alertas, acuse, cambios de estado y escalamiento manual | Listo |
+| `EmisorTokens` para firmar los JWT que entrega el login | Listo |
+| Dispersión: aviso a la red de apoyo y enlace de ubicación | En desarrollo |
 | Sincronización: `POST /sync/lote` | En desarrollo |
 | Ayuda para escribir en la bitácora | En desarrollo |
 | Avisos: push (FCM), SMS y WhatsApp opcional | En desarrollo |

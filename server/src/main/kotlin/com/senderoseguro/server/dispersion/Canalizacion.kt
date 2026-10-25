@@ -68,19 +68,25 @@ internal object Canalizacion {
     fun liberarAsignaciones(conn: Connection, alertaId: UUID) {
         conn.ejecutar(
             """UPDATE unidad_atencion SET estado = 'DISPONIBLE'
-               WHERE estado = 'ASIGNADA'
+               WHERE estado IN ('ASIGNADA', 'ATENDIENDO')
                  AND id IN (SELECT unidad_id FROM asignacion WHERE alerta_id = ? AND liberada_en IS NULL)""",
             alertaId,
         )
         conn.ejecutar("UPDATE asignacion SET liberada_en = now() WHERE alerta_id = ? AND liberada_en IS NULL", alertaId)
     }
 
+    /** La unidad del operador activo, o null si el usuario no es operador de ninguna unidad. */
+    fun unidadDeOperador(conn: Connection, usuarioId: UUID): UUID? = conn.consultarUno(
+        "SELECT unidad_id FROM operador WHERE usuario_id = ? AND activo",
+        usuarioId,
+    ) { it.uuid("unidad_id") }
+
     /** Agrega un renglón al historial de la alerta (`evento_alerta`, solo inserción). */
-    fun registrarEvento(conn: Connection, alertaId: UUID, anterior: String?, nuevo: String, detalle: JsonObject) {
+    fun registrarEvento(conn: Connection, alertaId: UUID, anterior: String?, nuevo: String, detalle: JsonObject, actor: UUID? = null) {
         conn.ejecutar(
-            """INSERT INTO evento_alerta (alerta_id, estado_anterior, estado_nuevo, detalle)
-               VALUES (?, ?::alerta_estado, ?::alerta_estado, ?::jsonb)""",
-            alertaId, anterior, nuevo, detalle.toString(),
+            """INSERT INTO evento_alerta (alerta_id, estado_anterior, estado_nuevo, detalle, actor_id)
+               VALUES (?, ?::alerta_estado, ?::alerta_estado, ?::jsonb, ?)""",
+            alertaId, anterior, nuevo, detalle.toString(), actor,
         )
     }
 

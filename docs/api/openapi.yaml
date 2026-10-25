@@ -231,7 +231,7 @@ paths:
   /alertas/{id}/acuse:
     post:
       tags: [Alertas]
-      summary: El operador acusa la alerta y se detiene el escalamiento (CU-17)
+      summary: El operador acusa la alerta y se detiene el escalamiento (CU-18)
       description: Idempotente. Si ya estaba acusada responde `200` con el acuse original.
       x-proceso: P5
       parameters:

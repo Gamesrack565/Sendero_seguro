@@ -1,10 +1,14 @@
 package com.senderoseguro.server
 
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
+import com.senderoseguro.server.dispersion.AtencionServicio
+import com.senderoseguro.server.dispersion.ConsultaAlertas
 import com.senderoseguro.server.dispersion.DispersionServicio
 import com.senderoseguro.server.dispersion.EscalamientoServicio
 import com.senderoseguro.server.dispersion.iniciarTemporizador
+import com.senderoseguro.server.dispersion.rutasAlertas
 import com.senderoseguro.server.plataforma.BaseDatos
+import com.senderoseguro.server.plataforma.EmisorTokens
 import com.senderoseguro.server.plataforma.configurarErrores
 import com.senderoseguro.server.plataforma.configurarLogs
 import com.senderoseguro.server.plataforma.configurarSeguridad
@@ -27,6 +31,8 @@ fun Application.module() {
     val escalamiento = EscalamientoServicio(baseDatos.dataSource)
     val revision = environment.config.property("dispersion.revisionSeg").getString().toInt().seconds
     iniciarTemporizador(scope = this, cada = revision, dispersion, escalamiento)
+    val consulta = ConsultaAlertas(baseDatos.dataSource)
+    val atencion = AtencionServicio(baseDatos.dataSource, consulta, escalamiento)
 
     configurarSerializacion()
     configurarLogs()
@@ -36,8 +42,9 @@ fun Application.module() {
     routing {
         route("/api/v1") {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
-            // Aquí se registran las rutas de cada módulo, por ejemplo: rutasAlertas(baseDatos, dispersion)
-            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento)
+            rutasAlertas(consulta, atencion)
+            // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
+            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, EmisorTokens.desde(this@module))
         }
     }
 }

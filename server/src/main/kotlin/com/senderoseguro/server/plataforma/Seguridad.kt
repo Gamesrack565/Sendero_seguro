@@ -11,7 +11,11 @@ import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.auth.principal
 import io.ktor.server.response.respond
+import java.time.Instant
+import java.util.Date
 import java.util.UUID
+import kotlin.time.Duration
+import kotlin.time.toJavaDuration
 
 /** Roles de `usuario_rol` en la base de datos. */
 enum class Rol { INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR }
@@ -25,6 +29,37 @@ data class UsuarioToken(
 )
 
 const val AUTH_JWT = "jwt"
+
+/** Firma los JWT con la misma llave, emisor y audiencia con que el servidor los valida. Lo usa el login. */
+class EmisorTokens(private val secreto: String, private val emisor: String, private val audiencia: String) {
+
+    fun emitir(usuario: UsuarioToken, duracion: Duration): Pair<String, Instant> {
+        val expira = Instant.now().plus(duracion.toJavaDuration())
+        val token = JWT.create()
+            .withIssuer(emisor)
+            .withAudience(audiencia)
+            .withSubject(usuario.usuarioId.toString())
+            .withClaim("rol", usuario.rol.name)
+            .apply {
+                usuario.dispositivoId?.let { withClaim("disp", it.toString()) }
+                usuario.sesionId?.let { withClaim("sid", it.toString()) }
+            }
+            .withExpiresAt(Date.from(expira))
+            .sign(Algorithm.HMAC256(secreto))
+        return token to expira
+    }
+
+    companion object {
+        fun desde(app: Application): EmisorTokens {
+            val config = app.environment.config
+            return EmisorTokens(
+                config.property("jwt.secreto").getString(),
+                config.property("jwt.emisor").getString(),
+                config.property("jwt.audiencia").getString(),
+            )
+        }
+    }
+}
 
 fun Application.configurarSeguridad() {
     val config = environment.config

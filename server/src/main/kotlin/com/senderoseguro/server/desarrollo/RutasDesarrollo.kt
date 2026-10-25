@@ -5,6 +5,9 @@ import com.senderoseguro.server.dispersion.EscalamientoServicio
 import com.senderoseguro.server.dispersion.ResultadoDispersion
 import com.senderoseguro.server.dispersion.ResultadoEscalamiento
 import com.senderoseguro.server.plataforma.ApiException
+import com.senderoseguro.server.plataforma.EmisorTokens
+import com.senderoseguro.server.plataforma.Rol
+import com.senderoseguro.server.plataforma.UsuarioToken
 import com.senderoseguro.server.plataforma.consultarUno
 import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.transaccion
@@ -18,13 +21,32 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import javax.sql.DataSource
+import kotlin.time.Duration.Companion.hours
 
 /**
  * Rutas solo para desarrollo. Se registran únicamente con `db.datosPrueba = true`, nunca en la nube.
  * Sirven para probar la dispersión sin esperar a `POST /alertas`.
  */
-fun Route.rutasDesarrollo(dataSource: DataSource, dispersion: DispersionServicio, escalamiento: EscalamientoServicio) {
+fun Route.rutasDesarrollo(
+    dataSource: DataSource,
+    dispersion: DispersionServicio,
+    escalamiento: EscalamientoServicio,
+    tokens: EmisorTokens,
+) {
     route("/dev") {
+        // Entrega un JWT de una cuenta de prueba, para probar las rutas con sesión sin esperar el login (Módulo 1).
+        post("/token") {
+            val texto = call.receiveText()
+            val cuenta = runCatching { json.decodeFromString<TokenPrueba>(texto).cuenta }.getOrNull()?.lowercase()
+            val id = AlertasPrueba.CUENTAS[cuenta]
+                ?: throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "cuenta debe ser una de: ${AlertasPrueba.CUENTAS.keys.joinToString()}")
+            val rol = dataSource.connection.use { conn ->
+                conn.consultarUno("SELECT rol::text FROM usuario WHERE id = ?", id) { Rol.valueOf(it.getString(1)) }
+            } ?: throw ApiException(HttpStatusCode.NotFound, "NO_ENCONTRADO", "La cuenta de prueba no existe; ¿están cargados los datos de prueba?")
+            val (token, expira) = tokens.emitir(UsuarioToken(id, rol, null, null), 8.hours)
+            call.respond(TokenPruebaRespuesta(token, id.toString(), rol.name, expira.toString()))
+        }
+
         // Crea una alerta de Ana (datos de prueba) en la ubicación indicada y la despacha en ese momento.
         post("/alertas") {
             val texto = call.receiveText()
@@ -50,6 +72,12 @@ fun Route.rutasDesarrollo(dataSource: DataSource, dispersion: DispersionServicio
 }
 
 private val json = Json { ignoreUnknownKeys = true }
+
+@Serializable
+data class TokenPrueba(val cuenta: String)
+
+@Serializable
+data class TokenPruebaRespuesta(val token: String, val usuarioId: String, val rol: String, val expiraEn: String)
 
 /** Cuerpo de `POST /dev/alertas`. Sin cuerpo: alerta genérica frente a la ESCOM. */
 @Serializable
@@ -95,7 +123,7 @@ data class EscalamientoPruebaRespuesta(
     companion object {
         fun de(alertaId: UUID, r: ResultadoEscalamiento) = when (r) {
             is ResultadoEscalamiento.Escalada -> EscalamientoPruebaRespuesta(
-                alertaId.toString(), "ESCALADA", r.nivel, r.destino, r.corporacion, r.unidad, r.acuseLimiteEn.toString(),
+                alertaId.toString(), "ESCALADA", r.nivel, r.destino, r.corporacion, r.unidad, r.acuseLimiteEn?.toString(),
             )
             ResultadoEscalamiento.CadenaAgotada -> EscalamientoPruebaRespuesta(alertaId.toString(), "CADENA_AGOTADA")
             ResultadoEscalamiento.NoAplica -> EscalamientoPruebaRespuesta(alertaId.toString(), "NO_APLICA")
@@ -106,6 +134,12 @@ data class EscalamientoPruebaRespuesta(
 /** Inserta alertas como lo hará el registro de alertas (P4), con los usuarios de los datos de prueba. */
 object AlertasPrueba {
     val ANA: UUID = UUID.fromString("00000000-0000-4000-8000-000000000001")
+
+    /** Cuentas de los datos de prueba para `POST /dev/token`. */
+    val CUENTAS: Map<String, UUID> = mapOf(
+        "ana" to "01", "beto" to "02", "admin" to "03",
+        "caseta" to "11", "c5" to "12", "erum" to "13", "pbi" to "14",
+    ).mapValues { UUID.fromString("00000000-0000-4000-8000-0000000000${it.value}") }
     private val DISPOSITIVO_ANA: UUID = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
 
     /** Crea la alerta (estado ENVIADA), su primera ubicación y su primer evento. Regresa el id y el folio. */

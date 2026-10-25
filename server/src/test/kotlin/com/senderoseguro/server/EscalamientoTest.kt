@@ -40,7 +40,7 @@ class EscalamientoTest : PruebaConBaseDatos() {
         assertEquals("CORPORACION", n1.destino)
         assertEquals("SSC CDMX (C5)", n1.corporacion)
         assertEquals("Patrulla Ticomán", n1.unidad)
-        assertTrue(Duration.between(antes, n1.acuseLimiteEn).seconds in 115..125)
+        assertTrue(Duration.between(antes, n1.acuseLimiteEn!!).seconds in 115..125)
         assertEquals("DISPONIBLE", texto("SELECT estado::text FROM unidad_atencion WHERE id = ?", inicial.unidadId))
         assertEquals("ESCALADA", texto("SELECT estado::text FROM alerta WHERE id = ?", id))
         assertEquals(1, avisos(id, "ESCALAMIENTO"))
