@@ -3,9 +3,25 @@
 Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas.
 
 Con esto ya puedes:
+- usar el servidor que ya está en la nube (Azure);
 - correr el servidor en tu máquina, con la base de datos creada automáticamente;
 - ver qué rutas tiene la API y qué JSON reciben y devuelven;
+- ver qué ofrece la plataforma (dispersión, avisos, bitácora, SMS) y cómo se usa;
 - crear las tablas locales del teléfono en Room.
+
+## Cómo funciona, de punta a punta
+
+Lo que hace el servidor con una alerta, paso por paso. Todo esto ya está implementado y corriendo en la nube.
+
+1. **Llega la alerta.** Con internet entra por el registro de alertas. Sin internet llega por la malla, por la cola offline del teléfono (`/sync/lote`) o como SMS `SS1` al celular pasarela. Si la misma alerta llega por dos caminos, el servidor la reconoce (persona + id corto + hora ±60 s) y no la duplica.
+2. **Se despacha.** El servidor busca la regla del tipo de incidente, elige la unidad disponible más cercana de la corporación que toca, se la asigna y arranca el plazo de acuse.
+3. **Se avisa.** El operador de esa unidad recibe un push prioritario y los demás operadores de la corporación uno informativo. Al mismo tiempo, la red de apoyo de la persona (contactos de confianza y círculo) recibe un push o un SMS con el enlace de ubicación.
+4. **La consola lo ve en vivo.** Por WebSocket llegan la alerta nueva, su ubicación y cada cambio. La red de apoyo sigue la ubicación con su enlace, sin cuenta.
+5. **Acuse o escalamiento.** Si el operador acusa a tiempo, se detiene el plazo. Si no, cada 5 segundos el servidor revisa los plazos vencidos y manda la alerta al siguiente nivel de su regla (otra corporación, otro operador o el coordinador del círculo), y avisa a los Administradores.
+6. **Atención y cierre.** El operador la pasa a `EN_ATENCION`, `ATENDIDA` y `CERRADA`. La persona recibe un aviso en cada paso; al cerrar se liberan las unidades, se apaga el enlace y la red de apoyo recibe el aviso de cierre. Si la persona cancela, pasa lo mismo, salvo con el PIN de coacción, donde la alerta sigue activa en silencio.
+7. **Queda el registro.** Cada paso queda en la historia de la alerta y en la bitácora encadenada. De ahí salen la línea de tiempo, el historial de cada persona y las estadísticas del tablero.
+
+Si un aviso no se puede entregar, el servidor lo reintenta con esperas cada vez más largas. Si aun así falla, avisa a los Administradores y la consola lo muestra.
 
 ## Contenido
 
@@ -77,6 +93,21 @@ Apaga el servidor antes de correrlas, para que su revisión de plazos no tome la
 
 Después cierra y vuelve a abrir la terminal (y VS Code), y corre `.\gradlew.bat --stop`.
 
+## Servidor en la nube
+
+El servidor ya está en Azure (App Service con Java 21 y PostgreSQL 16 administrado, en México Central):
+
+```
+https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1
+```
+
+- **Para ver si está vivo:** abre `/api/v1/salud`. Debe decir `"estado":"OK"`.
+- **Ya está todo configurado:** base de datos, llaves, push con Firebase y SMS con el celular pasarela. El deploy ya está hecho y se actualiza a mano, solo después de que pasan las pruebas (`:server:test`).
+- **Es igual que en local, con estas diferencias:** no hay rutas `/dev` ni cuentas de prueba (no hay `POST /dev/token`); los avisos salen de verdad (push por Firebase y SMS por el celular pasarela); y el WebSocket va con `wss://` en vez de `ws://`.
+- **Las pruebas del día a día se hacen en local**, no en la nube: en la nube cada alerta manda SMS y push reales.
+- **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, Firebase, SMS). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
+- **La base de la nube es solo del servidor en la nube.** Para probar en local se usa la base de Docker.
+
 ## Datos y rutas de prueba
 
 En local (`DB_DATOS_PRUEBA` sin definir o en `true`) el servidor carga usuarios, unidades y operadores de prueba. La contraseña de todas las cuentas es `sendero123`.
@@ -106,6 +137,46 @@ Invoke-RestMethod -Method Post http://localhost:8080/api/v1/dev/alertas
 Invoke-RestMethod -Method Post http://localhost:8080/api/v1/dev/alertas -ContentType application/json -Body '{"tipo":"EMERGENCIA_MEDICA"}'
 ```
 
+## Puntos de conexión de la plataforma
+
+Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hace cada cosa y cómo se llama.
+
+**Sesión (JWT)**
+- `EmisorTokens.emitir(usuario, duracion)` (`plataforma/Seguridad.kt`) firma un JWT con `JWT_SECRETO`. El token lleva `sub` (usuario), `rol`, `disp` (dispositivo) y `sid` (sesión).
+- Las rutas con sesión ya validan el token y el rol (`authenticate(AUTH_JWT)` y `exigirRol`).
+
+**Dispersión**
+- `dispersion.despachar(alertaId)`: para una alerta ya guardada. Canaliza, asigna la unidad más cercana, avisa a la red de apoyo y crea el enlace de ubicación. Regresa de inmediato y corre aparte (detalle en [Dispersión](#dispersión)). Si una alerta se queda `ENVIADA` sin despachar, la revisión periódica la despacha.
+- `dispersion.cancelada(alertaId)`: para una alerta que ya quedó `CANCELADA`. Avisa a los operadores asignados y a la red de apoyo, libera las unidades y apaga el enlace. Con el PIN de coacción no aplica, porque la alerta sigue activa en silencio.
+
+**Alertas por SMS**
+- `RegistroAlertasSms` (`pasarela/RecepcionSms.kt`) es la interfaz por la que la pasarela entrega una alerta que llegó por SMS y todavía no existe. La implementación recibe la conexión de la transacción, inserta la alerta con `canal_recepcion = SMS` y un id que empieza con el id corto del SMS, y no despacha (la pasarela despacha después). Se conecta en `Application.kt`.
+- Mientras no hay implementación, en local se usa un registro de prueba y en la nube los SMS válidos quedan guardados como pendientes. Cuando se conecta, se procesan solos los de las últimas 24 horas.
+- Una misma alerta que llega por dos caminos (SMS y después internet o lote) se reconoce por persona + id corto + hora ±60 s y no se duplica.
+
+**Lote offline (`/sync/lote`)**
+- Recibe lo que el teléfono guardó sin internet y lo entrega, tipo por tipo, a un manejador registrado en `Application.kt` (`manejadoresSync[TipoSync.X]`). Detalle en [Sincronización](#sincronización).
+- Un tipo sin manejador responde `RECHAZADO` temporal, así que el teléfono lo conserva y lo reintenta.
+
+**Avisos push**
+- El servidor manda push con Firebase (FCM) al token que el teléfono registra con `PUT /api/v1/dispositivos/{id}/push`, al iniciar sesión y cada vez que FCM lo cambia. La app usa el `google-services.json` del proyecto de Firebase de Sendero Seguro; la clave de la cuenta de servicio solo la usa el servidor.
+- Si el teléfono no tiene token, el aviso sale por SMS.
+
+**SMS de contingencia**
+- El formato `SS1` está en `docs/api/README.md`. Se manda al número del celular pasarela, que no va en el repo.
+
+**Tiempo real**
+- `/ws/consola?token=<JWT>` manda a la consola cada alerta nueva, cambio de estado, escalamiento y ubicación. El cliente contesta `{"tipo":"pong"}` a cada `ping`, y si se cierra con `1008 TOKEN_VENCIDO` se reconecta con un token nuevo.
+- `GET /api/v1/enlace/{token}` y `/ws/enlace/{token}` dan el estado y la ubicación de una alerta sin sesión, para la red de apoyo. Hoy el enlace que llega por SMS abre ese JSON; `AVISOS_URL_ENLACE` permite apuntarlo a una página web que lo muestre en un mapa.
+
+**Bitácora y errores**
+- `Bitacora.registrar(...)`, dentro de la misma transacción que la acción, deja un registro auditable (ver [Bitácora](#bitácora)).
+- `ApiException` responde con el formato de error del contrato (ver [Cómo se agrega una ruta](#cómo-se-agrega-una-ruta)).
+
+**Dirección del servidor y base del teléfono**
+- En la nube, la de [Servidor en la nube](#servidor-en-la-nube). En local, `http://localhost:8080/api/v1`; desde el emulador de Android, `http://10.0.2.2:8080/api/v1`.
+- La base local del teléfono (Room) sigue `db/sendero_seguro_local_sqlite.sql` (ver [Base de datos del teléfono](#base-de-datos-del-teléfono)).
+
 ## Dispersión
 
 Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo después de guardarla. La llamada regresa de inmediato y la dispersión corre aparte:
@@ -120,7 +191,7 @@ Al asignar, el operador de la unidad recibe un aviso `ALERTA_PRIORITARIA` y los 
 - los contactos de confianza activos y confirmados, por su canal preferido (si el canal es push, a su cuenta);
 - los integrantes y el coordinador de los círculos de la persona, por push.
 
-Cada persona recibe un solo aviso. Los contactos `SOLO_AVISO` no reciben el enlace. Al cerrar la alerta, el enlace se apaga y la red de apoyo recibe un aviso `CIERRE`. Quien cancela una alerta (cancelación, Módulo 1) la marca como `CANCELADA` y llama a `dispersion.cancelada(alertaId)`: se avisa a los operadores asignados y a la red de apoyo, se liberan las unidades y se apaga el enlace. Con el PIN de coacción no se llama, porque la alerta sigue en silencio.
+Cada persona recibe un solo aviso. Los contactos `SOLO_AVISO` no reciben el enlace. Al cerrar la alerta, el enlace se apaga y la red de apoyo recibe un aviso `CIERRE`. Cuando una alerta se marca como `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`, se avisa a los operadores asignados y a la red de apoyo, se liberan las unidades y se apaga el enlace. Con el PIN de coacción no se llama, porque la alerta sigue en silencio.
 
 **Enlace de ubicación.** `GET /api/v1/enlace/{token}` no pide sesión. Muestra el primer nombre, el estado en palabras y la última ubicación (con velocidad, rumbo y batería), sin datos del perfil. Si la alerta ya terminó responde `410`. La base solo guarda el SHA-256 del token; el token se calcula con `ENLACE_SECRETO`, así que una copia de la base no basta para abrir enlaces.
 
@@ -170,7 +241,7 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 
 | Estado | Qué pasa |
 |---|---|
-| `PENDIENTE` | Se elige el canal. Push si la cuenta tiene un teléfono con token FCM; si no, SMS a su número. Los contactos sin app reciben SMS (WhatsApp también sale por SMS mientras no haya proveedor de WhatsApp). Una alerta informativa sin push se descarta, porque el operador ya la ve en la consola. |
+| `PENDIENTE` | Se elige el canal. Push si la cuenta tiene un teléfono con token FCM; si no, SMS a su número. Los contactos sin app reciben SMS. Una alerta informativa sin push se descarta, porque el operador ya la ve en la consola. |
 | `ENVIADA` | El proveedor aceptó el mensaje. Si el proveedor confirma entregas (Twilio con `PASARELA_URL_PUBLICA`, o el celular pasarela con `SMSGATE_LLAVE_FIRMA`) y en 10 minutos no avisa ni que lo pasó a la compañía telefónica, pasa a `FALLIDA`. |
 | `ENTREGADA` | El proveedor confirmó la entrega. |
 | `FALLIDA` | Se cuenta el reintento y se espera 15 s, 30 s, 1 min, 2 min… antes de volver a intentar. Si el proveedor responde que está saturado (429), no cuenta como reintento: se espera lo que pide (`Retry-After`) y mientras no se le manda nada más. |
@@ -184,7 +255,8 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 - **Token del teléfono.** La app lo registra con `PUT /api/v1/dispositivos/{id}/push` `{"fcmToken": "..."}` al iniciar sesión y cada vez que FCM lo rota. Solo el dueño del dispositivo; si otro dispositivo tenía ese token, se le quita.
 - Varios servidores pueden enviar a la vez sin repetir avisos.
 - Las pruebas automáticas descartan al terminar los avisos que crearon, para que el servidor no los mande al arrancar.
-- En el día a día conviene dejar `AVISOS_PROVEEDOR_SMS=simulado`. Con Twilio, cada alerta de prueba también intenta mandar SMS a los números de los datos de prueba. La cuenta de prueba de Twilio los rechaza porque no están verificados, pero una cuenta de pago sí los mandaría.
+- En local los dos proveedores vienen en `simulado`. Así las alertas de prueba no mandan SMS ni push reales a los números de los datos de prueba.
+- En la nube ya está configurado: el SMS sale por el celular pasarela (`smsgate`) y el push por Firebase (`fcm`). Twilio queda en el código como alternativa.
 
 ## Sincronización
 
@@ -208,26 +280,26 @@ Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfo
 
 ## SMS de contingencia
 
-Cuando el teléfono no tiene internet ni malla, la app manda la alerta como un SMS `SS1|…` de 46 caracteres al número de Twilio (formato en `docs/api/README.md`). Twilio llama a `POST /api/v1/pasarela/sms/entrante` y el servidor:
+Cuando el teléfono no tiene internet ni malla, la app manda la alerta como un SMS `SS1|…` de 46 caracteres (formato en `docs/api/README.md`) al **número del celular pasarela** (no va en el repo). El celular le pasa el SMS al servidor por `POST /api/v1/pasarela/smsgate` (ver [Celular Android como pasarela](#celular-android-como-pasarela)). Con Twilio, el SMS llega a `POST /api/v1/pasarela/sms/entrante`. En los dos casos el servidor:
 
-1. Valida la firma `X-Twilio-Signature` con `TWILIO_AUTH_TOKEN`. Si no coincide, responde 401 y no guarda nada.
+1. Valida la firma del proveedor (`X-Signature` del celular o `X-Twilio-Signature` de Twilio). Si no coincide, responde 401 y no guarda nada.
 2. Guarda el mensaje en `mensaje_sms`, válido o no. Es válido si es un `SS1` con la verificación correcta, de las últimas 24 horas, y si el número de origen es el `telefono_movil` de una cuenta activa (con o sin `+52`).
 3. Si es de una alerta que ya existe (misma persona, mismo id corto y hora ±60 s), lo liga a ella. Así, si el teléfono reintenta el SMS, la alerta no se duplica.
-4. Si no existe, la registra con `canal_recepcion = SMS` y la despacha igual que una alerta por internet. El registro es del Módulo 2: implementa `RegistroAlertasSms` y se conecta en `Application.kt`. Mientras no exista, en local se usa un registro de prueba y en la nube los mensajes válidos quedan pendientes (`procesado_en` nulo) hasta que se conecte.
+4. Si no existe, la registra con `canal_recepcion = SMS` y la despacha igual que una alerta por internet. El registro llega por la interfaz `RegistroAlertasSms`, que se conecta en `Application.kt` (ver [Puntos de conexión de la plataforma](#puntos-de-conexión-de-la-plataforma)). Mientras no hay implementación, en local se usa un registro de prueba y en la nube los mensajes válidos quedan pendientes (`procesado_en` nulo) hasta que se conecte.
 
-Siempre responde 200 con TwiML vacío, así que a la persona no le llega ninguna respuesta por SMS. Para que Twilio llame al servidor, en la Console de Twilio el número debe tener como webhook de "A message comes in" la dirección `https://<dominio>/api/v1/pasarela/sms/entrante` (HTTP POST), y `PASARELA_URL_PUBLICA` debe ser `https://<dominio>/api/v1`.
+A la persona no le llega ninguna respuesta por SMS. Con Twilio, la ruta siempre responde 200 con TwiML vacío, y para que Twilio llame al servidor, en la Console de Twilio el número debe tener como webhook de "A message comes in" la dirección `https://<dominio>/api/v1/pasarela/sms/entrante` (HTTP POST), y `PASARELA_URL_PUBLICA` debe ser `https://<dominio>/api/v1`.
 
 ### Celular Android como pasarela
 
-Es la alternativa gratuita a Twilio: un celular Android con chip manda y recibe los SMS con la app [SMS Gateway for Android](https://docs.sms-gate.app) en modo nube. Se activa con `AVISOS_PROVEEDOR_SMS=smsgate`; el código de Twilio sigue ahí para cuando se necesite.
+Es lo que se usa en la nube, porque es gratis: un celular Android con chip manda y recibe los SMS con la app [SMS Gateway for Android](https://docs.sms-gate.app) en modo nube. Se activa con `AVISOS_PROVEEDOR_SMS=smsgate`; el código de Twilio sigue ahí para cuando se necesite.
 
 - **Para mandar**, el servidor deja cada SMS en `api.sms-gate.app` con el usuario y la contraseña de la app (`SMSGATE_USUARIO`, `SMSGATE_PASSWORD`), y el celular lo manda con su chip. Cada intento lleva su propio id y vence en la nube un minuto antes de que el servidor lo reintente, así que si el celular estuvo sin internet el SMS no sale dos veces.
 - **Para recibir**, la app llama a `POST /api/v1/pasarela/smsgate` con la firma `X-Signature` (HMAC-SHA256 con `SMSGATE_LLAVE_FIRMA`). Un `sms:received` pasa por la misma recepción que el de Twilio (pasos 2 a 4 de arriba). `sms:sent`, `sms:delivered` y `sms:failed` actualizan el aviso igual que el estado de Twilio.
 - **Si el celular pierde internet**, los SMS que le llegan se quedan en el chip y la app reintenta avisar al servidor hasta por 2 días. Los que manda el servidor esperan en la nube hasta que vencen, y entonces el servidor los reintenta.
+- **Ya está implementada y funcionando.** La app corre en un celular Android dedicado, conectado al servidor de Azure, con los eventos `sms:received`, `sms:sent`, `sms:delivered` y `sms:failed` registrados hacia `/api/v1/pasarela/smsgate` y la llave de firma configurada. Se probó de ida y vuelta: el servidor manda SMS por el celular y los SMS que llegan al celular entran al servidor. Para usarla no hay que instalar nada: la app de Sendero Seguro solo manda el SMS `SS1` al número de ese celular.
+- La ruta rechaza con 401 cualquier aviso sin la firma correcta, así que nadie más puede meter SMS falsos al servidor.
 
-Configuración: instalar la app, activar **Cloud Server**, poner la misma llave en la app (Settings → Webhooks → Signing Key) y en `SMSGATE_LLAVE_FIRMA`, y registrar los eventos `sms:received`, `sms:sent`, `sms:delivered` y `sms:failed` hacia `https://<dominio>/api/v1/pasarela/smsgate`. Sin llave de firma, en la nube la ruta responde 503 y los SMS enviados se quedan `ENVIADA` sin esperar confirmación.
-
-**Probar el envío desde la nube.** Mientras `PRUEBA_SMS_LLAVE` tenga valor (32 caracteres o más) existe `POST /api/v1/pasarela/prueba-sms` con el encabezado `X-Llave-Prueba` y el cuerpo `{"telefono":"5512345678"}`. Manda un SMS con el proveedor y las credenciales que tiene el servidor, sin crear alertas, y responde si se aceptó o el error (por ejemplo `SMS Gateway 401` si `SMSGATE_USUARIO` o `SMSGATE_PASSWORD` no coinciden con la app). Al terminar se borra la variable y la ruta deja de existir.
+**Ruta de diagnóstico.** El servidor trae `POST /api/v1/pasarela/prueba-sms`, que manda un SMS de prueba con el proveedor y las credenciales configuradas, sin crear alertas. Está apagada: solo existe mientras la variable `PRUEBA_SMS_LLAVE` tiene valor, y pide esa llave en `X-Llave-Prueba`. Con ella se comprobó el envío desde Azure.
 
 ## Bitácora
 
@@ -380,9 +452,48 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Estadísticas de alertas para el tablero y exportación en CSV y PDF | Listo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
 | Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |
-| Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo |
-| SMS de contingencia `SS1` (`/pasarela/sms/entrante`), con el registro del Módulo 2 por conectar | Listo |
-| Avisos: WhatsApp opcional | En desarrollo |
+| Avisos: SMS con el celular Android como pasarela (`/pasarela/smsgate`), de ida y vuelta | Listo, en uso en la nube |
+| Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo, como alternativa (hoy sin número) |
+| SMS de contingencia `SS1`, con `RegistroAlertasSms` por conectar | Listo |
+| Servidor y base de datos en la nube (Azure) | Listo |
 | Tiempo real: WebSocket de la consola y del enlace | Listo |
 
 El detalle de cada punto está en `docs/api/README.md`.
+
+## Errores comunes
+
+| Lo que ves | Qué pasa y qué hacer |
+|---|---|
+| `Connection refused` a `localhost:5432` al arrancar | Docker Desktop no está abierto o falta `docker compose up -d`. |
+| Docker dice que el puerto `5432` está ocupado | Tienes PostgreSQL instalado en tu compu. Detén su servicio (en Windows: Servicios → postgresql → Detener) y vuelve a levantar Docker. |
+| `Address already in use` en el puerto 8080 | Ya hay un servidor corriendo. Ciérralo (Ctrl+C) o corre `.\gradlew.bat --stop`. |
+| `jlink executable ... does not exist` | Gradle usa un Java incompleto. Ver la nota de `JAVA_HOME` en [Correr el servidor en local](#correr-el-servidor-en-local). |
+| Las pruebas salen como omitidas (skipped) | Falta `SENDERO_TEST_DB_URL` en esa terminal. |
+| Pruebas de alertas fallan sin razón | El servidor local estaba corriendo a la vez y tomó las alertas de las pruebas. Apágalo y vuelve a correrlas. |
+| `Validate failed` o `checksum mismatch` de Flyway | Se editó una migración que ya se había aplicado. Regresa el archivo como estaba y pon el cambio en una migración nueva (`V3__…`). En local también puedes empezar de cero con `docker compose down -v`. |
+| `401 NO_AUTENTICADO` | Falta `Authorization: Bearer <JWT>` o el token ya venció. En local pide otro con `POST /dev/token`. |
+| `403 SIN_PERMISO` | Tu rol no puede usar esa ruta. La tabla de cada sección dice quién puede. |
+| `404` en `/dev/...` en la nube | Es normal: las rutas de prueba solo existen en local. |
+| El WebSocket se cierra con `1001` | El cliente no contestó `{"tipo":"pong"}` a dos `ping` seguidos. |
+| El WebSocket se cierra con `1008` | Token faltante o vencido (`NO_AUTENTICADO`, `TOKEN_VENCIDO`), rol sin permiso (`SIN_PERMISO`) o enlace que ya no sirve (`ENLACE_NO_DISPONIBLE`). |
+| En la nube un SMS tarda en llegar | Los SMS se reintentan solos: si la pasarela estuvo un momento sin conexión, el SMS sale cuando vuelve. |
+| En local no llega ningún SMS ni push | Es lo correcto: en local el proveedor es `simulado` y el mensaje sale en el log con `[SIMULADO]`. |
+
+## Palabras que se usan
+
+| Palabra | Qué es |
+|---|---|
+| Alerta | Lo que manda una persona cuando está en peligro. Tiene un folio (`ALR-2026-000001`) y un estado. |
+| Canalización | Elegir a qué corporación va una alerta según su tipo (`regla_canalizacion`). |
+| Unidad / Operador | La unidad es quien atiende (una patrulla, una caseta, una ambulancia); el operador es la persona que la maneja desde la consola. |
+| Acuse | El operador confirma que vio la alerta. Si no lo hace a tiempo, la alerta se escala. |
+| Escalamiento | Mandar la alerta al siguiente nivel de su regla (`paso_escalamiento`) cuando nadie acusa. |
+| Red de apoyo | Los contactos de confianza y el círculo de la persona. Reciben un aviso y, si tienen acceso de seguimiento, el enlace de ubicación. |
+| Enlace de ubicación | Liga pública con token para seguir la alerta sin cuenta. Se apaga cuando la alerta termina. |
+| Aviso | Un push o SMS que hay que entregar. Es una fila de `notificacion` con reintentos. |
+| Proveedor | Quién entrega el aviso: `simulado`, `fcm` (push), `smsgate` (celular pasarela) o `twilio` (SMS). |
+| Pasarela | Lo que conecta el servidor con los SMS: el celular Android o Twilio. |
+| `SS1` / id corto | El SMS de contingencia de 46 caracteres, y los primeros 8 caracteres del UUID de la alerta que lleva adentro. |
+| PIN de coacción | PIN que parece cancelar la alerta pero la deja activa en silencio. |
+| Bitácora | Registro de auditoría encadenado con hash; no se puede cambiar ni borrar. |
+| Lote offline | Lo que el teléfono guardó sin internet y manda junto a `/sync/lote`. |

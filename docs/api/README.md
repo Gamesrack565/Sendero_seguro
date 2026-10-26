@@ -1,6 +1,6 @@
 # Sendero Seguro · Contrato de la API (borrador 0.1)
 
-El contrato completo está en [`openapi.yaml`](openapi.yaml). Se puede abrir en https://editor.swagger.io para verlo con formato.
+Responsable: Módulo 4 de backend. El contrato completo está en [`openapi.yaml`](openapi.yaml). Se puede abrir en https://editor.swagger.io para verlo con formato.
 
 Este README explica lo que OpenAPI no cubre bien: el WebSocket, el formato del SMS de contingencia y cómo se conecta la plataforma.
 
@@ -19,7 +19,7 @@ Cada ruta del YAML trae `x-proceso`, que indica el proceso al que pertenece seg�
 |---|---|
 | `/salud`, `/sync/lote` | P14 |
 | `GET /alertas`, `GET /alertas/{id}`, `acuse`, `estado`, `escalar` | P5 |
-| `/enlace/{token}`, `/dispositivos/{id}/push`, `/pasarela/sms/*` | P5 y P16 |
+| `/enlace/{token}`, `/dispositivos/{id}/push`, `/pasarela/smsgate`, `/pasarela/sms/*` | P5 y P16 |
 | `/historial`, `/usuarios/{id}/historial`, `/alertas/{id}/timeline`, `/bitacora*`, `/estadisticas*` | P13 |
 | `POST /alertas`, `POST /alertas/{id}/ubicaciones` | P4 y P6. Vienen como propuesta, para que la consola y la app tengan una forma de referencia. |
 
@@ -99,7 +99,7 @@ Lo arma la app cuando no hay internet ni malla, y el servidor lo decodifica en e
 
 Ejemplo: `SS1|3f9a2c7101+1950431-09914632012TNJXWPe08c9d` es tipo 1, 19.50431, -99.14632, ±12 m.
 
-El servidor acepta el mensaje solo si la verificación coincide, la hora es de las últimas 24 horas (o a lo más 10 minutos adelantada) y el número de origen es el `telefono_movil` de una cuenta activa, con o sin `+52`. Todo mensaje se guarda en `mensaje_sms`, sea válido o no. Si el teléfono manda dos veces el mismo SMS, el segundo se liga a la misma alerta.
+La app lo manda al número del celular pasarela, que no va en el repo. El servidor acepta el mensaje solo si la verificación coincide, la hora es de las últimas 24 horas (o a lo más 10 minutos adelantada) y el número de origen es el `telefono_movil` de una cuenta activa, con o sin `+52`. Todo mensaje se guarda en `mensaje_sms`, sea válido o no. Si el teléfono manda dos veces el mismo SMS, el segundo se liga a la misma alerta.
 
 ## 5. Decisiones del contrato
 Se sigue lo que dicen los documentos. Donde los documentos no dan el detalle, se tomó la opción más simple.
@@ -107,4 +107,4 @@ Se sigue lo que dicen los documentos. Donde los documentos no dan el detalle, se
 2. **El SMS lleva el "id corto"** (X-01), con los primeros 8 caracteres del UUID. Si después llega la misma alerta por internet o sincronización, el servidor la reconoce porque coinciden la persona, los 8 caracteres y la hora (±60 s). Responde con el id que ya tiene y no la duplica.
 3. **Verificación del SMS.** Se usa una suma de comprobación y se exige que el número de origen sea el de la cuenta, sin cambiar la base de datos. No es una firma criptográfica; se documenta como límite conocido.
 4. **El JWT dura 15 min** como propuesta.
-5. **Proveedor de SMS: Twilio.** Ningún documento lo fijaba; se eligió porque su cuenta de prueba no cobra, manda y recibe SMS y avisa la entrega. Los webhooks `/pasarela/sms/*` usan su formato (formulario con `From`, `Body`, `MessageSid`, `MessageStatus`) y su firma `X-Twilio-Signature`.
+5. **Proveedor de SMS: un celular Android como pasarela.** Ningún documento lo fijaba. Primero se usó Twilio, pero su cuenta gratis ya no deja tener número propio, así que en la nube se usa un celular con la app SMS Gateway for Android (gratis): `/pasarela/smsgate` recibe sus avisos en JSON con la firma `X-Signature`. Twilio sigue en el código como alternativa, con los webhooks `/pasarela/sms/*` en su formato (formulario con `From`, `Body`, `MessageSid`, `MessageStatus`) y su firma `X-Twilio-Signature`.
