@@ -17,7 +17,7 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/tiemporeal/      WebSocket de la consola y del enlace (P16)
   src/main/kotlin/…/avisos/          Envío de los avisos por push y SMS con reintentos (P16)
   src/main/kotlin/…/auditoria/       Bitácora, historial, línea de tiempo y estadísticas (P13)
-  src/main/kotlin/…/pasarela/        Webhooks de Twilio: SMS de contingencia SS1 y estado de los SMS (P16)
+  src/main/kotlin/…/pasarela/        Webhooks de Twilio y del celular pasarela: SMS de contingencia SS1 y estado de los SMS (P16)
   src/main/kotlin/…/sincronizacion/  Recepción del lote offline del teléfono, /sync/lote (P14)
   src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
   src/main/resources/
@@ -171,14 +171,14 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 | Estado | Qué pasa |
 |---|---|
 | `PENDIENTE` | Se elige el canal. Push si la cuenta tiene un teléfono con token FCM; si no, SMS a su número. Los contactos sin app reciben SMS (WhatsApp también sale por SMS mientras no haya proveedor de WhatsApp). Una alerta informativa sin push se descarta, porque el operador ya la ve en la consola. |
-| `ENVIADA` | El proveedor aceptó el mensaje. Si el proveedor confirma entregas (Twilio con `PASARELA_URL_PUBLICA`) y en 10 minutos no avisa ni que lo pasó a la compañía telefónica, pasa a `FALLIDA`. |
+| `ENVIADA` | El proveedor aceptó el mensaje. Si el proveedor confirma entregas (Twilio con `PASARELA_URL_PUBLICA`, o el celular pasarela con `SMSGATE_LLAVE_FIRMA`) y en 10 minutos no avisa ni que lo pasó a la compañía telefónica, pasa a `FALLIDA`. |
 | `ENTREGADA` | El proveedor confirmó la entrega. |
 | `FALLIDA` | Se cuenta el reintento y se espera 15 s, 30 s, 1 min, 2 min… antes de volver a intentar. Si el proveedor responde que está saturado (429), no cuenta como reintento: se espera lo que pide (`Retry-After`) y mientras no se le manda nada más. |
 | `DESCARTADA` | Se llegó a 5 fallas, o el error no tiene caso reintentarlo (token o número inválido). Se avisa a los Administradores: queda en la historia de la alerta (`ENTREGA_DESCARTADA`) y la consola recibe `alerta.entrega_fallida`. |
 
 - Los SMS van sin acentos ni eñes para caber en 160 caracteres. A la red de apoyo con acceso de seguimiento le llega el enlace de ubicación.
 - No se envían los avisos para atender una alerta que ya terminó (alerta asignada o informativa, escalamiento, sin acuse), ni los que tienen más de 24 horas (por ejemplo, si el servidor estuvo apagado). Se marcan `DESCARTADA` sin avisar.
-- En local el proveedor es `simulado`: no manda nada y escribe cada mensaje en el log del servidor con `[SIMULADO]`. Los proveedores reales (FCM y Twilio) se eligen con `AVISOS_PROVEEDOR_PUSH` y `AVISOS_PROVEEDOR_SMS`.
+- En local el proveedor es `simulado`: no manda nada y escribe cada mensaje en el log del servidor con `[SIMULADO]`. Los proveedores reales (FCM, Twilio o el celular pasarela) se eligen con `AVISOS_PROVEEDOR_PUSH` y `AVISOS_PROVEEDOR_SMS`.
 - **Push con FCM.** Con `AVISOS_PROVEEDOR_PUSH=fcm` y `FCM_CREDENCIALES` (ruta del `.json` de la cuenta de servicio de Firebase, que nunca se sube al repo), el servidor envía por la API HTTP v1 de FCM con prioridad alta. FCM no confirma la entrega, así que el push queda `ENVIADA`. Si FCM responde que el token ya no sirve, se borra del dispositivo y el aviso sale por SMS en el siguiente intento.
 - **SMS con Twilio.** Con `AVISOS_PROVEEDOR_SMS=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` y `TWILIO_NUMERO`, el servidor envía cada SMS por la API de Twilio, al número en formato internacional (`5512345678` sale como `+525512345678`). Con `PASARELA_URL_PUBLICA`, Twilio avisa el estado de cada SMS en `/pasarela/sms/estado`: `sent` (lo entregó a la compañía), `delivered` (`ENTREGADA`) o `undelivered`/`failed` (`FALLIDA` y se reintenta; si el número no existe o es fijo, `DESCARTADA`). Algunas compañías nunca mandan `delivered`; esos SMS se quedan `ENVIADA` y no se repiten. Un número que Twilio no acepta (inválido, no es celular, pidió no recibir SMS, o no está verificado en una cuenta de prueba) se descarta. La cuenta de prueba "Limited trial" de Twilio solo manda sus plantillas, no un texto propio (error 572006); con ella los avisos se descartan y hay que usar el proveedor simulado o una cuenta "Full access".
 - **Token del teléfono.** La app lo registra con `PUT /api/v1/dispositivos/{id}/push` `{"fcmToken": "..."}` al iniciar sesión y cada vez que FCM lo rota. Solo el dueño del dispositivo; si otro dispositivo tenía ese token, se le quita.
@@ -216,6 +216,16 @@ Cuando el teléfono no tiene internet ni malla, la app manda la alerta como un S
 4. Si no existe, la registra con `canal_recepcion = SMS` y la despacha igual que una alerta por internet. El registro es del Módulo 2: implementa `RegistroAlertasSms` y se conecta en `Application.kt`. Mientras no exista, en local se usa un registro de prueba y en la nube los mensajes válidos quedan pendientes (`procesado_en` nulo) hasta que se conecte.
 
 Siempre responde 200 con TwiML vacío, así que a la persona no le llega ninguna respuesta por SMS. Para que Twilio llame al servidor, en la Console de Twilio el número debe tener como webhook de "A message comes in" la dirección `https://<dominio>/api/v1/pasarela/sms/entrante` (HTTP POST), y `PASARELA_URL_PUBLICA` debe ser `https://<dominio>/api/v1`.
+
+### Celular Android como pasarela
+
+Es la alternativa gratuita a Twilio: un celular Android con chip manda y recibe los SMS con la app [SMS Gateway for Android](https://docs.sms-gate.app) en modo nube. Se activa con `AVISOS_PROVEEDOR_SMS=smsgate`; el código de Twilio sigue ahí para cuando se necesite.
+
+- **Para mandar**, el servidor deja cada SMS en `api.sms-gate.app` con el usuario y la contraseña de la app (`SMSGATE_USUARIO`, `SMSGATE_PASSWORD`), y el celular lo manda con su chip. Cada intento lleva su propio id y vence en la nube un minuto antes de que el servidor lo reintente, así que si el celular estuvo sin internet el SMS no sale dos veces.
+- **Para recibir**, la app llama a `POST /api/v1/pasarela/smsgate` con la firma `X-Signature` (HMAC-SHA256 con `SMSGATE_LLAVE_FIRMA`). Un `sms:received` pasa por la misma recepción que el de Twilio (pasos 2 a 4 de arriba). `sms:sent`, `sms:delivered` y `sms:failed` actualizan el aviso igual que el estado de Twilio.
+- **Si el celular pierde internet**, los SMS que le llegan se quedan en el chip y la app reintenta avisar al servidor hasta por 2 días. Los que manda el servidor esperan en la nube hasta que vencen, y entonces el servidor los reintenta.
+
+Configuración: instalar la app, activar **Cloud Server**, poner la misma llave en la app (Settings → Webhooks → Signing Key) y en `SMSGATE_LLAVE_FIRMA`, y registrar los eventos `sms:received`, `sms:sent`, `sms:delivered` y `sms:failed` hacia `https://<dominio>/api/v1/pasarela/smsgate`. Sin llave de firma, en la nube la ruta responde 503 y los SMS enviados se quedan `ENVIADA` sin esperar confirmación.
 
 ## Bitácora
 
@@ -280,10 +290,13 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `ENLACE_HORAS_MAX` | Vigencia máxima de un enlace | `24` |
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
 | `ENLACE_URL_WEBSOCKET` | Dirección pública de `/ws/enlace`, sin el token | `ws://localhost:8080/api/v1/ws/enlace`. En la nube, `wss://<dominio>/api/v1/ws/enlace`. |
-| `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal: `simulado`, `fcm` (push) o `twilio` (SMS) | `simulado` |
+| `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal: `simulado`, `fcm` (push), `twilio` o `smsgate` (SMS) | `simulado` |
 | `FCM_CREDENCIALES` | Ruta del `.json` de la cuenta de servicio de Firebase (con `AVISOS_PROVEEDOR_PUSH=fcm`). En la nube puede traer el contenido del `.json` en vez de la ruta. | vacío |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_NUMERO` | Cuenta de Twilio y número que manda y recibe los SMS (`+1...`) | vacío |
 | `TWILIO_AUTH_TOKEN` | Secreto de la cuenta de Twilio. Valida los webhooks y autentica los envíos. Sin él, los webhooks solo funcionan en local y sin firma. | vacío |
+| `SMSGATE_USUARIO` / `SMSGATE_PASSWORD` | Usuario y contraseña de la app del celular pasarela (Cloud Server), con `AVISOS_PROVEEDOR_SMS=smsgate`. La contraseña es secreta. | vacío |
+| `SMSGATE_LLAVE_FIRMA` | Llave de firma de los webhooks del celular pasarela. Sin ella, en la nube no se aceptan sus avisos. | vacío |
+| `SMSGATE_URL` | Nube de la app | `https://api.sms-gate.app` |
 | `PASARELA_URL_PUBLICA` | Dirección pública del servidor hasta `/api/v1`. Con ella se validan las firmas detrás de un proxy y Twilio avisa el estado de cada SMS. | vacío |
 | `AVISOS_MAX_REINTENTOS` | Fallas antes de descartar un aviso | `5` |
 | `AVISOS_ESPERA_BASE_SEG` | Espera antes del primer reintento; se duplica en cada falla | `15` |

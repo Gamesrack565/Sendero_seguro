@@ -15,6 +15,7 @@ import com.senderoseguro.server.avisos.ProveedorFcm
 import com.senderoseguro.server.avisos.rutasDispositivos
 import com.senderoseguro.server.avisos.Proveedor
 import com.senderoseguro.server.avisos.ProveedorSimulado
+import com.senderoseguro.server.avisos.ProveedorSmsGate
 import com.senderoseguro.server.avisos.ProveedorTwilio
 import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
 import com.senderoseguro.server.desarrollo.SyncAlertaPrueba
@@ -28,9 +29,11 @@ import com.senderoseguro.server.dispersion.iniciarTemporizador
 import com.senderoseguro.server.dispersion.rutasAlertas
 import com.senderoseguro.server.dispersion.rutasEnlace
 import com.senderoseguro.server.pasarela.ConfigPasarela
+import com.senderoseguro.server.pasarela.ConfigSmsGate
 import com.senderoseguro.server.pasarela.RecepcionSms
 import com.senderoseguro.server.pasarela.RegistroAlertasSms
 import com.senderoseguro.server.pasarela.rutasPasarela
+import com.senderoseguro.server.pasarela.rutasSmsGate
 import com.senderoseguro.server.plataforma.BaseDatos
 import com.senderoseguro.server.plataforma.EmisorTokens
 import com.senderoseguro.server.plataforma.configurarErrores
@@ -53,7 +56,9 @@ import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 fun main(args: Array<String>) = EngineMain.main(args)
@@ -86,16 +91,19 @@ fun Application.module() {
     tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
     val tokens = EmisorTokens.desde(this)
     val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
-    val sms = proveedorSms(config, urlPublica)
+    val politicaAvisos = EnvioAvisos.Politica(
+        maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
+        esperaBase = config.property("avisos.esperaBaseSeg").getString().toInt().seconds,
+    )
+    val llaveSmsGate = config.property("smsgate.llaveFirma").getString().trim()
+    // Un SMS por el celular pasarela vence en la nube un minuto antes de que el servidor lo dé por perdido y lo reintente.
+    val sms = proveedorSms(config, urlPublica, vigenciaSmsGate = politicaAvisos.plazoConfirmacion - 1.minutes, llaveSmsGate)
     val envioAvisos = EnvioAvisos(
         baseDatos.dataSource,
         push = proveedorPush(config),
         sms = sms,
         enlaces,
-        EnvioAvisos.Politica(
-            maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
-            esperaBase = config.property("avisos.esperaBaseSeg").getString().toInt().seconds,
-        ),
+        politicaAvisos,
         urlEnlace = config.property("avisos.urlEnlace").getString(),
     )
     envioAvisos.iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
@@ -130,6 +138,7 @@ fun Application.module() {
             rutasTiempoReal(tiempoReal, tokens)
             rutasDispositivos(baseDatos.dataSource)
             rutasPasarela(recepcionSms, envioAvisos, configPasarela)
+            rutasSmsGate(recepcionSms, envioAvisos, ConfigSmsGate(llaveSmsGate, modoDesarrollo))
             rutasSync(Sincronizacion(baseDatos.dataSource, dispersion, manejadoresSync))
             rutasBitacora(baseDatos.dataSource)
             rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
@@ -155,8 +164,8 @@ private fun proveedorPush(config: ApplicationConfig): Proveedor = when (val nomb
     else -> error("Proveedor de push desconocido: $nombre. Valores posibles: simulado, fcm")
 }
 
-/** El proveedor de SMS configurado: `simulado` (local) o `twilio`. */
-private fun proveedorSms(config: ApplicationConfig, urlPublica: String): Proveedor = when (val nombre = config.property("avisos.proveedorSms").getString().lowercase()) {
+/** El proveedor de SMS configurado: `simulado` (local), `twilio` o `smsgate` (celular Android como pasarela). */
+private fun proveedorSms(config: ApplicationConfig, urlPublica: String, vigenciaSmsGate: Duration, llaveSmsGate: String): Proveedor = when (val nombre = config.property("avisos.proveedorSms").getString().lowercase()) {
     "simulado" -> ProveedorSimulado()
     "twilio" -> {
         fun valor(clave: String, variable: String) = config.property("twilio.$clave").getString().trim().ifBlank {
@@ -170,5 +179,18 @@ private fun proveedorSms(config: ApplicationConfig, urlPublica: String): Proveed
             urlEstado = urlPublica.takeIf { it.isNotBlank() }?.let { "$it/pasarela/sms/estado" },
         )
     }
-    else -> error("Proveedor de SMS desconocido: $nombre. Valores posibles: simulado, twilio")
+    "smsgate" -> {
+        fun valor(clave: String, variable: String) = config.property("smsgate.$clave").getString().trim().ifBlank {
+            error("AVISOS_PROVEEDOR_SMS=smsgate necesita la variable $variable")
+        }
+        ProveedorSmsGate(
+            usuario = valor("usuario", "SMSGATE_USUARIO"),
+            password = valor("password", "SMSGATE_PASSWORD"),
+            vigencia = vigenciaSmsGate,
+            // Sin llave de firma no hay webhooks de estado: el SMS aceptado se queda ENVIADA en vez de esperar la entrega.
+            confirmaEntrega = llaveSmsGate.isNotBlank(),
+            urlApi = valor("url", "SMSGATE_URL"),
+        )
+    }
+    else -> error("Proveedor de SMS desconocido: $nombre. Valores posibles: simulado, twilio, smsgate")
 }

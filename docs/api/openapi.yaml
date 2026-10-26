@@ -458,6 +458,59 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /pasarela/smsgate:
+    post:
+      tags: [Pasarelas]
+      summary: Webhook del celular Android que funciona como pasarela SMS
+      description: |
+        Lo llama la app SMS Gateway for Android (docs.sms-gate.app) instalada en el celular pasarela, no la app
+        de Sendero Seguro. Es la alternativa gratuita a Twilio: se activa con `AVISOS_PROVEEDOR_SMS=smsgate`.
+        Una sola ruta recibe todos los eventos registrados en la app:
+
+        - `sms:received`: un SMS que llegó al chip. Sigue el mismo flujo que `/pasarela/sms/entrante`
+          (`mensaje_sms`, `SS1`, registro o liga de la alerta) y responde `200` con el resultado.
+        - `sms:sent`: deja de esperar la confirmación. `sms:delivered`: el aviso pasa a `ENTREGADA`.
+          `sms:failed`: pasa a `FALLIDA` y se reintenta. Se busca por `proveedor_mensaje_id = payload.messageId`.
+        - Cualquier otro evento (`system:ping`...) responde `204` y se ignora.
+
+        La app reintenta mientras no reciba un `2xx`.
+      x-proceso: P16, P5
+      security:
+        - firmaSmsGate: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AvisoSmsGate' }
+      responses:
+        '200':
+          description: SMS recibido y guardado (`sms:received`)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valido]
+                properties:
+                  mensajeId: { type: [integer, 'null'], format: int64 }
+                  valido: { type: boolean }
+                  alertaId: { type: [string, 'null'], format: uuid }
+        '204': { description: Estado actualizado, o evento ignorado }
+        '400':
+          description: El aviso no trae `event` y `payload`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Firma inválida o `X-Timestamp` con más de 5 minutos de diferencia
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: En la nube sin `SMSGATE_LLAVE_FIRMA`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /historial:
     get:
       tags: [Auditoría]
@@ -657,6 +710,14 @@ components:
       description: |
         Base64 de HMAC-SHA1 con el Auth Token de Twilio sobre la URL pública del webhook seguida de cada
         campo del formulario (nombre y valor, ordenados por nombre).
+
+    firmaSmsGate:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: |
+        HMAC-SHA256 en hexadecimal, con la llave de firma de la app (`SMSGATE_LLAVE_FIRMA`), del cuerpo tal como
+        llega seguido del encabezado `X-Timestamp` (segundos Unix, ±5 minutos de la hora del servidor).
 
   parameters:
     IdAlerta:
@@ -957,6 +1018,23 @@ components:
         From: { type: string, description: 'Número de origen en formato internacional, por ejemplo +525512345678' }
         Body: { type: string, description: Texto del SMS; se guardan hasta 160 caracteres }
         MessageSid: { type: string }
+
+    AvisoSmsGate:
+      type: object
+      description: Aviso de la app SMS Gateway for Android (manda más campos, y se ignoran).
+      required: [event, payload]
+      properties:
+        event: { type: string, example: 'sms:received' }
+        deviceId: { type: string }
+        id: { type: string }
+        webhookId: { type: string }
+        payload:
+          type: object
+          properties:
+            messageId: { type: string, description: 'Id del mensaje; en los de estado, el que mandó el servidor' }
+            message: { type: string, description: Texto del SMS (`sms:received`) }
+            sender: { type: string, description: Número de origen (`sms:received`) }
+            reason: { type: string, description: Motivo de la falla (`sms:failed`) }
 
     LoteSync:
       type: object

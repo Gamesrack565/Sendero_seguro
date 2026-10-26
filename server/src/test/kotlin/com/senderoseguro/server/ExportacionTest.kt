@@ -29,6 +29,7 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle
 import org.apache.pdfbox.text.PDFTextStripper
 import java.time.Instant
 import java.time.LocalDate
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -99,12 +100,15 @@ class ExportacionTest : PruebaConBaseDatos() {
             val jwt = tokens.emitir(UsuarioToken(AlertasPrueba.CUENTAS.getValue(cuenta), rol, null, null), 1.hours).first
             return client.get("/api/v1/estadisticas/exportar$consulta") { header("Authorization", "Bearer $jwt") }
         }
-        // Un periodo viejo y distinto en cada corrida, para encontrar su registro en la bitácora.
-        val dia = LocalDate.of(2001, 1, 1).plusDays((System.nanoTime() % 3000).let { if (it < 0) -it else it })
-        fun registros(formato: String) = numero(
+        // La bitácora no deja borrar, y en una base que se reutiliza ya puede haber exportaciones de corridas
+        // anteriores con el mismo periodo: se cuentan las nuevas contra las que había al empezar.
+        val dia = LocalDate.of(2001, 1, 1).plusDays(Random.nextLong(3000))
+        fun total(formato: String) = numero(
             "SELECT count(*) FROM bitacora WHERE accion = 'EXPORTAR_ESTADISTICAS' AND detalle->>'desde' = ? AND detalle->>'formato' = ?",
             dia.toString(), formato,
         )
+        val antes = mapOf("csv" to total("csv"), "pdf" to total("pdf"))
+        fun registros(formato: String) = total(formato) - antes.getValue(formato)
 
         val csv = pedir("?formato=csv&desde=$dia&hasta=$dia")
         assertEquals(HttpStatusCode.OK, csv.status)
