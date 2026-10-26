@@ -1,8 +1,6 @@
 package com.senderoseguro.server.desarrollo
 
-import com.senderoseguro.server.avisos.Mensaje
 import com.senderoseguro.server.avisos.Proveedor
-import com.senderoseguro.server.avisos.ResultadoEnvio
 import com.senderoseguro.server.dispersion.DispersionServicio
 import com.senderoseguro.server.dispersion.EnlacesServicio
 import com.senderoseguro.server.dispersion.EscalamientoServicio
@@ -11,6 +9,7 @@ import com.senderoseguro.server.dispersion.ResultadoEscalamiento
 import com.senderoseguro.server.pasarela.DatosSs1
 import com.senderoseguro.server.pasarela.Ss1
 import com.senderoseguro.server.pasarela.Telefonos
+import com.senderoseguro.server.pasarela.enviarSmsPrueba
 import com.senderoseguro.server.plataforma.ApiException
 import com.senderoseguro.server.plataforma.EmisorTokens
 import com.senderoseguro.server.plataforma.Rol
@@ -93,19 +92,9 @@ fun Route.rutasDesarrollo(
             call.respond(Ss1Prueba(de = Telefonos.e164(telefono), texto = ss1))
         }
 
-        // Manda un SMS de prueba con el proveedor configurado (simulado o Twilio), para probar la cuenta sin crear alertas.
+        // Manda un SMS de prueba con el proveedor configurado, para probar la cuenta sin crear alertas.
         post("/sms/prueba") {
-            val texto = call.receiveText()
-            val telefono = runCatching { json.decodeFromString<SmsPrueba>(texto).telefono.trim() }.getOrNull()
-                ?.takeIf { t -> t.count { it.isDigit() } in 10..15 }
-                ?: throw ApiException(HttpStatusCode.BadRequest, "VALIDACION", "telefono debe tener de 10 a 15 dígitos")
-            val r = sms.enviar(Mensaje(0, "SMS", telefono, "Sendero Seguro", "Sendero Seguro: SMS de prueba de la pasarela."))
-            call.respond(
-                when (r) {
-                    is ResultadoEnvio.Aceptado -> SmsPruebaRespuesta(sms.nombre, Telefonos.e164(telefono), aceptado = true, proveedorMensajeId = r.proveedorMensajeId)
-                    is ResultadoEnvio.Fallo -> SmsPruebaRespuesta(sms.nombre, Telefonos.e164(telefono), aceptado = false, error = r.error)
-                },
-            )
+            call.respond(enviarSmsPrueba(sms, call.receiveText()))
         }
 
         // Regresa a DISPONIBLE las unidades ocupadas, para repetir la prueba.
@@ -122,18 +111,6 @@ data class TokenPrueba(val cuenta: String)
 
 @Serializable
 data class Ss1Prueba(val de: String, val texto: String)
-
-@Serializable
-data class SmsPrueba(val telefono: String)
-
-@Serializable
-data class SmsPruebaRespuesta(
-    val proveedor: String,
-    val para: String,
-    val aceptado: Boolean,
-    val proveedorMensajeId: String? = null,
-    val error: String? = null,
-)
 
 @Serializable
 data class TokenPruebaRespuesta(val token: String, val usuarioId: String, val rol: String, val expiraEn: String)

@@ -227,6 +227,8 @@ Es la alternativa gratuita a Twilio: un celular Android con chip manda y recibe 
 
 Configuración: instalar la app, activar **Cloud Server**, poner la misma llave en la app (Settings → Webhooks → Signing Key) y en `SMSGATE_LLAVE_FIRMA`, y registrar los eventos `sms:received`, `sms:sent`, `sms:delivered` y `sms:failed` hacia `https://<dominio>/api/v1/pasarela/smsgate`. Sin llave de firma, en la nube la ruta responde 503 y los SMS enviados se quedan `ENVIADA` sin esperar confirmación.
 
+**Probar el envío desde la nube.** Mientras `PRUEBA_SMS_LLAVE` tenga valor (32 caracteres o más) existe `POST /api/v1/pasarela/prueba-sms` con el encabezado `X-Llave-Prueba` y el cuerpo `{"telefono":"5512345678"}`. Manda un SMS con el proveedor y las credenciales que tiene el servidor, sin crear alertas, y responde si se aceptó o el error (por ejemplo `SMS Gateway 401` si `SMSGATE_USUARIO` o `SMSGATE_PASSWORD` no coinciden con la app). Al terminar se borra la variable y la ruta deja de existir.
+
 ## Bitácora
 
 `bitacora` guarda las acciones que hay que poder auditar (RNF16). La base calcula un hash SHA-256 que encadena cada registro con el anterior y no deja cambiar ni borrar registros. Cualquier módulo escribe con `Bitacora.registrar`, dentro de la misma transacción que la acción:
@@ -297,6 +299,7 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `SMSGATE_USUARIO` / `SMSGATE_PASSWORD` | Usuario y contraseña de la app del celular pasarela (Cloud Server), con `AVISOS_PROVEEDOR_SMS=smsgate`. La contraseña es secreta. | vacío |
 | `SMSGATE_LLAVE_FIRMA` | Llave de firma de los webhooks del celular pasarela. Sin ella, en la nube no se aceptan sus avisos. | vacío |
 | `SMSGATE_URL` | Nube de la app | `https://api.sms-gate.app` |
+| `PRUEBA_SMS_LLAVE` | Solo para probar el envío de SMS en la nube: activa `POST /pasarela/prueba-sms`. Se borra al terminar. | vacío |
 | `PASARELA_URL_PUBLICA` | Dirección pública del servidor hasta `/api/v1`. Con ella se validan las firmas detrás de un proxy y Twilio avisa el estado de cada SMS. | vacío |
 | `AVISOS_MAX_REINTENTOS` | Fallas antes de descartar un aviso | `5` |
 | `AVISOS_ESPERA_BASE_SEG` | Espera antes del primer reintento; se duplica en cada falla | `15` |

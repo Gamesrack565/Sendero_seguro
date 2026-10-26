@@ -33,9 +33,11 @@ import com.senderoseguro.server.pasarela.ConfigSmsGate
 import com.senderoseguro.server.pasarela.RecepcionSms
 import com.senderoseguro.server.pasarela.RegistroAlertasSms
 import com.senderoseguro.server.pasarela.rutasPasarela
+import com.senderoseguro.server.pasarela.rutasPruebaSms
 import com.senderoseguro.server.pasarela.rutasSmsGate
 import com.senderoseguro.server.plataforma.BaseDatos
 import com.senderoseguro.server.plataforma.EmisorTokens
+import com.senderoseguro.server.plataforma.LARGO_MINIMO_LLAVE
 import com.senderoseguro.server.plataforma.configurarErrores
 import com.senderoseguro.server.plataforma.configurarLogs
 import com.senderoseguro.server.plataforma.configurarSeguridad
@@ -118,6 +120,11 @@ fun Application.module() {
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
     RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
         .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
+    val llavePruebaSms = config.property("pasarela.llavePruebaSms").getString().trim()
+    check(llavePruebaSms.isEmpty() || llavePruebaSms.length >= LARGO_MINIMO_LLAVE) {
+        "PRUEBA_SMS_LLAVE debe tener al menos $LARGO_MINIMO_LLAVE caracteres"
+    }
+    if (llavePruebaSms.isNotEmpty()) log.warn("PRUEBA_SMS_LLAVE activa: existe POST /pasarela/prueba-sms. Bórrala al terminar la prueba.")
     val configPasarela = ConfigPasarela(
         authToken = config.property("twilio.authToken").getString(),
         urlPublica = urlPublica,
@@ -139,6 +146,7 @@ fun Application.module() {
             rutasDispositivos(baseDatos.dataSource)
             rutasPasarela(recepcionSms, envioAvisos, configPasarela)
             rutasSmsGate(recepcionSms, envioAvisos, ConfigSmsGate(llaveSmsGate, modoDesarrollo))
+            if (llavePruebaSms.isNotEmpty()) rutasPruebaSms(sms, llavePruebaSms)
             rutasSync(Sincronizacion(baseDatos.dataSource, dispersion, manejadoresSync))
             rutasBitacora(baseDatos.dataSource)
             rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
