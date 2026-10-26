@@ -4,6 +4,7 @@ import com.senderoseguro.server.auditoria.Estadisticas
 import com.senderoseguro.server.auditoria.Exportacion
 import com.senderoseguro.server.auditoria.Historial
 import com.senderoseguro.server.auditoria.LineaDeTiempo
+import com.senderoseguro.server.auditoria.RetencionTrayectos
 import com.senderoseguro.server.auditoria.rutasBitacora
 import com.senderoseguro.server.auditoria.rutasEstadisticas
 import com.senderoseguro.server.auditoria.rutasHistorial
@@ -51,6 +52,7 @@ import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -106,6 +108,8 @@ fun Application.module() {
     val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
     if (modoDesarrollo) manejadoresSync[TipoSync.ALERTA] = SyncAlertaPrueba
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
+    RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
+        .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
     val configPasarela = ConfigPasarela(
         authToken = config.property("twilio.authToken").getString(),
         urlPublica = urlPublica,
@@ -142,10 +146,11 @@ fun Application.module() {
 private fun proveedorPush(config: ApplicationConfig): Proveedor = when (val nombre = config.property("avisos.proveedorPush").getString().lowercase()) {
     "simulado" -> ProveedorSimulado()
     "fcm" -> {
-        val ruta = config.property("avisos.fcmCredenciales").getString().ifBlank {
-            error("AVISOS_PROVEEDOR_PUSH=fcm necesita FCM_CREDENCIALES con la ruta del .json de la cuenta de servicio")
+        val valor = config.property("avisos.fcmCredenciales").getString().trim().ifBlank {
+            error("AVISOS_PROVEEDOR_PUSH=fcm necesita FCM_CREDENCIALES con la ruta del .json de la cuenta de servicio o su contenido")
         }
-        ProveedorFcm(CredencialesFcm.desdeArchivo(ruta))
+        // En la nube la variable trae el contenido del .json; en tu computadora, la ruta del archivo.
+        ProveedorFcm(if (valor.startsWith("{")) CredencialesFcm.desdeTexto(valor) else CredencialesFcm.desdeArchivo(valor))
     }
     else -> error("Proveedor de push desconocido: $nombre. Valores posibles: simulado, fcm")
 }

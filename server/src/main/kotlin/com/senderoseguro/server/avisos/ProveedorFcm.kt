@@ -40,9 +40,14 @@ class CredencialesFcm(
         fun desdeArchivo(ruta: String): CredencialesFcm {
             val archivo = Path.of(ruta)
             require(Files.exists(archivo)) { "No existe el archivo de FCM_CREDENCIALES: $ruta" }
-            val j = Json.parseToJsonElement(Files.readString(archivo)).jsonObject
+            return desdeTexto(Files.readString(archivo))
+        }
+
+        /** El contenido del `.json`, para la nube, donde FCM_CREDENCIALES guarda el texto en vez de una ruta. */
+        fun desdeTexto(texto: String): CredencialesFcm {
+            val j = Json.parseToJsonElement(texto).jsonObject
             fun campo(nombre: String) = j[nombre]?.jsonPrimitive?.contentOrNull
-                ?: error("El archivo de FCM_CREDENCIALES no trae '$nombre'; ¿es la clave de la cuenta de servicio?")
+                ?: error("FCM_CREDENCIALES no trae '$nombre'; ¿es la clave de la cuenta de servicio?")
             return CredencialesFcm(
                 proyecto = campo("project_id"),
                 correo = campo("client_email"),

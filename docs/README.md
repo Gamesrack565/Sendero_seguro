@@ -249,6 +249,10 @@ Lee `v_historial_usuario`: alertas, reportes con nombre y trayectos, del más nu
 - `GET /api/v1/historial`: el de la persona del token. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`, igual que en el detalle y la línea de tiempo.
 - `GET /api/v1/usuarios/{id}/historial`: el de otra persona, solo para el Administrador. Pide el encabezado `X-Justificacion` (10 a 500 caracteres) y cada consulta queda en la bitácora como `CONSULTAR_HISTORIAL_AJENO`, con la justificación y la IP. Muestra el estado real de cada alerta.
 
+## Retención de trayectos
+
+Un trayecto terminado (`FINALIZADO` o `CANCELADO`) hace más de 30 días y que no tuvo alerta se borra, junto con sus check-ins, sus enlaces y sus avisos. Los que tuvieron alerta se quedan, porque son parte del historial de esa alerta, y los `EN_CURSO` no se tocan. El servidor lo revisa al arrancar y cada 6 horas, por tandas de 500, y deja en la bitácora un registro `PURGAR_TRAYECTOS` con la cantidad borrada.
+
 ## Estadísticas
 
 `GET /api/v1/estadisticas/alertas?desde=2026-10-01&hasta=2026-10-31` da los indicadores del tablero a partir de `v_alerta_tiempos`. Solo la ve el Administrador y no trae datos de personas. Filtros opcionales `tipoIncidenteId` y `zonaId`.
@@ -277,7 +281,7 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `DISPERSION_REVISION_SEG` | Cada cuántos segundos se revisan los plazos de acuse | `5` |
 | `ENLACE_URL_WEBSOCKET` | Dirección pública de `/ws/enlace`, sin el token | `ws://localhost:8080/api/v1/ws/enlace`. En la nube, `wss://<dominio>/api/v1/ws/enlace`. |
 | `AVISOS_PROVEEDOR_PUSH` / `AVISOS_PROVEEDOR_SMS` | Proveedor de cada canal: `simulado`, `fcm` (push) o `twilio` (SMS) | `simulado` |
-| `FCM_CREDENCIALES` | Ruta del `.json` de la cuenta de servicio de Firebase (con `AVISOS_PROVEEDOR_PUSH=fcm`) | vacío |
+| `FCM_CREDENCIALES` | Ruta del `.json` de la cuenta de servicio de Firebase (con `AVISOS_PROVEEDOR_PUSH=fcm`). En la nube puede traer el contenido del `.json` en vez de la ruta. | vacío |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_NUMERO` | Cuenta de Twilio y número que manda y recibe los SMS (`+1...`) | vacío |
 | `TWILIO_AUTH_TOKEN` | Secreto de la cuenta de Twilio. Valida los webhooks y autentica los envíos. Sin él, los webhooks solo funcionan en local y sin firma. | vacío |
 | `PASARELA_URL_PUBLICA` | Dirección pública del servidor hasta `/api/v1`. Con ella se validan las firmas detrás de un proxy y Twilio avisa el estado de cada SMS. | vacío |
@@ -288,6 +292,10 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `TIEMPO_REAL_REVISION_MS` | Cada cuántos milisegundos se buscan cambios para los WebSocket | `1000` |
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
+| `DETRAS_DE_PROXY` | El servidor está detrás del balanceador de la nube: la IP de la bitácora se toma del final de `X-Forwarded-For` | `false`. En la nube, `true`. |
+| `RETENCION_TRAYECTO_DIAS` / `RETENCION_REVISION_HORAS` | Días que se guarda un trayecto terminado sin alerta, y cada cuántas horas se revisa | `30` / `6` |
+
+Para la nube se arma un solo archivo con `.\gradlew.bat :server:buildFatJar` (en Linux o Mac, `./gradlew`). Queda en `server/build/libs/sendero-seguro-server.jar` y se corre con `java -jar`.
 
 Con `DB_DATOS_PRUEBA=false`, el servidor no arranca si `JWT_SECRETO` o `ENLACE_SECRETO` tienen el valor de desarrollo o menos de 32 caracteres, y el log dice cuál falta. Se puede generar una llave con `openssl rand -hex 32`. Con `DB_DATOS_PRUEBA=true`, el log avisa al arrancar que las rutas `/dev` están activas.
 
@@ -352,6 +360,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Sincronización: `POST /sync/lote`, con los manejadores de cada tipo por conectar | Listo |
 | Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
 | Línea de tiempo de una alerta e historial de cada persona | Listo |
+| Retención: borrar trayectos de más de 30 días sin alerta | Listo |
 | Estadísticas de alertas para el tablero y exportación en CSV y PDF | Listo |
 | Avisos: envío con reintentos (E-03) y proveedor simulado | Listo |
 | Avisos: push con FCM y registro del token (`PUT /dispositivos/{id}/push`) | Listo |

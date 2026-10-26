@@ -129,6 +129,8 @@ class FcmTest {
             val c = CredencialesFcm.desdeArchivo(archivo.path)
             assertEquals("proyecto-prueba", c.proyecto)
             assertIs<ResultadoEnvio.Aceptado>(ProveedorFcm(c, urlFcm = url).enviar(mensaje("token-bueno")))
+            // En la nube la variable trae el contenido en vez de la ruta.
+            assertEquals(c.correo, CredencialesFcm.desdeTexto(archivo.readText()).correo)
         } finally {
             archivo.delete()
         }

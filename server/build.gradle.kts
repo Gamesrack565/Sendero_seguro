@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     application
+    // Arma el .jar único que se sube a Azure (buildFatJar). Va aquí y no en libs.versions.toml porque solo lo usa el servidor.
+    id("io.ktor.plugin") version "3.6.0"
 }
 
 group = "com.senderoseguro"
@@ -38,6 +40,12 @@ dependencies {
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(platform(libs.junit.bom))
     testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+ktor {
+    fatJar {
+        archiveFileName.set("sendero-seguro-server.jar")
+    }
 }
 
 tasks.test {

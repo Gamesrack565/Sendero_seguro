@@ -1,6 +1,7 @@
 package com.senderoseguro.server.plataforma
 
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.application
 import io.ktor.server.plugins.origin
 import kotlinx.serialization.json.JsonObject
 import java.sql.Connection
@@ -43,5 +44,23 @@ object Bitacora {
         (texto.count { it == '.' } == 3 || texto.contains(':'))
 }
 
-/** IP de quien hizo la petición, para la bitácora. */
-fun ApplicationCall.ipCliente(): String? = request.origin.remoteAddress
+/**
+ * IP de quien hizo la petición, para la bitácora. En la nube (`servidor.detrasDeProxy`) la conexión llega del
+ * balanceador de Azure, que agrega la IP real al final de X-Forwarded-For; las anteriores las pudo escribir el cliente.
+ */
+fun ApplicationCall.ipCliente(): String? {
+    val detrasDeProxy = application.environment.config.propertyOrNull("servidor.detrasDeProxy")?.getString().toBoolean()
+    if (detrasDeProxy) request.headers["X-Forwarded-For"]?.let { ipReenviada(it) }?.let { return it }
+    return request.origin.remoteAddress
+}
+
+/** La última IP de X-Forwarded-For, sin puerto: "1.2.3.4, 5.6.7.8:51000" → "5.6.7.8"; "[2001:db8::1]:443" → "2001:db8::1". */
+internal fun ipReenviada(encabezado: String): String? {
+    val ultima = encabezado.substringAfterLast(',').trim()
+    val ip = when {
+        ultima.startsWith("[") -> ultima.substringAfter('[').substringBefore(']')
+        ultima.count { it == ':' } == 1 -> ultima.substringBefore(':')
+        else -> ultima
+    }
+    return ip.ifEmpty { null }
+}
