@@ -14,16 +14,21 @@ import kotlin.math.*
 class GestorCaminataSegura(
     private val scope: CoroutineScope,
     private val onTiempoCheckInVencido: () -> Unit,
-    private val onDesviacionRutaExcedida: (distanciaMetros: Double) -> Unit
+    private val onDesviacionRutaExcedida: (distanciaMetros: Double) -> Unit,
+    private val onDestinoAlcanzadoExitosamente: () -> Unit = {}
 ) {
 
     companion object {
         private const val TAG = "MODULO2_CAMINATA_P7"
         private const val RADIO_TIERRA_METROS = 6371000.0
+        private const val RADIO_LLEGADA_DESTINO_METROS = 20.0
     }
 
-    private var intervaloCheckInSegundos: Long = 60L
-    private var toleranciaDesviacionMetros: Double = 100.0 // 100 metros de tolerancia por defecto
+    // Configurable desde P3 (Configuración de Parámetros de Seguridad)
+    var intervaloCheckInPorDefectoSeg: Long = 60L
+
+    private var intervaloCheckInActualSeg: Long = 60L
+    private var toleranciaDesviacionMetros: Double = 100.0
     private var jobTemporizador: Job? = null
 
     private val _estadoCaminata = MutableStateFlow(EstadoCaminataSegura())
@@ -35,43 +40,68 @@ class GestorCaminataSegura(
     fun iniciarCaminataSegura(
         rutaObjetivo: List<PuntoRuta>,
         tiempoEstimadoLlegadaMs: Long,
-        intervaloCheckInSeg: Long = 60L,
+        intervaloCheckInSeg: Long = intervaloCheckInPorDefectoSeg,
         toleranciaMetros: Double = 100.0
     ) {
-        this.intervaloCheckInSegundos = intervaloCheckInSeg
+        this.intervaloCheckInActualSeg = intervaloCheckInSeg
         this.toleranciaDesviacionMetros = toleranciaMetros
+        val etaSegundos = (tiempoEstimadoLlegadaMs / 1000L).coerceAtLeast(intervaloCheckInSeg)
 
         _estadoCaminata.value = EstadoCaminataSegura(
             activa = true,
             rutaObjetivo = rutaObjetivo,
             tiempoEstimadoLlegadaMs = tiempoEstimadoLlegadaMs,
+            segundosRestantesEta = etaSegundos,
             segundosRestantesCheckIn = intervaloCheckInSeg,
             desviacionActualMetros = 0.0,
-            fueraDeRuta = false
+            distanciaAlDestinoMetros = 0.0,
+            fueraDeRuta = false,
+            destinoAlcanzado = false
         )
 
-        Log.i(TAG, "Caminata Segura INICIADA (Check-in cada ${intervaloCheckInSeg}s | Tolerancia: ${toleranciaMetros}m)")
-        iniciarCuentaRegresivaCheckIn()
+        Log.i(TAG, "Caminata Segura INICIADA (Check-in: ${intervaloCheckInSeg}s | ETA: ${etaSegundos}s | Tolerancia: ${toleranciaMetros}m)")
+        iniciarTemporizadores(reiniciarSoloCheckIn = false)
     }
 
     /**
-     * P7: El usuario confirma periódicamente su presencia y reinicia la cuenta regresiva.
+     * P7: El usuario confirma periódicamente su presencia y reinicia la cuenta regresiva de check-in.
      */
     fun confirmarPresenciaCheckIn() {
         if (!_estadoCaminata.value.activa) return
-        Log.i(TAG, "Check-in confirmado por el usuario. Reiniciando cuenta regresiva a ${intervaloCheckInSegundos}s.")
-        iniciarCuentaRegresivaCheckIn()
+        Log.i(TAG, "Check-in confirmado por el usuario. Reiniciando cuenta regresiva a ${intervaloCheckInActualSeg}s.")
+        _estadoCaminata.value = _estadoCaminata.value.copy(
+            segundosRestantesCheckIn = intervaloCheckInActualSeg
+        )
     }
 
     /**
-     * P7: Evalúa si la coordenada actual del usuario se desvió más allá de la tolerancia permitida.
+     * P7: Evalúa la desviación geográfica contra los segmentos de la ruta y verifica si ya llegó al destino final.
      */
     fun evaluarUbicacionEnRuta(latitudActual: Double, longitudActual: Double) {
         val estadoActual = _estadoCaminata.value
         if (!estadoActual.activa || estadoActual.rutaObjetivo.isEmpty()) return
 
         val puntoActual = PuntoRuta(latitudActual, longitudActual)
-        // Calcula la distancia mínima hacia los nodos de la ruta objetivo
+
+        // 1. Verificar distancia al destino final (último nodo de la ruta)
+        val nodoDestino = estadoActual.rutaObjetivo.last()
+        val distanciaAlDestino = calcularDistanciaHaversineMetros(puntoActual, nodoDestino)
+
+        if (distanciaAlDestino <= RADIO_LLEGADA_DESTINO_METROS && estadoActual.rutaObjetivo.size > 1) {
+            Log.i(TAG, "¡Usuario llegó al destino final (${distanciaAlDestino.toInt()}m)! Finalizando Caminata Segura.")
+            jobTemporizador?.cancel()
+            _estadoCaminata.value = estadoActual.copy(
+                activa = false,
+                distanciaAlDestinoMetros = distanciaAlDestino,
+                desviacionActualMetros = 0.0,
+                fueraDeRuta = false,
+                destinoAlcanzado = true
+            )
+            onDestinoAlcanzadoExitosamente()
+            return
+        }
+
+        // 2. Calcular la distancia mínima hacia la ruta objetivo
         val distanciaMinima = estadoActual.rutaObjetivo.minOf { puntoRuta ->
             calcularDistanciaHaversineMetros(puntoActual, puntoRuta)
         }
@@ -80,44 +110,47 @@ class GestorCaminataSegura(
 
         _estadoCaminata.value = estadoActual.copy(
             desviacionActualMetros = distanciaMinima,
+            distanciaAlDestinoMetros = distanciaAlDestino,
             fueraDeRuta = excedioTolerancia
         )
 
         if (excedioTolerancia) {
-            Log.w(TAG, "¡Desviación geográfica detectada! Distancia a la ruta: ${distanciaMinima.toInt()}m (Tolerancia: ${toleranciaDesviacionMetros.toInt()}m)")
+            Log.w(TAG, "¡Desviación geográfica detectada! Distancia: ${distanciaMinima.toInt()}m (Tolerancia: ${toleranciaDesviacionMetros.toInt()}m)")
             onDesviacionRutaExcedida(distanciaMinima)
-        } else {
-            Log.d(TAG, "Usuario dentro de ruta segura. Desviación: ${distanciaMinima.toInt()}m")
         }
     }
 
     fun finalizarCaminataSegura() {
         jobTemporizador?.cancel()
         _estadoCaminata.value = EstadoCaminataSegura(activa = false)
-        Log.i(TAG, "Caminata Segura FINALIZADA correctamente.")
+        Log.i(TAG, "Caminata Segura FINALIZADA.")
     }
 
-    private fun iniciarCuentaRegresivaCheckIn() {
+    private fun iniciarTemporizadores(reiniciarSoloCheckIn: Boolean) {
         jobTemporizador?.cancel()
         jobTemporizador = scope.launch {
-            var segundos = intervaloCheckInSegundos
-            while (isActive && segundos > 0 && _estadoCaminata.value.activa) {
-                _estadoCaminata.value = _estadoCaminata.value.copy(segundosRestantesCheckIn = segundos)
+            while (isActive && _estadoCaminata.value.activa) {
                 delay(1000L)
-                segundos--
-            }
+                val actual = _estadoCaminata.value
+                if (!actual.activa) break
 
-            if (isActive && segundos == 0L && _estadoCaminata.value.activa) {
-                _estadoCaminata.value = _estadoCaminata.value.copy(segundosRestantesCheckIn = 0L)
-                Log.e(TAG, "¡Tiempo de Check-in VENCIDO en Caminata Segura! Disparando alerta automática (P4)...")
-                onTiempoCheckInVencido()
+                val nuevoCheckIn = (actual.segundosRestantesCheckIn - 1).coerceAtLeast(0L)
+                val nuevoEta = (actual.segundosRestantesEta - 1).coerceAtLeast(0L)
+
+                _estadoCaminata.value = actual.copy(
+                    segundosRestantesCheckIn = nuevoCheckIn,
+                    segundosRestantesEta = nuevoEta
+                )
+
+                if (nuevoCheckIn == 0L) {
+                    Log.e(TAG, "¡Tiempo de Check-in VENCIDO en Caminata Segura! Disparando alerta automática (P4)...")
+                    onTiempoCheckInVencido()
+                    break
+                }
             }
         }
     }
 
-    /**
-     * Fórmula de Haversine para calcular distancia en metros entre dos coordenadas GPS.
-     */
     fun calcularDistanciaHaversineMetros(p1: PuntoRuta, p2: PuntoRuta): Double {
         val dLat = Math.toRadians(p2.latitud - p1.latitud)
         val dLon = Math.toRadians(p2.longitud - p1.longitud)

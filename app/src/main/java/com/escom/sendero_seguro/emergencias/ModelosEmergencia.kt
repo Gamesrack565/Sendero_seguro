@@ -19,7 +19,8 @@ data class AlertaEmergencia(
     val precisionMetros: Float,
     val nivelBateria: Int,
     val timestampInicio: Long = System.currentTimeMillis(),
-    val activa: Boolean = true
+    val activa: Boolean = true,
+    val enModoCoaccionSilencioso: Boolean = false // Bandera para P8 (Duress PIN)
 )
 
 // P5.1: Paquete para Retransmisión en Malla (Bluetooth / WiFi-Direct)
@@ -31,6 +32,14 @@ data class PaqueteMalla(
     val nivelBateria: Int,
     val ttl: Int = 5,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+// P5.1 y Frontend 2: Estado de conectividad y cola de retransmisión en malla
+data class EstadoRedYMalla(
+    val conectadoAInternet: Boolean = false,
+    val escaneoBleActivo: Boolean = false,
+    val cantidadPaquetesRetransmitidos: Int = 0,
+    val historialRecienteMalla: List<PaqueteMalla> = emptyList()
 )
 
 // P6: Flujo continuo de Monitoreo y Telemetría en Tiempo Real
@@ -56,7 +65,10 @@ data class EstadoCaminataSegura(
     val activa: Boolean = false,
     val rutaObjetivo: List<PuntoRuta> = emptyList(),
     val tiempoEstimadoLlegadaMs: Long = 0L,
+    val segundosRestantesEta: Long = 0L,
     val segundosRestantesCheckIn: Long = 0L,
     val desviacionActualMetros: Double = 0.0,
-    val fueraDeRuta: Boolean = false
+    val distanciaAlDestinoMetros: Double = 0.0,
+    val fueraDeRuta: Boolean = false,
+    val destinoAlcanzado: Boolean = false
 )
