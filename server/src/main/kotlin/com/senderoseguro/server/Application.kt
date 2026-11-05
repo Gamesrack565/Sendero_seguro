@@ -1,5 +1,10 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.archivos.Almacen
+import com.senderoseguro.server.archivos.AlmacenAzureBlob
+import com.senderoseguro.server.archivos.AlmacenCarpeta
+import com.senderoseguro.server.archivos.LimitesArchivos
+import com.senderoseguro.server.archivos.rutasArchivos
 import com.senderoseguro.server.auditoria.Estadisticas
 import com.senderoseguro.server.auditoria.Exportacion
 import com.senderoseguro.server.auditoria.Historial
@@ -57,6 +62,7 @@ import io.ktor.server.config.ApplicationConfig
 import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import java.nio.file.Path
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -131,6 +137,15 @@ fun Application.module() {
         modoDesarrollo = modoDesarrollo,
     )
 
+    val almacen = almacen(config)
+    if (!modoDesarrollo && almacen is AlmacenCarpeta) {
+        log.warn("Los archivos se guardan en una carpeta del servidor. En la nube usa ALMACEN_PROVEEDOR=azure.")
+    }
+    val limitesArchivos = LimitesArchivos(
+        evidenciaBytes = config.property("almacen.maxEvidenciaMb").getString().toLong() * 1024 * 1024,
+        mapaBytes = config.property("almacen.maxMapaMb").getString().toLong() * 1024 * 1024,
+    )
+
     configurarSerializacion()
     configurarLogs()
     configurarErrores()
@@ -144,6 +159,7 @@ fun Application.module() {
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)
             rutasDispositivos(baseDatos.dataSource)
+            rutasArchivos(almacen, limitesArchivos)
             rutasPasarela(recepcionSms, envioAvisos, configPasarela)
             rutasSmsGate(recepcionSms, envioAvisos, ConfigSmsGate(llaveSmsGate, modoDesarrollo))
             if (llavePruebaSms.isNotEmpty()) rutasPruebaSms(sms, llavePruebaSms)
@@ -157,6 +173,18 @@ fun Application.module() {
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }
     }
+}
+
+/** Dónde se guardan los archivos: `carpeta` (local) o `azure` (Azure Blob Storage). */
+private fun almacen(config: ApplicationConfig): Almacen = when (val nombre = config.property("almacen.proveedor").getString().lowercase()) {
+    "carpeta" -> AlmacenCarpeta(Path.of(config.property("almacen.carpeta").getString()))
+    "azure" -> {
+        fun valor(clave: String, variable: String) = config.property("almacen.$clave").getString().trim().ifBlank {
+            error("ALMACEN_PROVEEDOR=azure necesita la variable $variable")
+        }
+        AlmacenAzureBlob(valor("azureUrl", "ALMACEN_AZURE_URL"), valor("azureSas", "ALMACEN_AZURE_SAS"))
+    }
+    else -> error("Almacén desconocido: $nombre. Valores posibles: carpeta, azure")
 }
 
 /** El proveedor de push configurado: `simulado` (local) o `fcm`. */

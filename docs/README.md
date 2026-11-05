@@ -8,7 +8,6 @@ Con esto ya puedes:
 - ver qué rutas tiene la API y qué JSON reciben y devuelven;
 - ver qué ofrece la plataforma (dispersión, avisos, bitácora, SMS) y cómo se usa;
 - crear las tablas locales del teléfono en Room.
-
 ## Cómo funciona, de punta a punta
 
 Lo que hace el servidor con una alerta, paso por paso. Todo esto ya está implementado y corriendo en la nube.
@@ -33,6 +32,7 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/tiemporeal/      WebSocket de la consola y del enlace (P16)
   src/main/kotlin/…/avisos/          Envío de los avisos por push y SMS con reintentos (P16)
   src/main/kotlin/…/auditoria/       Bitácora, historial, línea de tiempo y estadísticas (P13)
+  src/main/kotlin/…/archivos/        Fotos y audios de reportes y mapas offline: subida, descarga y almacén (P15)
   src/main/kotlin/…/pasarela/        Webhooks de Twilio y del celular pasarela: SMS de contingencia SS1 y estado de los SMS (P16)
   src/main/kotlin/…/sincronizacion/  Recepción del lote offline del teléfono, /sync/lote (P14)
   src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
@@ -70,7 +70,7 @@ Al arrancar, el servidor crea todas las tablas con Flyway. Cuando el log diga `R
 
 Para apagar todo: `docker compose down`. Para borrar también los datos y empezar de cero: `docker compose down -v`.
 
-**Almacén de archivos (S3):** API en `localhost:9000` y consola web en http://localhost:9001, con usuario `sendero` y contraseña `sendero-s3`. Es RustFS, compatible con S3; en la nube se usa el S3 del proveedor.
+**Almacén S3 (RustFS):** API en `localhost:9000` y consola web en http://localhost:9001, con usuario `sendero` y contraseña `sendero-s3`. El servidor no lo usa: en local guarda los archivos en una carpeta y en la nube en Azure Blob Storage (ver [Archivos](#archivos)).
 
 **Conexión a la base de datos** (DBeaver, DataGrip o el plugin de Android Studio): `localhost:5432`, base `sendero_seguro`, usuario `postgres`, contraseña `sendero`.
 
@@ -102,11 +102,12 @@ https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v
 ```
 
 - **Para ver si está vivo:** abre `/api/v1/salud`. Debe decir `"estado":"OK"`.
-- **Ya está todo configurado:** base de datos, llaves, push con Firebase y SMS con el celular pasarela. El deploy ya está hecho y se actualiza a mano, solo después de que pasan las pruebas (`:server:test`).
+- **Ya está todo configurado:** base de datos, llaves, push con Firebase, SMS con el celular pasarela y almacén de archivos en Azure Blob Storage. El deploy ya está hecho y se actualiza a mano, solo después de que pasan las pruebas (`:server:test`).
 - **Es igual que en local, con estas diferencias:** no hay rutas `/dev` ni cuentas de prueba (no hay `POST /dev/token`); los avisos salen de verdad (push por Firebase y SMS por el celular pasarela); y el WebSocket va con `wss://` en vez de `ws://`.
 - **Las pruebas del día a día se hacen en local**, no en la nube: en la nube cada alerta manda SMS y push reales.
-- **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, Firebase, SMS). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
+- **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, Firebase, SMS y el token SAS del almacén de archivos). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
 - **La base de la nube es solo del servidor en la nube.** Para probar en local se usa la base de Docker.
+- **Respaldos.** Azure Database for PostgreSQL hace respaldos automáticos de la base de la nube (7 días por defecto) y permite restaurarla a un momento anterior desde el portal de Azure.
 
 ## Datos y rutas de prueba
 
@@ -161,6 +162,11 @@ Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hac
 **Avisos push**
 - El servidor manda push con Firebase (FCM) al token que el teléfono registra con `PUT /api/v1/dispositivos/{id}/push`, al iniciar sesión y cada vez que FCM lo cambia. La app usa el `google-services.json` del proyecto de Firebase de Sendero Seguro; la clave de la cuenta de servicio solo la usa el servidor.
 - Si el teléfono no tiene token, el aviso sale por SMS.
+- Qué trae cada push y qué abre en la app: ver [Qué trae cada push](#qué-trae-cada-push).
+- Un aviso que no es de una alerta (contacto agregado, nuevo integrante, reporte rechazado, catálogo publicado, trayecto compartido) se crea con una fila en `notificacion`, en la misma transacción que la acción: `tipo`, `canal`, el destinatario (`usuario_id` si tiene cuenta, o `contacto_id` si es un contacto sin app) y, si aplica, `reporte_id` o `trayecto_id`. El servidor la manda en unos segundos con su texto.
+
+**Archivos (fotos, audios y mapas)**
+- `POST /api/v1/archivos/evidencia` y `POST /api/v1/archivos/mapa` guardan el archivo en el almacén de la nube y responden la clave, el tamaño y el SHA-256, que van en `evidencia` o en `paquete_mapa`. Detalle en [Archivos](#archivos).
 
 **SMS de contingencia**
 - El formato `SS1` está en `docs/api/README.md`. Se manda al número del celular pasarela, que no va en el repo.
@@ -257,6 +263,39 @@ Todo aviso es una fila de `notificacion`: se crea `PENDIENTE` y el servidor la e
 - Las pruebas automáticas descartan al terminar los avisos que crearon, para que el servidor no los mande al arrancar.
 - En local los dos proveedores vienen en `simulado`. Así las alertas de prueba no mandan SMS ni push reales a los números de los datos de prueba.
 - En la nube ya está configurado: el SMS sale por el celular pasarela (`smsgate`) y el push por Firebase (`fcm`). Twilio queda en el código como alternativa.
+- **WhatsApp no se usa.** Los avisos salen solo por push y SMS. La API de WhatsApp de Meta pide plantillas aprobadas y verificación del negocio, y en modo de prueba solo permite 5 números. Si un contacto tiene WhatsApp como canal preferido, el aviso le llega por SMS.
+
+### Qué trae cada push
+
+Cada push de FCM trae dos partes: `notification`, con el título y el texto que Android muestra solo, y `data`, con los datos para que la app sepa qué abrir al tocarla. Va con prioridad alta.
+
+```json
+{
+  "notification": { "title": "Tu alerta fue recibida", "body": "Una unidad de atención recibió tu alerta ALR-2026-000123." },
+  "data": { "tipo": "ACUSE", "alertaId": "8f1c…", "folio": "ALR-2026-000123" }
+}
+```
+
+Todos los valores de `data` son texto. `tipo` siempre viene; los demás solo cuando aplican.
+
+| `tipo` | Quién lo recibe | `data` | Qué abre |
+|---|---|---|---|
+| `ALERTA_PRIORITARIA` | Operador de la unidad asignada, o el coordinador del círculo si se escaló a él | `alertaId`, `folio` | La alerta |
+| `ALERTA_INFORMATIVA` | Los demás operadores de la corporación | `alertaId`, `folio` | La alerta |
+| `RED_APOYO` | Contactos con cuenta e integrantes del círculo | `alertaId`, `folio` | El seguimiento de la alerta. El texto trae el enlace de ubicación si tiene acceso de seguimiento |
+| `ACUSE` | Quien envió la alerta | `alertaId`, `folio` | Su alerta activa |
+| `CAMBIO_ESTADO` | Quien envió la alerta | `alertaId`, `folio` | Su alerta activa |
+| `CIERRE` | Quien envió la alerta y su red de apoyo | `alertaId`, `folio` | El detalle de la alerta o el historial |
+| `CANCELACION` | Operadores asignados y red de apoyo | `alertaId`, `folio` | La alerta |
+| `ESCALAMIENTO` | Administradores | `alertaId`, `folio` | La alerta en la consola |
+| `SIN_ACUSE` | Administradores | `alertaId`, `folio` | La alerta en la consola |
+| `CONTACTO_AGREGADO` | El contacto agregado | — | Los contactos de confianza |
+| `NUEVO_INTEGRANTE` | Coordinador del círculo | — | El círculo |
+| `REPORTE_RECHAZADO` | Autor del reporte | `reporteId`, `folio` | El reporte |
+| `CATALOGO_PUBLICADO` | Quien deba enterarse del cambio | — | El catálogo de incidentes |
+| `TRAYECTO_COMPARTIDO` | A quien se le compartió el trayecto | `trayectoId` | El seguimiento del trayecto |
+
+Los textos de cada tipo están en `avisos/Textos.kt`. Si llega un `tipo` que la app no conoce, basta con abrir la pantalla principal.
 
 ## Sincronización
 
@@ -333,6 +372,21 @@ Lee `v_historial_usuario`: alertas, reportes con nombre y trayectos, del más nu
 - `GET /api/v1/historial`: el de la persona del token. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`, igual que en el detalle y la línea de tiempo.
 - `GET /api/v1/usuarios/{id}/historial`: el de otra persona, solo para el Administrador. Pide el encabezado `X-Justificacion` (10 a 500 caracteres) y cada consulta queda en la bitácora como `CONSULTAR_HISTORIAL_AJENO`, con la justificación y la IP. Muestra el estado real de cada alerta.
 
+## Archivos
+
+Las fotos y audios de los reportes (`evidencia`) y los paquetes de mapas offline (`paquete_mapa`) se guardan fuera de la base, en el almacén de archivos. La base solo guarda su clave, tamaño y SHA-256.
+
+| Ruta | Quién | Qué hace |
+|---|---|---|
+| `POST /archivos/evidencia` | Cualquier cuenta | Sube una foto o un audio. `image/jpeg`, `image/png`, `image/webp`, `audio/mpeg`, `audio/mp4`, `audio/aac` o `audio/ogg`, hasta 10 MB. |
+| `POST /archivos/mapa` | Administrador | Sube un paquete de mapas. `application/zip` o `application/octet-stream`, hasta 200 MB. |
+| `GET /archivos/{tipo}/{nombre}` | Cualquier cuenta | Descarga el archivo con su `Content-Type`. Como nunca cambia, el teléfono lo puede guardar en caché. |
+
+- **Cómo se sube.** El cuerpo es el archivo tal cual, no multipart, con su `Content-Type` y el JWT. Responde `201` con `{ clave, url, mime, tamanoBytes, hashSha256 }`. Por ejemplo, la clave es `evidencia/3f2a….jpg` y la ruta de descarga es `/archivos/evidencia/3f2a….jpg`.
+- **Cómo se liga al reporte o al mapa.** Quien guarda el reporte inserta una fila en `evidencia` con `url_objeto` = `clave`, `mime`, `tamano_bytes` y `hash_sha256` de la respuesta. Un paquete de mapas usa `ruta_archivo` = `clave` y `hash_sha256` en `paquete_mapa`, y el teléfono comprueba con el hash que lo bajó completo.
+- **Errores.** `415 TIPO_NO_PERMITIDO` si el `Content-Type` no está en la lista, `413 MUY_GRANDE` si pasa del máximo, `400` si viene vacío y `403` si una cuenta que no es Administrador sube un mapa.
+- **Dónde se guardan.** En local, en la carpeta `build/archivos` del servidor (`ALMACEN_PROVEEDOR=carpeta`). En la nube, en un contenedor privado de Azure Blob Storage (`ALMACEN_PROVEEDOR=azure`): el servidor sube y lee con un token SAS del contenedor, y nadie puede abrir los archivos directo desde internet, solo a través de la API con sesión.
+
 ## Retención de trayectos
 
 Un trayecto terminado (`FINALIZADO` o `CANCELADO`) hace más de 30 días y que no tuvo alerta se borra, junto con sus check-ins, sus enlaces y sus avisos. Los que tuvieron alerta se quedan, porque son parte del historial de esa alerta, y los `EN_CURSO` no se tocan. El servidor lo revisa al arrancar y cada 6 horas, por tandas de 500, y deja en la bitácora un registro `PURGAR_TRAYECTOS` con la cantidad borrada.
@@ -349,6 +403,20 @@ Un trayecto terminado (`FINALIZADO` o `CANCELADO`) hace más de 30 días y que n
 `GET /api/v1/estadisticas/exportar?formato=csv` (o `pdf`) descarga los mismos números, con los mismos filtros. Solo el Administrador, y cada exportación queda en la bitácora como `EXPORTAR_ESTADISTICAS` con el formato y los filtros; si no se puede registrar, no se entrega el archivo.
 - **CSV:** una fila por dato (`seccion,concepto,valor,mediana_acuse_seg`), en UTF-8 con BOM para que Excel lea los acentos. Un texto que empieza con `=`, `+`, `-` o `@` se escribe con un apóstrofo delante para que Excel no lo ejecute como fórmula.
 - **PDF:** tamaño carta, con el resumen, los repartos y una barra por semana. Usa Apache PDFBox y las fuentes estándar del PDF; un carácter que no traen (un emoji) sale como `?`.
+
+## Prueba de carga
+
+RNF13 pide soportar al menos 1,500 solicitudes por minuto sin pasar de 2 s de respuesta. `pruebas-carga/Carga.java` lo mide contra el servidor en la nube. Se corre con Java 21, sin instalar nada:
+
+```powershell
+& "$env:JAVA_HOME\bin\java" pruebas-carga\Carga.java
+```
+
+- Manda solicitudes a ritmo fijo a dos rutas que leen la base de datos y no crean nada ni mandan avisos: `GET /salud` y `GET /enlace/{token}` con un token que no existe.
+- Primero 2 minutos a 1,500 por minuto (lo que pide RNF13) y después 1 minuto a 3,000 por minuto, para ver el margen.
+- Al final imprime, y guarda en `resultado-carga.txt`, cuántas respondieron bien, los códigos y los tiempos (mediana, p90, p95, p99 y máximo). Cumple si al menos el 99% responde bien y el 95% tarda menos de 2 s.
+- Para otro servidor u otra duración: `Carga.java http://localhost:8080/api/v1 60`.
+- **Resultado contra Azure (5 de noviembre de 2026): cumple.** A 1,500 por minuto respondieron bien las 3,000 solicitudes, con mediana de 70 ms y p95 de 155 ms. A 3,000 por minuto también respondieron bien todas, con p95 de 126 ms.
 
 ## Configuración
 
@@ -381,6 +449,11 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
 | `DETRAS_DE_PROXY` | El servidor está detrás del balanceador de la nube: la IP de la bitácora se toma del final de `X-Forwarded-For` | `false`. En la nube, `true`. |
+| `ALMACEN_PROVEEDOR` | Dónde se guardan los archivos: `carpeta` o `azure` (Blob Storage) | `carpeta` |
+| `ALMACEN_CARPETA` | Carpeta de los archivos con `carpeta` | `build/archivos` |
+| `ALMACEN_AZURE_URL` | Con `azure`: `https://<cuenta>.blob.core.windows.net/<contenedor>` | vacío |
+| `ALMACEN_AZURE_SAS` | Con `azure`: token SAS del contenedor, con permisos de leer, crear y escribir. Es secreto. | vacío |
+| `ALMACEN_MAX_EVIDENCIA_MB` / `ALMACEN_MAX_MAPA_MB` | Tamaño máximo de una foto o audio y de un paquete de mapas | `10` / `200` |
 | `RETENCION_TRAYECTO_DIAS` / `RETENCION_REVISION_HORAS` | Días que se guarda un trayecto terminado sin alerta, y cada cuántas horas se revisa | `30` / `6` |
 
 Para la nube se arma un solo archivo con `.\gradlew.bat :server:buildFatJar` (en Linux o Mac, `./gradlew`). Queda en `server/build/libs/sendero-seguro-server.jar` y se corre con `java -jar`.
@@ -456,6 +529,7 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Avisos: SMS con Twilio y estado de entrega (`/pasarela/sms/estado`) | Listo, como alternativa (hoy sin número) |
 | SMS de contingencia `SS1`, con `RegistroAlertasSms` por conectar | Listo |
 | Servidor y base de datos en la nube (Azure) | Listo |
+| Archivos: subida y descarga de evidencia y mapas, en Azure Blob Storage | Listo |
 | Tiempo real: WebSocket de la consola y del enlace | Listo |
 
 El detalle de cada punto está en `docs/api/README.md`.

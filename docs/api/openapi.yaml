@@ -41,6 +41,8 @@ tags:
     description: P16 · FCM y webhooks del proveedor de SMS
   - name: Auditoría
     description: P13 · historial, timeline, bitácora, estadísticas y exportación
+  - name: Archivos
+    description: P15 · fotos y audios de los reportes y mapas offline, guardados en la nube
 
 security:
   - jwt: []
@@ -384,6 +386,75 @@ paths:
         '400': { $ref: '#/components/responses/Invalido' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /archivos/{tipo}:
+    post:
+      tags: [Archivos]
+      summary: Sube una foto o audio de un reporte, o un paquete de mapas
+      description: |
+        El cuerpo es el archivo tal cual (no multipart), con su `Content-Type`. El servidor lo guarda en el almacén
+        (Azure Blob Storage en la nube) y responde la clave, el tamaño y el SHA-256. El módulo que lo usa los guarda en
+        `evidencia` (`url_objeto`, `mime`, `tamano_bytes`, `hash_sha256`) o en `paquete_mapa` (`ruta_archivo`, …).
+
+        - `evidencia`: cualquier cuenta. `image/jpeg`, `image/png`, `image/webp`, `audio/mpeg`, `audio/mp4`,
+          `audio/aac` o `audio/ogg`. Hasta 10 MB.
+        - `mapa`: solo el Administrador. `application/zip` o `application/octet-stream`. Hasta 200 MB.
+      x-proceso: P15
+      parameters:
+        - name: tipo
+          in: path
+          required: true
+          schema: { type: string, enum: [evidencia, mapa] }
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          audio/mp4: { schema: { type: string, format: binary } }
+          application/zip: { schema: { type: string, format: binary } }
+      responses:
+        '201':
+          description: Guardado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArchivoGuardado' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '413':
+          description: Pasa del tamaño máximo (`MUY_GRANDE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: El `Content-Type` no está permitido para ese tipo (`TIPO_NO_PERMITIDO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /archivos/{tipo}/{nombre}:
+    get:
+      tags: [Archivos]
+      summary: Descarga un archivo
+      description: Cualquier cuenta con sesión. `nombre` es la parte final de la clave (`<uuid>.<extensión>`). El archivo no cambia nunca, así que se puede guardar en caché.
+      x-proceso: P15
+      parameters:
+        - name: tipo
+          in: path
+          required: true
+          schema: { type: string, enum: [evidencia, mapa] }
+        - name: nombre
+          in: path
+          required: true
+          schema: { type: string, example: 3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90.jpg }
+      responses:
+        '200':
+          description: El archivo, con su `Content-Type`
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
         '404': { $ref: '#/components/responses/NoEncontrado' }
 
   /pasarela/sms/entrante:
@@ -1149,3 +1220,13 @@ components:
             properties:
               semana: { type: string, example: 2026-W43 }
               total: { type: integer }
+
+    ArchivoGuardado:
+      type: object
+      required: [clave, url, mime, tamanoBytes, hashSha256]
+      properties:
+        clave: { type: string, example: evidencia/3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90.jpg, description: Va en `evidencia.url_objeto` o `paquete_mapa.ruta_archivo` }
+        url: { type: string, example: /archivos/evidencia/3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90.jpg, description: Ruta de descarga, relativa a /api/v1 }
+        mime: { type: string, example: image/jpeg }
+        tamanoBytes: { type: integer, example: 482113 }
+        hashSha256: { type: string, example: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 }

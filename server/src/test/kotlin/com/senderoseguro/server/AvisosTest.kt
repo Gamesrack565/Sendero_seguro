@@ -271,4 +271,58 @@ class AvisosTest : PruebaConBaseDatos() {
             numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND proximo_reintento_en > now() + interval '50 seconds'", id),
         )
     }
+
+    @Test
+    fun `los avisos que no son de una alerta salen con su texto y sus datos`() {
+        vaciarCola()
+        val beto = UUID.fromString("00000000-0000-4000-8000-000000000002")
+        val reporte = UUID.randomUUID()
+        val trayecto = UUID.randomUUID()
+        sql(
+            """INSERT INTO reporte (id, tipo_incidente_id, version_catalogo_id, descripcion, latitud, longitud, autor_id, creado_en)
+               SELECT ?, tipo_incidente_id, version_catalogo_id, 'Prueba de aviso', 19.5045, -99.1469, ?, now()
+               FROM tipo_incidente_version LIMIT 1""",
+            reporte, AlertasPrueba.ANA,
+        )
+        sql(
+            """INSERT INTO trayecto (id, usuario_id, origen_latitud, origen_longitud, destino_latitud, destino_longitud, iniciado_en)
+               VALUES (?, ?, 19.5045, -99.1469, 19.4995, -99.1335, now())""",
+            trayecto, beto,
+        )
+        try {
+            // A la cuenta de Ana (tiene push): su reporte rechazado y el trayecto que le compartió Beto.
+            sql("INSERT INTO notificacion (reporte_id, usuario_id, tipo, canal) VALUES (?, ?, 'REPORTE_RECHAZADO', 'PUSH')", reporte, AlertasPrueba.ANA)
+            sql("INSERT INTO notificacion (trayecto_id, usuario_id, tipo, canal) VALUES (?, ?, 'TRAYECTO_COMPARTIDO', 'PUSH')", trayecto, AlertasPrueba.ANA)
+            sql("INSERT INTO notificacion (usuario_id, tipo, canal) VALUES (?, 'CATALOGO_PUBLICADO', 'PUSH')", AlertasPrueba.ANA)
+            sql("INSERT INTO notificacion (usuario_id, tipo, canal) VALUES (?, 'NUEVO_INTEGRANTE', 'PUSH')", AlertasPrueba.ANA)
+            // A Mamá, contacto de Ana sin app: el aviso de que la agregaron, por SMS.
+            sql("INSERT INTO notificacion (contacto_id, tipo, canal) VALUES ('00000000-0000-4000-8000-0000000000c1', 'CONTACTO_AGREGADO', 'SMS')")
+            val (e, _) = envio()
+            e.procesarPendientes()
+
+            val folio = texto("SELECT folio FROM reporte WHERE id = ?", reporte)!!
+            val rechazado = push.enviados.single { it.datos["tipo"] == "REPORTE_RECHAZADO" }
+            assertEquals("Tu reporte $folio no se publicó", rechazado.titulo)
+            assertEquals(reporte.toString(), rechazado.datos["reporteId"])
+            assertEquals(folio, rechazado.datos["folio"])
+            assertNull(rechazado.datos["alertaId"])
+
+            val compartido = push.enviados.single { it.datos["tipo"] == "TRAYECTO_COMPARTIDO" }
+            assertEquals("Beto compartió su trayecto", compartido.titulo)
+            assertEquals(trayecto.toString(), compartido.datos["trayectoId"])
+
+            assertEquals("Catálogo actualizado", push.enviados.single { it.datos["tipo"] == "CATALOGO_PUBLICADO" }.titulo)
+            assertEquals("Nuevo integrante en tu círculo", push.enviados.single { it.datos["tipo"] == "NUEVO_INTEGRANTE" }.titulo)
+
+            val agregado = sms.enviados.single { it.destino == "5520000001" }
+            assertTrue(agregado.texto.startsWith("Sendero Seguro: Contacto de confianza. Ana te agrego como contacto de confianza."), agregado.texto)
+            assertTrue(agregado.texto.length <= 160, agregado.texto)
+            // Ningún aviso cayó en el texto genérico.
+            assertTrue((push.enviados + sms.enviados).none { it.texto.contains("Tienes un aviso nuevo") })
+        } finally {
+            sql("DELETE FROM notificacion WHERE reporte_id = ? OR trayecto_id = ? OR tipo IN ('CATALOGO_PUBLICADO', 'NUEVO_INTEGRANTE', 'CONTACTO_AGREGADO')", reporte, trayecto)
+            sql("DELETE FROM reporte WHERE id = ?", reporte)
+            sql("DELETE FROM trayecto WHERE id = ?", trayecto)
+        }
+    }
 }

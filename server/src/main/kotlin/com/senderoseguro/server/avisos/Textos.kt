@@ -46,6 +46,12 @@ internal object Textos {
                 else "$nombre canceló su alerta" to "La alerta se canceló y el enlace de ubicación ya no está disponible."
             "ESCALAMIENTO" -> "Alerta $folio escalada" to "Pasó al nivel ${c.nivelEscalamiento ?: ""} de escalamiento. Revísala en la consola."
             "SIN_ACUSE" -> "Alerta $folio sin atender" to "Nadie ha acusado esta alerta y no quedan niveles de escalamiento. Revísala en la consola."
+            "CONTACTO_AGREGADO" ->
+                "Contacto de confianza" to "$nombre te agregó como contacto de confianza. Si activa una alerta, te avisaremos por este medio."
+            "NUEVO_INTEGRANTE" -> "Nuevo integrante en tu círculo" to "Alguien se unió a tu círculo. Revísalo en la app."
+            "REPORTE_RECHAZADO" -> "Tu reporte ${c.folio?.plus(" ").orEmpty()}no se publicó" to "Lo revisamos y no se publicó en el mapa comunitario."
+            "CATALOGO_PUBLICADO" -> "Catálogo actualizado" to "Se publicó una nueva versión del catálogo de incidentes."
+            "TRAYECTO_COMPARTIDO" -> "$nombre compartió su trayecto" to "Puedes seguir su Caminata Segura en la app."
             else -> "Sendero Seguro" to "Tienes un aviso nuevo. Ábrelo en la app."
         }
     }

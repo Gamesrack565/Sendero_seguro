@@ -281,6 +281,8 @@ class EnvioAvisos(
         val reintentos: Int,
         val antiguedadSeg: Long,
         val alertaId: UUID?,
+        val reporteId: UUID?,
+        val trayectoId: UUID?,
         val estadoAlerta: String?,
         val tokenFcm: String?,
         val telefonoCuenta: String?,
@@ -291,21 +293,24 @@ class EnvioAvisos(
             get() = buildMap {
                 put("tipo", tipo)
                 alertaId?.let { put("alertaId", it.toString()) }
+                reporteId?.let { put("reporteId", it.toString()) }
+                trayectoId?.let { put("trayectoId", it.toString()) }
                 contexto.folio?.let { put("folio", it) }
             }
     }
 
     private fun leer(conn: Connection, id: Long): Aviso? = conn.consultarUno(
-        """SELECT n.id, n.tipo::text AS tipo, n.canal::text AS canal, n.estado::text AS estado, n.reintentos, n.alerta_id,
+        """SELECT n.id, n.tipo::text AS tipo, n.canal::text AS canal, n.estado::text AS estado, n.reintentos, n.alerta_id, n.reporte_id, n.trayecto_id,
                   extract(epoch FROM now() - n.creada_en)::bigint AS antiguedad,
                   n.usuario_id = a.usuario_id AS para_emisor,
-                  a.folio, a.estado::text AS estado_alerta, a.nivel_escalamiento,
+                  COALESCE(a.folio, r.folio) AS folio, a.estado::text AS estado_alerta, a.nivel_escalamiento,
                   -- El estado al que cambió la alerta cuando se creó el aviso (se guardan en la misma transacción).
                   (SELECT ev.estado_nuevo::text FROM evento_alerta ev
                    WHERE ev.alerta_id = n.alerta_id AND ev.ocurrido_en <= n.creada_en
                      AND ev.estado_anterior IS DISTINCT FROM ev.estado_nuevo
                    ORDER BY ev.id DESC LIMIT 1) AS estado_aviso,
-                  split_part(e.nombre, ' ', 1) AS emisor_nombre, tv.nombre AS tipo_nombre,
+                  -- De quién es el aviso: quien envió la alerta, quien compartió el trayecto o quien agregó al contacto.
+                  split_part(COALESCE(e.nombre, tu.nombre, cu.nombre), ' ', 1) AS emisor_nombre, tv.nombre AS tipo_nombre,
                   du.rol::text AS rol, du.telefono_movil AS telefono_cuenta, c.telefono AS telefono_contacto,
                   (SELECT d.fcm_token FROM dispositivo d WHERE d.usuario_id = n.usuario_id AND d.fcm_token IS NOT NULL
                    ORDER BY d.ultimo_visto_en DESC NULLS LAST, d.creado_en DESC LIMIT 1) AS fcm,
@@ -318,6 +323,10 @@ class EnvioAvisos(
            LEFT JOIN tipo_incidente_version tv ON tv.version_catalogo_id = a.version_catalogo_id AND tv.tipo_incidente_id = a.tipo_incidente_id
            LEFT JOIN usuario du ON du.id = n.usuario_id
            LEFT JOIN contacto_confianza c ON c.id = n.contacto_id
+           LEFT JOIN usuario cu ON cu.id = c.usuario_id
+           LEFT JOIN reporte r ON r.id = n.reporte_id
+           LEFT JOIN trayecto t ON t.id = n.trayecto_id
+           LEFT JOIN usuario tu ON tu.id = t.usuario_id
            WHERE n.id = ?""",
         id,
     ) { rs ->
@@ -334,6 +343,8 @@ class EnvioAvisos(
             reintentos = rs.getInt("reintentos"),
             antiguedadSeg = rs.getLong("antiguedad"),
             alertaId = alertaId,
+            reporteId = rs.uuidONulo("reporte_id"),
+            trayectoId = rs.uuidONulo("trayecto_id"),
             estadoAlerta = rs.getString("estado_alerta"),
             tokenFcm = rs.getString("fcm"),
             telefonoCuenta = rs.getString("telefono_cuenta"),
