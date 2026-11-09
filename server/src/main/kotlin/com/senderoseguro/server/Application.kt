@@ -1,0 +1,232 @@
+package com.senderoseguro.server
+
+import com.senderoseguro.server.archivos.Almacen
+import com.senderoseguro.server.archivos.AlmacenAzureBlob
+import com.senderoseguro.server.archivos.AlmacenCarpeta
+import com.senderoseguro.server.archivos.LimitesArchivos
+import com.senderoseguro.server.archivos.rutasArchivos
+import com.senderoseguro.server.auditoria.Estadisticas
+import com.senderoseguro.server.auditoria.Exportacion
+import com.senderoseguro.server.auditoria.Historial
+import com.senderoseguro.server.auditoria.LineaDeTiempo
+import com.senderoseguro.server.auditoria.RetencionTrayectos
+import com.senderoseguro.server.auditoria.rutasBitacora
+import com.senderoseguro.server.auditoria.rutasEstadisticas
+import com.senderoseguro.server.auditoria.rutasHistorial
+import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
+import com.senderoseguro.server.avisos.CredencialesFcm
+import com.senderoseguro.server.avisos.EnvioAvisos
+import com.senderoseguro.server.avisos.ProveedorFcm
+import com.senderoseguro.server.avisos.rutasDispositivos
+import com.senderoseguro.server.avisos.Proveedor
+import com.senderoseguro.server.avisos.ProveedorSimulado
+import com.senderoseguro.server.avisos.ProveedorSmsGate
+import com.senderoseguro.server.avisos.ProveedorTwilio
+import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
+import com.senderoseguro.server.desarrollo.SyncAlertaPrueba
+import com.senderoseguro.server.desarrollo.rutasDesarrollo
+import com.senderoseguro.server.dispersion.AtencionServicio
+import com.senderoseguro.server.dispersion.ConsultaAlertas
+import com.senderoseguro.server.dispersion.DispersionServicio
+import com.senderoseguro.server.dispersion.EnlacesServicio
+import com.senderoseguro.server.dispersion.EscalamientoServicio
+import com.senderoseguro.server.dispersion.iniciarTemporizador
+import com.senderoseguro.server.dispersion.rutasAlertas
+import com.senderoseguro.server.dispersion.rutasEnlace
+import com.senderoseguro.server.pasarela.ConfigPasarela
+import com.senderoseguro.server.pasarela.ConfigSmsGate
+import com.senderoseguro.server.pasarela.RecepcionSms
+import com.senderoseguro.server.pasarela.RegistroAlertasSms
+import com.senderoseguro.server.pasarela.rutasPasarela
+import com.senderoseguro.server.pasarela.rutasPruebaSms
+import com.senderoseguro.server.pasarela.rutasSmsGate
+import com.senderoseguro.server.plataforma.BaseDatos
+import com.senderoseguro.server.plataforma.EmisorTokens
+import com.senderoseguro.server.plataforma.LARGO_MINIMO_LLAVE
+import com.senderoseguro.server.plataforma.configurarErrores
+import com.senderoseguro.server.plataforma.configurarLogs
+import com.senderoseguro.server.plataforma.configurarSeguridad
+import com.senderoseguro.server.plataforma.configurarSerializacion
+import com.senderoseguro.server.plataforma.problemasDeArranque
+import com.senderoseguro.server.plataforma.rutasSalud
+import com.senderoseguro.server.sincronizacion.ManejadorSync
+import com.senderoseguro.server.sincronizacion.Sincronizacion
+import com.senderoseguro.server.sincronizacion.TipoSync
+import com.senderoseguro.server.sincronizacion.rutasSync
+import com.senderoseguro.server.tiemporeal.CentroTiempoReal
+import com.senderoseguro.server.tiemporeal.configurarWebSockets
+import com.senderoseguro.server.tiemporeal.rutasTiempoReal
+import io.ktor.server.application.Application
+import io.ktor.server.application.log
+import io.ktor.server.config.ApplicationConfig
+import io.ktor.server.netty.EngineMain
+import io.ktor.server.routing.route
+import io.ktor.server.routing.routing
+import java.nio.file.Path
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+fun main(args: Array<String>) = EngineMain.main(args)
+
+/** Punto de entrada de Ktor (se declara en application.conf). */
+fun Application.module() {
+    val modoDesarrollo = environment.config.property("db.datosPrueba").getString().toBoolean()
+    // Se revisa antes de tocar la base: un servidor en la nube con las llaves del repo no debe arrancar.
+    val problemas = problemasDeArranque(environment.config, modoDesarrollo)
+    check(problemas.isEmpty()) { "El servidor no arranca: " + problemas.joinToString("; ") }
+    if (modoDesarrollo) {
+        log.warn("Modo de prueba: rutas /dev y cuentas de prueba activas. En la nube usa DB_DATOS_PRUEBA=false.")
+    }
+    val baseDatos = BaseDatos.iniciar(this)
+    // Los módulos que registran alertas reciben `dispersion` y llaman a dispersion.despachar(alertaId).
+    val config = environment.config
+    val enlaces = EnlacesServicio(
+        baseDatos.dataSource,
+        secreto = config.property("enlace.secreto").getString(),
+        horasMax = config.property("enlace.horasMax").getString().toInt(),
+        urlWebSocket = config.property("enlace.urlWebSocket").getString(),
+    )
+    val dispersion = DispersionServicio(baseDatos.dataSource, scope = this, enlaces)
+    val escalamiento = EscalamientoServicio(baseDatos.dataSource)
+    val revision = environment.config.property("dispersion.revisionSeg").getString().toInt().seconds
+    iniciarTemporizador(scope = this, cada = revision, dispersion, escalamiento)
+    val consulta = ConsultaAlertas(baseDatos.dataSource)
+    val atencion = AtencionServicio(baseDatos.dataSource, consulta, escalamiento, enlaces)
+    val tiempoReal = CentroTiempoReal(baseDatos.dataSource, consulta, enlaces)
+    tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
+    val tokens = EmisorTokens.desde(this)
+    val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
+    val politicaAvisos = EnvioAvisos.Politica(
+        maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
+        esperaBase = config.property("avisos.esperaBaseSeg").getString().toInt().seconds,
+    )
+    val llaveSmsGate = config.property("smsgate.llaveFirma").getString().trim()
+    // Un SMS por el celular pasarela vence en la nube un minuto antes de que el servidor lo dé por perdido y lo reintente.
+    val sms = proveedorSms(config, urlPublica, vigenciaSmsGate = politicaAvisos.plazoConfirmacion - 1.minutes, llaveSmsGate)
+    val envioAvisos = EnvioAvisos(
+        baseDatos.dataSource,
+        push = proveedorPush(config),
+        sms = sms,
+        enlaces,
+        politicaAvisos,
+        urlEnlace = config.property("avisos.urlEnlace").getString(),
+    )
+    envioAvisos.iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
+    // Registro de las alertas que llegan por SMS: lo conecta el Módulo 2 (P4). Mientras, en desarrollo se usa el de prueba
+    // y en la nube los SMS válidos quedan pendientes en mensaje_sms hasta que exista.
+    val registroSms: RegistroAlertasSms? = if (modoDesarrollo) RegistroSmsPrueba else null
+    val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroSms)
+    // Manejadores de /sync/lote: cada módulo registra el de su tipo, por ejemplo manejadoresSync[TipoSync.REPORTE] = ...
+    // Mientras, en desarrollo las ALERTA usan uno de prueba; un tipo sin manejador sale RECHAZADO temporal.
+    val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
+    if (modoDesarrollo) manejadoresSync[TipoSync.ALERTA] = SyncAlertaPrueba
+    recepcionSms.iniciar(scope = this, cada = 30.seconds)
+    RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
+        .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
+    val llavePruebaSms = config.property("pasarela.llavePruebaSms").getString().trim()
+    check(llavePruebaSms.isEmpty() || llavePruebaSms.length >= LARGO_MINIMO_LLAVE) {
+        "PRUEBA_SMS_LLAVE debe tener al menos $LARGO_MINIMO_LLAVE caracteres"
+    }
+    if (llavePruebaSms.isNotEmpty()) log.warn("PRUEBA_SMS_LLAVE activa: existe POST /pasarela/prueba-sms. Bórrala al terminar la prueba.")
+    val configPasarela = ConfigPasarela(
+        authToken = config.property("twilio.authToken").getString(),
+        urlPublica = urlPublica,
+        modoDesarrollo = modoDesarrollo,
+    )
+
+    val almacen = almacen(config)
+    if (!modoDesarrollo && almacen is AlmacenCarpeta) {
+        log.warn("Los archivos se guardan en una carpeta del servidor. En la nube usa ALMACEN_PROVEEDOR=azure.")
+    }
+    val limitesArchivos = LimitesArchivos(
+        evidenciaBytes = config.property("almacen.maxEvidenciaMb").getString().toLong() * 1024 * 1024,
+        mapaBytes = config.property("almacen.maxMapaMb").getString().toLong() * 1024 * 1024,
+    )
+
+    configurarSerializacion()
+    configurarLogs()
+    configurarErrores()
+    configurarSeguridad()
+    configurarWebSockets()
+
+    routing {
+        route("/api/v1") {
+            rutasSalud(revisarBaseDatos = baseDatos::estaViva)
+            rutasAlertas(consulta, atencion)
+            rutasEnlace(enlaces)
+            rutasTiempoReal(tiempoReal, tokens)
+            rutasDispositivos(baseDatos.dataSource)
+            rutasArchivos(almacen, limitesArchivos)
+            rutasPasarela(recepcionSms, envioAvisos, configPasarela)
+            rutasSmsGate(recepcionSms, envioAvisos, ConfigSmsGate(llaveSmsGate, modoDesarrollo))
+            if (llavePruebaSms.isNotEmpty()) rutasPruebaSms(sms, llavePruebaSms)
+            rutasSync(Sincronizacion(baseDatos.dataSource, dispersion, manejadoresSync))
+            rutasBitacora(baseDatos.dataSource)
+            rutasLineaDeTiempo(LineaDeTiempo(baseDatos.dataSource, consulta))
+            rutasHistorial(Historial(baseDatos.dataSource))
+            val estadisticas = Estadisticas(baseDatos.dataSource)
+            rutasEstadisticas(estadisticas, Exportacion(baseDatos.dataSource, estadisticas))
+            // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
+            if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
+        }
+    }
+}
+
+/** Dónde se guardan los archivos: `carpeta` (local) o `azure` (Azure Blob Storage). */
+private fun almacen(config: ApplicationConfig): Almacen = when (val nombre = config.property("almacen.proveedor").getString().lowercase()) {
+    "carpeta" -> AlmacenCarpeta(Path.of(config.property("almacen.carpeta").getString()))
+    "azure" -> {
+        fun valor(clave: String, variable: String) = config.property("almacen.$clave").getString().trim().ifBlank {
+            error("ALMACEN_PROVEEDOR=azure necesita la variable $variable")
+        }
+        AlmacenAzureBlob(valor("azureUrl", "ALMACEN_AZURE_URL"), valor("azureSas", "ALMACEN_AZURE_SAS"))
+    }
+    else -> error("Almacén desconocido: $nombre. Valores posibles: carpeta, azure")
+}
+
+/** El proveedor de push configurado: `simulado` (local) o `fcm`. */
+private fun proveedorPush(config: ApplicationConfig): Proveedor = when (val nombre = config.property("avisos.proveedorPush").getString().lowercase()) {
+    "simulado" -> ProveedorSimulado()
+    "fcm" -> {
+        val valor = config.property("avisos.fcmCredenciales").getString().trim().ifBlank {
+            error("AVISOS_PROVEEDOR_PUSH=fcm necesita FCM_CREDENCIALES con la ruta del .json de la cuenta de servicio o su contenido")
+        }
+        // En la nube la variable trae el contenido del .json; en tu computadora, la ruta del archivo.
+        ProveedorFcm(if (valor.startsWith("{")) CredencialesFcm.desdeTexto(valor) else CredencialesFcm.desdeArchivo(valor))
+    }
+    else -> error("Proveedor de push desconocido: $nombre. Valores posibles: simulado, fcm")
+}
+
+/** El proveedor de SMS configurado: `simulado` (local), `twilio` o `smsgate` (celular Android como pasarela). */
+private fun proveedorSms(config: ApplicationConfig, urlPublica: String, vigenciaSmsGate: Duration, llaveSmsGate: String): Proveedor = when (val nombre = config.property("avisos.proveedorSms").getString().lowercase()) {
+    "simulado" -> ProveedorSimulado()
+    "twilio" -> {
+        fun valor(clave: String, variable: String) = config.property("twilio.$clave").getString().trim().ifBlank {
+            error("AVISOS_PROVEEDOR_SMS=twilio necesita la variable $variable")
+        }
+        ProveedorTwilio(
+            cuenta = valor("accountSid", "TWILIO_ACCOUNT_SID"),
+            authToken = valor("authToken", "TWILIO_AUTH_TOKEN"),
+            numero = valor("numero", "TWILIO_NUMERO"),
+            // Twilio solo puede avisar la entrega a una dirección pública.
+            urlEstado = urlPublica.takeIf { it.isNotBlank() }?.let { "$it/pasarela/sms/estado" },
+        )
+    }
+    "smsgate" -> {
+        fun valor(clave: String, variable: String) = config.property("smsgate.$clave").getString().trim().ifBlank {
+            error("AVISOS_PROVEEDOR_SMS=smsgate necesita la variable $variable")
+        }
+        ProveedorSmsGate(
+            usuario = valor("usuario", "SMSGATE_USUARIO"),
+            password = valor("password", "SMSGATE_PASSWORD"),
+            vigencia = vigenciaSmsGate,
+            // Sin llave de firma no hay webhooks de estado: el SMS aceptado se queda ENVIADA en vez de esperar la entrega.
+            confirmaEntrega = llaveSmsGate.isNotBlank(),
+            urlApi = valor("url", "SMSGATE_URL"),
+        )
+    }
+    else -> error("Proveedor de SMS desconocido: $nombre. Valores posibles: simulado, twilio, smsgate")
+}

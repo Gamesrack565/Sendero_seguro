@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1006624970034",
+    "project_id": "sendero-seguro-1a9c5",
+    "storage_bucket": "sendero-seguro-1a9c5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1006624970034:android:13f02f9e32125e1c13332b",
+        "android_client_info": {
+          "package_name": "com.escom.sendero_seguro"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7NdlGo0Pewf4Am9WJOKjd82OLZNvIegU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
