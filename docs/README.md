@@ -209,7 +209,18 @@ Rutas que usa la app de identidad (Módulo 1). El contrato completo está en `do
 - JSON en camelCase, como el resto del servidor (`telefonoMovil`, `escuelaId`, `nombreGrupo`…).
 - Los errores traen sus datos dentro de `detalle`: `detalle.errores` (un texto por campo, con las mismas claves que usa la app), `detalle.intentosRestantes`, `detalle.bloqueadaHasta` y `detalle.rol`.
 - `401 NO_AUTENTICADO` significa que falta el token, que venció o que la sesión se cerró: hay que volver a iniciar sesión. `401 CREDENCIALES_INVALIDAS` es la contraseña mala en el login.
-- Después del login, el teléfono registra su token de push con `PUT /dispositivos/{id}/push`.
+- La dirección del servidor está en `app/build.gradle.kts` (`API_BASE_URL`): la versión debug usa el servidor de la PC (`http://10.0.2.2:8080/api/v1/`) y la release, el de Azure. Para probar la debug contra la nube: `.\gradlew.bat :app:installDebug -PsenderoApiUrl=<url de la nube>/api/v1/`.
+- `app/src/test/.../identidad/ConexionServidorTest.kt` prueba el código de red de la app contra el servidor local (registro, login, contactos, círculo y cancelación). Se corre con `.\gradlew.bat :app:testDebugUnitTest` con el servidor prendido; si no está prendido, se omite.
+
+**Pendiente en la app: el token de push**
+
+El servidor ya manda push con Firebase y ya recibe el token del teléfono. En la app falta mandarlo:
+1. Agregar Firebase Messaging (`com.google.firebase:firebase-messaging`) y el plugin `com.google.gms.google-services`. El `google-services.json` ya está en `app/`.
+2. Después de `POST /auth/login` o `POST /auth/registro`, pedir el token con `FirebaseMessaging.getInstance().token` y mandarlo con `PUT /dispositivos/{id}/push`, cuerpo `{"fcmToken":"..."}`, con el JWT de la sesión. El `{id}` es el mismo `dispositivo.id` que se mandó en el login.
+3. En un `FirebaseMessagingService`, en `onNewToken`, mandarlo otra vez (Firebase lo cambia de vez en cuando).
+4. Mientras el teléfono no tenga token, sus avisos le llegan por SMS.
+
+Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-cada-push).
 
 **Cuentas (P1)**
 

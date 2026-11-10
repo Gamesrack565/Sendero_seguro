@@ -19,13 +19,22 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        // URL del backend (Ktor). 10.0.2.2 es la PC anfitriona vista desde el emulador.
-        buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8080/api/v1/\"")
     }
 
+    // URL del backend (Ktor, Módulo 4):
+    // - debug: el servidor en la PC. 10.0.2.2 es la PC anfitriona vista desde el emulador.
+    // - release: el servidor en la nube (Azure).
+    // Para probar la versión debug contra la nube: .\gradlew.bat :app:installDebug -PsenderoApiUrl=https://.../api/v1/
+    val urlLocal = "http://10.0.2.2:8080/api/v1/"
+    val urlNube = "https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1/"
+    val urlForzada = providers.gradleProperty("senderoApiUrl").orNull
+
     buildTypes {
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlLocal}\"")
+        }
         release {
+            buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlNube}\"")
             optimization {
                 enable = false
             }
