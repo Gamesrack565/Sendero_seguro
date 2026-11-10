@@ -9,6 +9,7 @@ info:
 
     **Qué contiene:**
     - Las rutas de P5 Dispersión, P13 Auditoría, P14 Plataforma y P16 Pasarelas.
+    - Las del Módulo 1 que guardan en la nube: P1 Cuentas, P2 Red de apoyo y P8 Cancelación.
     - `POST /alertas` y `POST /alertas/{id}/ubicaciones` como propuesta de referencia
       (P4 y P6 escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después
       del registro.
@@ -31,6 +32,10 @@ servers:
     description: Nube (dominio por definir)
 
 tags:
+  - name: Cuentas
+    description: P1 · registro, inicio de sesión, perfil y baja (Módulo 1)
+  - name: Red de apoyo
+    description: P2 · contactos de confianza, círculo escolar y avisos de vinculación (Módulo 1)
   - name: Plataforma
     description: P14 · salud y sincronización diferida
   - name: Alertas
@@ -763,6 +768,421 @@ paths:
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '403': { $ref: '#/components/responses/SinPermiso' }
 
+  # ------------------------------------------------------------------ Módulo 1: P1 Cuentas
+  /avisos-privacidad/vigente:
+    get:
+      tags: [Cuentas]
+      summary: Aviso de privacidad vigente (lo acepta la persona al registrarse)
+      x-proceso: P1
+      security: []
+      responses:
+        '200':
+          description: Aviso vigente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvisoPrivacidad' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /instituciones:
+    get:
+      tags: [Cuentas]
+      summary: Instituciones activas, para el registro
+      x-proceso: P1
+      security: []
+      responses:
+        '200':
+          description: Lista
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Institucion' } }
+
+  /instituciones/{id}/escuelas:
+    get:
+      tags: [Cuentas]
+      summary: Escuelas activas de una institución
+      x-proceso: P1
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Lista
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Escuela' } }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /auth/registro:
+    post:
+      tags: [Cuentas]
+      summary: Crea la cuenta, guarda el consentimiento y el teléfono, y abre la sesión (CU-01)
+      description: |
+        La contraseña se guarda con Argon2id. `tipoComunidad = DOCENTE` crea la cuenta como COORDINADOR; las demás
+        como INTEGRANTE. Los errores de validación traen `detalle.errores` con la misma clave de campo que usa la app
+        (`nombre`, `telefono`, `identificador`, `escuela`, `carrera`, `contrasena`, `tipoComunidad`,
+        `consentimiento`, `dispositivo`).
+      x-proceso: P1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Registro' }
+      responses:
+        '201':
+          description: Cuenta creada y sesión abierta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sesion' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /auth/login:
+    post:
+      tags: [Cuentas]
+      summary: Inicia sesión con teléfono (10 dígitos) o matrícula (CU-02)
+      description: |
+        Sin `dispositivo` es la consola web; con `dispositivo` es la app, donde OPERADOR y ADMINISTRADOR no pueden
+        entrar (`403 PERFIL_NO_PERMITIDO`, con `detalle.rol`). Al 5.º intento fallido (`login_max_intentos`) la cuenta
+        queda bloqueada `login_bloqueo_minutos` (15).
+      x-proceso: P1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Login' }
+      responses:
+        '200':
+          description: Sesión abierta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sesion' }
+        '401':
+          description: '`CREDENCIALES_INVALIDAS`, con `detalle.intentosRestantes` si la cuenta existe'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '403':
+          description: '`CUENTA_SUSPENDIDA` (suspendida o dada de baja) o `PERFIL_NO_PERMITIDO`'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '423':
+          description: '`CUENTA_BLOQUEADA`, con `detalle.bloqueadaHasta`'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /auth/logout:
+    post:
+      tags: [Cuentas]
+      summary: Cierra la sesión del token; desde ese momento el token responde 401
+      x-proceso: P1
+      responses:
+        '204': { description: Sesión cerrada }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /usuarios/me:
+    get:
+      tags: [Cuentas]
+      summary: Perfil de quien tiene la sesión
+      x-proceso: P1
+      responses:
+        '200':
+          description: Perfil
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+    patch:
+      tags: [Cuentas]
+      summary: Cambia teléfono, matrícula, carrera o el permiso de entrenamiento de IA (CU-03)
+      description: Solo se cambian los campos que llegan.
+      x-proceso: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PerfilCambio' }
+      responses:
+        '200':
+          description: Perfil actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /usuarios/me/baja:
+    post:
+      tags: [Cuentas]
+      summary: Pide la baja de la cuenta (derecho ARCO de cancelación)
+      description: Pide la contraseña. La cuenta queda BAJA_SOLICITADA, se cierran todas sus sesiones y se crea la solicitud ARCO.
+      x-proceso: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contrasena]
+              properties:
+                contrasena: { type: string }
+      responses:
+        '204': { description: Baja solicitada }
+        '401': { description: Contraseña incorrecta o sin token, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ------------------------------------------------------------------ Módulo 1: P2 Red de apoyo
+  /contactos:
+    get:
+      tags: [Red de apoyo]
+      summary: Contactos de confianza activos, por prioridad
+      x-proceso: P2
+      responses:
+        '200':
+          description: Lista
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Contacto' } }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /contactos/{id}:
+    put:
+      tags: [Red de apoyo]
+      summary: Agrega o edita un contacto (idempotente; el id lo genera el teléfono)
+      description: |
+        Queda CONFIRMADO. Si el teléfono es de una cuenta, el servidor llena `usuarioVinculadoId` y pone
+        `canalPreferido = PUSH`. El mismo número dos veces en la lista responde `409 DUPLICADO` (`detalle.errores.telefono`).
+      x-proceso: P2
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactoEntrada' }
+      responses:
+        '200':
+          description: Contacto guardado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Contacto' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+    delete:
+      tags: [Red de apoyo]
+      summary: Quita un contacto (idempotente; 204 aunque ya no exista)
+      description: Si ya recibió algún aviso queda inactivo en lugar de borrarse, para conservar el historial.
+      x-proceso: P2
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Quitado }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /contactos/orden:
+    put:
+      tags: [Red de apoyo]
+      summary: Reordena los contactos; quedan con prioridad 1..n
+      x-proceso: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids: { type: array, items: { type: string, format: uuid }, description: Todos los contactos activos, en el orden nuevo }
+      responses:
+        '200':
+          description: Contactos en el orden nuevo
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Contacto' } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /circulos/mio:
+    get:
+      tags: [Red de apoyo]
+      summary: El círculo escolar de la persona, o `{}` si no está en ninguno
+      x-proceso: P2
+      responses:
+        '200':
+          description: Círculo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  circulo: { $ref: '#/components/schemas/Circulo' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /circulos:
+    post:
+      tags: [Red de apoyo]
+      summary: Crea un círculo (solo COORDINADOR); el servidor genera el código y su vigencia
+      description: |
+        Código con formato AAA-999 (sin 0, O, 1, I ni L), válido `codigo_invitacion_dias` (7). El coordinador queda
+        como integrante. Un reenvío con el mismo id responde el mismo círculo. Cada persona está en un solo círculo.
+      x-proceso: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, nombreGrupo]
+              properties:
+                id: { type: string, format: uuid }
+                nombreGrupo: { type: string, minLength: 3, maxLength: 100 }
+      responses:
+        '201':
+          description: Círculo creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Circulo' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { description: Ya pertenece a un círculo, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /circulos/unirse:
+    post:
+      tags: [Red de apoyo]
+      summary: Se une a un círculo con su código (acepta minúsculas y sin guion)
+      x-proceso: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [codigo]
+              properties:
+                codigo: { type: string, example: K7Q-42M }
+      responses:
+        '200':
+          description: Círculo al que se unió (sin el código, que solo ve el coordinador)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Circulo' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { description: '`CODIGO_INVALIDO`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: Ya pertenece a otro círculo, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '410': { description: '`CODIGO_VENCIDO`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /circulos/{id}/codigo:
+    post:
+      tags: [Red de apoyo]
+      summary: Genera un código nuevo (solo su coordinador); el anterior deja de servir
+      x-proceso: P2
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Círculo con el código nuevo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Circulo' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /circulos/{id}/miembros:
+    get:
+      tags: [Red de apoyo]
+      summary: Integrantes del círculo con su último estado (solo integrantes activos lo ven)
+      x-proceso: P2
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Lista, primero los activos
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Miembro' } }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /circulos/{id}/miembros/{usuarioId}:
+    delete:
+      tags: [Red de apoyo]
+      summary: Da de baja a un integrante (solo su coordinador; queda DADA_DE_BAJA)
+      x-proceso: P2
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: usuarioId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Dado de baja (o ya no estaba) }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { description: El coordinador no puede darse de baja a sí mismo, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /circulos/{id}/retirarme:
+    post:
+      tags: [Red de apoyo]
+      summary: Sale del círculo (queda RETIRADA)
+      x-proceso: P2
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Retirada (o ya no estaba) }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '409': { description: El coordinador no puede retirarse de su círculo, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /red-apoyo/avisos:
+    post:
+      tags: [Red de apoyo]
+      summary: Avisa de una vinculación nueva (X-01)
+      description: |
+        `CONTACTO_AGREGADO` manda un SMS al contacto; `NUEVO_INTEGRANTE` manda un push (o SMS) al coordinador.
+        La misma petición en menos de un día no crea otro aviso.
+      x-proceso: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tipo]
+              properties:
+                tipo: { type: string, enum: [CONTACTO_AGREGADO, NUEVO_INTEGRANTE] }
+                contactoId: { type: string, format: uuid, description: Para CONTACTO_AGREGADO }
+                circuloId: { type: string, format: uuid, description: Para NUEVO_INTEGRANTE }
+      responses:
+        '202': { description: Aviso en cola }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ------------------------------------------------------------------ Módulo 1: P8 Cancelación
+  /alertas/{id}/cancelaciones:
+    post:
+      tags: [Alertas]
+      summary: Cancela la alerta, o registra un PIN que no coincide como posible coacción (CU-21)
+      description: |
+        Solo quien envió la alerta. El PIN se verifica en el teléfono.
+        - `exitoso: true`: la alerta pasa a CANCELADA y se avisa a la unidad y a la red de apoyo.
+        - `exitoso: false`: la alerta **sigue activa**, queda `coaccionDetectada` y la consola lo ve. A quien la envió
+          se le muestra como CANCELADA.
+        Idempotente: el mismo intento (misma alerta y mismo `intentadoEn`) no se guarda dos veces. Si la alerta ya
+        terminó, el intento se guarda y no cambia nada.
+      x-proceso: P8
+      parameters:
+        - $ref: '#/components/parameters/IdAlerta'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Cancelacion' }
+      responses:
+        '204': { description: Registrado }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
 components:
   securitySchemes:
     jwt:
@@ -770,10 +1190,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Token de acceso firmado por el servidor (el login es de P1).
+        Token de acceso firmado por el servidor; lo entregan `POST /auth/registro` y `POST /auth/login`.
         Reclamos: `sub` (usuario.id), `rol` (INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR),
         `disp` (dispositivo.id, solo en la app), `sid` (sesion.id), `exp`.
-        Vida propuesta: 15 min; se renueva con el token de sesión.
+        Dura `JWT_SESION_DIAS` (30 días). `POST /auth/logout` lo invalida en ese momento.
     firmaTwilio:
       type: apiKey
       in: header
@@ -855,6 +1275,15 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    Duplicado:
+      description: El dato ya está registrado (`DUPLICADO`); `detalle.errores` dice qué campo
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            codigo: DUPLICADO
+            mensaje: Ese dato ya está registrado en otra cuenta
+            detalle: { errores: { telefono: Ese dato ya está registrado en otra cuenta } }
     TransicionInvalida:
       description: El cambio de estado no está permitido desde el estado actual (E-01)
       content:
@@ -873,8 +1302,10 @@ components:
         codigo:
           type: string
           description: Código estable en mayúsculas, para que la app decida qué hacer
-          enum: [VALIDACION, NO_AUTENTICADO, SIN_PERMISO, NO_ENCONTRADO, CONFLICTO,
-                 TRANSICION_INVALIDA, VENCIDO, DEMASIADAS_PETICIONES, ERROR_INTERNO]
+          enum: [VALIDACION, NO_AUTENTICADO, SIN_PERMISO, NO_ENCONTRADO, CONFLICTO, DUPLICADO,
+                 TRANSICION_INVALIDA, VENCIDO, DEMASIADAS_PETICIONES, ERROR_INTERNO,
+                 CREDENCIALES_INVALIDAS, CUENTA_BLOQUEADA, CUENTA_SUSPENDIDA, PERFIL_NO_PERMITIDO,
+                 CODIGO_INVALIDO, CODIGO_VENCIDO]
         mensaje: { type: string, description: Texto para mostrar o registrar }
         detalle: { type: object, additionalProperties: true }
 
@@ -1230,3 +1661,133 @@ components:
         mime: { type: string, example: image/jpeg }
         tamanoBytes: { type: integer, example: 482113 }
         hashSha256: { type: string, example: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 }
+
+    # ---------------------------------------------------------------- Módulo 1 (P1, P2, P8)
+    AvisoPrivacidad:
+      type: object
+      required: [id, version, contenidoHash]
+      properties:
+        id: { type: integer }
+        version: { type: string }
+        contenidoHash: { type: string, description: SHA-256 del texto del aviso }
+    Institucion:
+      type: object
+      required: [id, nombre]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        siglas: { type: string }
+    Escuela:
+      type: object
+      required: [id, institucionId, nombre]
+      properties:
+        id: { type: integer }
+        institucionId: { type: integer }
+        nombre: { type: string }
+    Dispositivo:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid, description: Lo genera la app y no cambia entre sesiones }
+        modelo: { type: string }
+        androidApi: { type: integer, minimum: 26 }
+        soportaWifiAware: { type: boolean, default: false }
+    Registro:
+      type: object
+      required: [nombre, telefonoMovil, identificadorInstitucional, tipoComunidad, escuelaId, contrasena, consentimiento, dispositivo]
+      properties:
+        nombre: { type: string, minLength: 3, maxLength: 120, description: Solo letras y espacios }
+        telefonoMovil: { type: string, example: '5512345678', description: 10 dígitos; acepta espacios, guiones y +52 }
+        identificadorInstitucional: { type: string, pattern: '^[A-Za-z0-9]{6,15}$', description: Matrícula o número de empleado }
+        tipoComunidad: { type: string, enum: [ALUMNO, DOCENTE, PERSONAL] }
+        escuelaId: { type: integer }
+        carreraAdscripcion: { type: string, minLength: 3, maxLength: 120 }
+        contrasena: { type: string, minLength: 8, maxLength: 128, description: Al menos una letra y un número }
+        aceptaEntrenamientoIa: { type: boolean, default: false }
+        consentimiento:
+          type: object
+          required: [avisoId]
+          properties:
+            avisoId: { type: integer }
+            aceptadoEn: { type: string, format: date-time }
+        dispositivo: { $ref: '#/components/schemas/Dispositivo' }
+    Login:
+      type: object
+      required: [usuario, contrasena]
+      properties:
+        usuario: { type: string, description: Teléfono (10 dígitos) o matrícula }
+        contrasena: { type: string }
+        dispositivo: { $ref: '#/components/schemas/Dispositivo' }
+    Usuario:
+      type: object
+      required: [id, nombre, telefonoMovil, identificadorInstitucional, escuelaId, rol, estado, aceptaEntrenamientoIa]
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string }
+        telefonoMovil: { type: string }
+        identificadorInstitucional: { type: string }
+        escuelaId: { type: integer }
+        carreraAdscripcion: { type: string }
+        rol: { type: string, enum: [INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR] }
+        estado: { type: string, enum: [ACTIVA, BLOQUEADA_TEMPORAL, SUSPENDIDA, BAJA_SOLICITADA, ELIMINADA] }
+        aceptaEntrenamientoIa: { type: boolean }
+    Sesion:
+      type: object
+      required: [token, expiraEn, usuario]
+      properties:
+        token: { type: string, description: JWT para el encabezado Authorization }
+        expiraEn: { type: string, format: date-time }
+        usuario: { $ref: '#/components/schemas/Usuario' }
+    PerfilCambio:
+      type: object
+      properties:
+        telefonoMovil: { type: string }
+        identificadorInstitucional: { type: string }
+        carreraAdscripcion: { type: string }
+        aceptaEntrenamientoIa: { type: boolean }
+    ContactoEntrada:
+      type: object
+      required: [id, nombre, telefono, prioridad]
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string, minLength: 2, maxLength: 80 }
+        telefono: { type: string, description: 10 dígitos }
+        prioridad: { type: integer, minimum: 1 }
+    Contacto:
+      type: object
+      required: [id, nombre, telefono, prioridad, canalPreferido, activo]
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string }
+        telefono: { type: string }
+        prioridad: { type: integer }
+        canalPreferido: { type: string, enum: [PUSH, SMS, WHATSAPP] }
+        usuarioVinculadoId: { type: string, format: uuid, description: Si el teléfono es de una cuenta }
+        activo: { type: boolean }
+    Circulo:
+      type: object
+      required: [id, nombreGrupo, escuelaId, coordinadorId, estadoCodigo]
+      properties:
+        id: { type: string, format: uuid }
+        nombreGrupo: { type: string }
+        escuelaId: { type: integer }
+        coordinadorId: { type: string, format: uuid }
+        codigoInvitacion: { type: string, example: K7Q-42M, description: Solo para el coordinador }
+        estadoCodigo: { type: string, enum: [VIGENTE, VENCIDO] }
+        codigoVenceEn: { type: string, format: date-time, description: Solo para el coordinador }
+    Miembro:
+      type: object
+      required: [usuarioId, nombre, estado]
+      properties:
+        usuarioId: { type: string, format: uuid }
+        nombre: { type: string }
+        estado: { type: string, enum: [ACTIVA, RETIRADA, DADA_DE_BAJA] }
+    Cancelacion:
+      type: object
+      required: [metodo, exitoso]
+      properties:
+        dispositivoId: { type: string, format: uuid }
+        motivo: { type: string, enum: [YA_ESTOY_A_SALVO, FALSA_ALARMA, ACTIVACION_ACCIDENTAL] }
+        metodo: { type: string, enum: [PIN, BIOMETRIA] }
+        exitoso: { type: boolean, description: false = el PIN no coincidió (posible coacción) }
+        intentadoEn: { type: string, format: date-time, description: Hora del teléfono; si falta o es del futuro, la del servidor }

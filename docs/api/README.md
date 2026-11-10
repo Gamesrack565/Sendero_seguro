@@ -17,6 +17,9 @@ Cada ruta del YAML trae `x-proceso`, que indica el proceso al que pertenece seg�
 
 | Rutas | Proceso |
 |---|---|
+| `/avisos-privacidad/vigente`, `/instituciones*`, `/auth/*`, `/usuarios/me*` | P1 (Módulo 1) |
+| `/contactos*`, `/circulos*`, `/red-apoyo/avisos` | P2 (Módulo 1) |
+| `POST /alertas/{id}/cancelaciones` | P8 (Módulo 1) |
 | `/salud`, `/sync/lote` | P14 |
 | `GET /alertas`, `GET /alertas/{id}`, `acuse`, `estado`, `escalar` | P5 |
 | `/enlace/{token}`, `/dispositivos/{id}/push`, `/pasarela/smsgate`, `/pasarela/sms/*` | P5 y P16 |

@@ -1,6 +1,6 @@
 # Sendero Seguro · Backend en la nube
 
-Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas.
+Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas. También tiene las rutas de la nube del Módulo 1: cuentas (P1), red de apoyo (P2) y cancelación de alertas (P8).
 
 Con esto ya puedes:
 - usar el servidor que ya está en la nube (Azure);
@@ -8,6 +8,20 @@ Con esto ya puedes:
 - ver qué rutas tiene la API y qué JSON reciben y devuelven;
 - ver qué ofrece la plataforma (dispersión, avisos, bitácora, SMS) y cómo se usa;
 - crear las tablas locales del teléfono en Room.
+
+## Empieza aquí
+
+| Si vas a… | Lee |
+|---|---|
+| Entender qué pasa con una alerta, de principio a fin | [Cómo funciona, de punta a punta](#cómo-funciona-de-punta-a-punta) |
+| Probar algo contra el servidor real | [Servidor en la nube](#servidor-en-la-nube) |
+| Correr el servidor en tu compu | [Correr el servidor en local](#correr-el-servidor-en-local) y [Datos y rutas de prueba](#datos-y-rutas-de-prueba) |
+| Conectar la app de identidad (registro, login, contactos, círculo, cancelación) | [Cuentas, red de apoyo y cancelación](#cuentas-red-de-apoyo-y-cancelación) |
+| Usar algo de la plataforma desde otra parte | [Puntos de conexión de la plataforma](#puntos-de-conexión-de-la-plataforma) |
+| Saber qué JSON manda y recibe cada ruta | [Ver el contrato de la API](#ver-el-contrato-de-la-api) y `docs/api/README.md` |
+| Arreglar un error al correr o al probar | [Errores comunes](#errores-comunes) |
+| Entender una palabra (acuse, escalamiento, red de apoyo…) | [Palabras que se usan](#palabras-que-se-usan) |
+
 ## Cómo funciona, de punta a punta
 
 Lo que hace el servidor con una alerta, paso por paso. Todo esto ya está implementado y corriendo en la nube.
@@ -28,6 +42,9 @@ Si un aviso no se puede entregar, el servidor lo reintenta con esperas cada vez 
 server/                              Servidor Ktor (módulo de Gradle, junto a app/)
   src/main/kotlin/…/Application.kt   Arranque y registro de rutas
   src/main/kotlin/…/plataforma/      Base de datos, errores, JWT, logs, /salud y ayudas de SQL
+  src/main/kotlin/…/cuentas/         Registro, login con bloqueo, sesiones, perfil y baja (P1)
+  src/main/kotlin/…/redapoyo/        Contactos de confianza, círculo escolar y avisos de vinculación (P2)
+  src/main/kotlin/…/cancelacion/     Cancelación de alertas con PIN y posible coacción (P8)
   src/main/kotlin/…/dispersion/      Canalización, asignación de la unidad más cercana y escalamiento (P5)
   src/main/kotlin/…/tiemporeal/      WebSocket de la consola y del enlace (P16)
   src/main/kotlin/…/avisos/          Envío de los avisos por push y SMS con reintentos (P16)
@@ -103,7 +120,7 @@ https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v
 
 - **Para ver si está vivo:** abre `/api/v1/salud`. Debe decir `"estado":"OK"`.
 - **Ya está todo configurado:** base de datos, llaves, push con Firebase, SMS con el celular pasarela y almacén de archivos en Azure Blob Storage. El deploy ya está hecho y se actualiza a mano, solo después de que pasan las pruebas (`:server:test`).
-- **Es igual que en local, con estas diferencias:** no hay rutas `/dev` ni cuentas de prueba (no hay `POST /dev/token`); los avisos salen de verdad (push por Firebase y SMS por el celular pasarela); y el WebSocket va con `wss://` en vez de `ws://`.
+- **Es igual que en local, con estas diferencias:** no hay rutas `/dev` ni cuentas de prueba (no hay `POST /dev/token`; las cuentas se crean con `POST /auth/registro`); los avisos salen de verdad (push por Firebase y SMS por el celular pasarela); y el WebSocket va con `wss://` en vez de `ws://`.
 - **Las pruebas del día a día se hacen en local**, no en la nube: en la nube cada alerta manda SMS y push reales.
 - **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, Firebase, SMS y el token SAS del almacén de archivos). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
 - **La base de la nube es solo del servidor en la nube.** Para probar en local se usa la base de Docker.
@@ -143,7 +160,8 @@ Invoke-RestMethod -Method Post http://localhost:8080/api/v1/dev/alertas -Content
 Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hace cada cosa y cómo se llama.
 
 **Sesión (JWT)**
-- `EmisorTokens.emitir(usuario, duracion)` (`plataforma/Seguridad.kt`) firma un JWT con `JWT_SECRETO`. El token lleva `sub` (usuario), `rol`, `disp` (dispositivo) y `sid` (sesión).
+- `POST /auth/login` y `POST /auth/registro` entregan el JWT. Lo firma `EmisorTokens.emitir(usuario, duracion)` (`plataforma/Seguridad.kt`) con `JWT_SECRETO`, y lleva `sub` (usuario), `rol`, `disp` (dispositivo) y `sid` (sesión).
+- Cada login guarda una fila en `sesion`. Las rutas con sesión rechazan el token de una sesión cerrada o de una cuenta suspendida o dada de baja.
 - Las rutas con sesión ya validan el token y el rol (`authenticate(AUTH_JWT)` y `exigirRol`).
 
 **Dispersión**
@@ -182,6 +200,42 @@ Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hac
 **Dirección del servidor y base del teléfono**
 - En la nube, la de [Servidor en la nube](#servidor-en-la-nube). En local, `http://localhost:8080/api/v1`; desde el emulador de Android, `http://10.0.2.2:8080/api/v1`.
 - La base local del teléfono (Room) sigue `db/sendero_seguro_local_sqlite.sql` (ver [Base de datos del teléfono](#base-de-datos-del-teléfono)).
+
+## Cuentas, red de apoyo y cancelación
+
+Rutas que usa la app de identidad (Módulo 1). El contrato completo está en `docs/api/openapi.yaml` (etiquetas *Cuentas* y *Red de apoyo*, y `POST /alertas/{id}/cancelaciones`).
+
+**Cómo se conecta la app**
+- JSON en camelCase, como el resto del servidor (`telefonoMovil`, `escuelaId`, `nombreGrupo`…).
+- Los errores traen sus datos dentro de `detalle`: `detalle.errores` (un texto por campo, con las mismas claves que usa la app), `detalle.intentosRestantes`, `detalle.bloqueadaHasta` y `detalle.rol`.
+- `401 NO_AUTENTICADO` significa que falta el token, que venció o que la sesión se cerró: hay que volver a iniciar sesión. `401 CREDENCIALES_INVALIDAS` es la contraseña mala en el login.
+- Después del login, el teléfono registra su token de push con `PUT /dispositivos/{id}/push`.
+
+**Cuentas (P1)**
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /avisos-privacidad/vigente`, `GET /instituciones`, `GET /instituciones/{id}/escuelas` | Catálogos del registro, sin token |
+| `POST /auth/registro` | Crea la cuenta y abre la sesión. Guarda la contraseña con Argon2id, el consentimiento y el teléfono. `DOCENTE` queda como Coordinador. |
+| `POST /auth/login` | Con teléfono o matrícula. Al 5.º intento fallido la cuenta se bloquea 15 minutos (`423`). Operador y Administrador no entran desde la app (`403 PERFIL_NO_PERMITIDO`), solo desde la consola. |
+| `POST /auth/logout` | Cierra la sesión; el token deja de servir en ese momento |
+| `GET` y `PATCH /usuarios/me` | Ver y cambiar el perfil |
+| `POST /usuarios/me/baja` | Con la contraseña. Cierra todas las sesiones y crea la solicitud ARCO de cancelación. |
+
+**Red de apoyo (P2)**
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /contactos`, `PUT /contactos/{id}`, `DELETE /contactos/{id}`, `PUT /contactos/orden` | Contactos de confianza. El id lo genera el teléfono y reenviar no duplica. Si el número es de una cuenta, el contacto queda vinculado y recibe push. |
+| `GET /circulos/mio`, `POST /circulos`, `POST /circulos/unirse` | Solo un Coordinador crea; el código (formato `K7Q-42M`) dura 7 días y solo lo ve él. Cada persona está en un solo círculo. |
+| `POST /circulos/{id}/codigo`, `GET /circulos/{id}/miembros`, `DELETE /circulos/{id}/miembros/{usuarioId}`, `POST /circulos/{id}/retirarme` | Código nuevo, integrantes, baja de un integrante y retiro |
+| `POST /red-apoyo/avisos` | `CONTACTO_AGREGADO` manda un SMS al contacto; `NUEVO_INTEGRANTE`, un push al Coordinador |
+
+**Cancelación (P8)**
+- `POST /alertas/{id}/cancelaciones`, solo de quien envió la alerta. El PIN se revisa en el teléfono.
+- `exitoso: true`: la alerta pasa a `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`.
+- `exitoso: false` (el PIN no coincidió): se toma como posible coacción. La alerta sigue activa, la consola ve la marca y a la persona se le muestra como cancelada.
+- Reenviar el mismo intento no lo duplica, y si la alerta ya terminó, el intento se guarda sin cambiar nada.
 
 ## Dispersión
 
@@ -448,6 +502,7 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `TIEMPO_REAL_REVISION_MS` | Cada cuántos milisegundos se buscan cambios para los WebSocket | `1000` |
 | `DB_DATOS_PRUEBA` | Carga los datos y las rutas de prueba | `true`. En la nube, `false`. |
 | `JWT_SECRETO` | Llave para firmar y validar los JWT | Valor de desarrollo. En la nube es obligatorio cambiarla. |
+| `JWT_SESION_DIAS` | Días que dura la sesión de la app antes de pedir login otra vez | `30` |
 | `DETRAS_DE_PROXY` | El servidor está detrás del balanceador de la nube: la IP de la bitácora se toma del final de `X-Forwarded-For` | `false`. En la nube, `true`. |
 | `ALMACEN_PROVEEDOR` | Dónde se guardan los archivos: `carpeta` o `azure` (Blob Storage) | `carpeta` |
 | `ALMACEN_CARPETA` | Carpeta de los archivos con `carpeta` | `build/archivos` |
@@ -517,6 +572,9 @@ La lista de qué tablas escribe y lee cada proceso está en la sección 5 del do
 | Dispersión: `Dispersion.despachar(alertaId)`, canalización, asignación y escalamiento automático | Listo |
 | Consola: lista y detalle de alertas, acuse, cambios de estado y escalamiento manual | Listo |
 | `EmisorTokens` para firmar los JWT que entrega el login | Listo |
+| Cuentas: registro, login con bloqueo, sesiones, perfil y baja (P1) | Listo |
+| Red de apoyo: contactos, círculo escolar y avisos de vinculación (P2) | Listo |
+| Cancelación de alertas con PIN y posible coacción (P8) | Listo |
 | Dispersión: aviso a la red de apoyo y enlace de ubicación (`GET /enlace/{token}`) | Listo |
 | Sincronización: `POST /sync/lote`, con los manejadores de cada tipo por conectar | Listo |
 | Bitácora: `Bitacora.registrar`, consulta y verificación de la cadena | Listo |
@@ -545,7 +603,8 @@ El detalle de cada punto está en `docs/api/README.md`.
 | Las pruebas salen como omitidas (skipped) | Falta `SENDERO_TEST_DB_URL` en esa terminal. |
 | Pruebas de alertas fallan sin razón | El servidor local estaba corriendo a la vez y tomó las alertas de las pruebas. Apágalo y vuelve a correrlas. |
 | `Validate failed` o `checksum mismatch` de Flyway | Se editó una migración que ya se había aplicado. Regresa el archivo como estaba y pon el cambio en una migración nueva (`V3__…`). En local también puedes empezar de cero con `docker compose down -v`. |
-| `401 NO_AUTENTICADO` | Falta `Authorization: Bearer <JWT>` o el token ya venció. En local pide otro con `POST /dev/token`. |
+| `401 NO_AUTENTICADO` | Falta `Authorization: Bearer <JWT>`, el token ya venció o la sesión se cerró. Inicia sesión otra vez (`POST /auth/login`); en local también sirve `POST /dev/token`. |
+| `423 CUENTA_BLOQUEADA` al iniciar sesión | Cinco contraseñas malas seguidas. Espera la hora de `detalle.bloqueadaHasta` (15 minutos). |
 | `403 SIN_PERMISO` | Tu rol no puede usar esa ruta. La tabla de cada sección dice quién puede. |
 | `404` en `/dev/...` en la nube | Es normal: las rutas de prueba solo existen en local. |
 | El WebSocket se cierra con `1001` | El cliente no contestó `{"tipo":"pong"}` a dos `ping` seguidos. |
