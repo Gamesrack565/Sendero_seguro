@@ -1,12 +1,14 @@
-# Sendero Seguro — Integración del Módulo 2: Emergencias
+# Sendero Seguro — Integración del Módulo 2: Motor de Emergencias
 
 ## 1. Descripción general
 
-El Módulo 2 de **Sendero Seguro** implementa el sistema de detección, gestión y transmisión de alertas de emergencia.
+El Módulo 2 de **Sendero Seguro** implementa el sistema de detección, gestión, clasificación, persistencia y transmisión de alertas de emergencia.
 
-Su objetivo es permitir que una alerta se active mediante diferentes detonadores y que, una vez activada, se recopile información del dispositivo y se transmita a otros nodos cuando sea posible.
+Su objetivo es permitir que una alerta se active mediante diferentes detonadores y que, una vez activada, se recopile información del dispositivo, se clasifique el incidente localmente, se almacene la información pendiente de transmisión y se transmita a otros nodos cuando sea posible.
 
-El módulo está desarrollado en Kotlin para Android y utiliza sensores del dispositivo, GPS, Bluetooth BLE, reconocimiento de voz y servicios en primer plano.
+El módulo está desarrollado en Kotlin para Android y utiliza sensores del dispositivo, GPS, Bluetooth BLE, reconocimiento de voz, clasificación local mediante IA-1, almacenamiento SQLite y servicios en primer plano.
+
+Para el Entregable 3 (E3), el motor incorpora mejoras en la gestión de alertas, la persistencia offline, la seguridad de los paquetes BLE, el cálculo de rutas seguras sin conexión y la sincronización de información con los módulos Backend y Frontend.
 
 ### Funcionalidades implementadas
 
@@ -14,14 +16,25 @@ El módulo está desarrollado en Kotlin para Android y utiliza sensores del disp
 |---|---|
 | Gestión centralizada de emergencias | `ModuloEmergencias` |
 | Detección de comandos de voz | `GestorVozPanico` |
+| Transcripción de voz a texto | `GestorVozPanico` |
+| Clasificación local de incidentes mediante IA-1 | `GestorVozPanico` |
 | Detección de caídas e impactos | `GestorTelemetria` |
 | Obtención de GPS y batería | `GestorTelemetria` |
+| Emisión periódica de ubicación GNSS | `GestorTelemetria` |
 | Transmisión y recepción mediante BLE | `GestorMalla` |
+| Cifrado AES-GCM y firma HMAC-SHA256 de paquetes | `GestorMalla` |
 | Retransmisión de alertas entre dispositivos | `GestorMalla` |
+| Modo Operador Ad-Hoc sin Internet | `GestorMalla` |
+| Emisión de paquetes de acuse ACK | `GestorMalla` |
 | Seguimiento de una ruta segura | `GestorCaminataSegura` |
+| Cálculo de rutas offline mediante Dijkstra ponderado | `GestorCaminataSegura` |
 | Temporizador de check-in | `GestorCaminataSegura` |
+| Cálculo geométrico de desviación de ruta | `GestorCaminataSegura` |
+| Persistencia local de alertas pendientes | `PersistenciaOfflineModulo2.kt` |
+| Control de paquetes BLE previamente recibidos | `PersistenciaOfflineModulo2.kt` |
+| Gestión de la cola local SQLite ER-06 | `GestorColaLocalSQLiteER06` |
 | Servicio en primer plano | `ServicioEmergencias` |
-| Modelos de información | `ModelosEmergencia` |
+| Modelos de información y estados | `ModelosEmergencia` |
 
 ---
 
@@ -31,46 +44,70 @@ La clase principal es `ModuloEmergencias`. Funciona como coordinador de las dem�
 
 No es necesario que la interfaz gráfica gestione individualmente cada sensor o cada proceso. En su lugar, debe comunicarse con esta clase para iniciar funciones, consultar estados y recibir eventos.
 
-```text
-                    FRONTEND ANDROID
-                           |
-                           |
-                    ModuloEmergencias
-                           |
-          +----------------+----------------+
-          |                |                |
-          v                v                v
-    GestorVozPanico  GestorTelemetria  GestorCaminataSegura
-          |                |                |
-          |                |                |
-          v                v                v
-     Comandos de       GPS, batería,      Ruta y
-        voz            acelerómetro      Check-in
-                           |
-                           v
-                      GestorMalla
-                           |
-                    Bluetooth BLE
-                           |
-                    Otros dispositivos
-                           |
-                     Servidor Linux
+La arquitectura actual incorpora una capa de persistencia local para mantener información cuando no existe conexión a Internet, además de mecanismos de seguridad para los paquetes transmitidos por Bluetooth.
 
-                 ServicioEmergencias
-                 Mantiene el servicio
-                 Android en primer plano
+```text
+                         FRONTEND ANDROID
+                                |
+                                |
+                         ModuloEmergencias
+                                |
+          +---------------------+---------------------+
+          |                     |                     |
+          v                     v                     v
+    GestorVozPanico       GestorTelemetria     GestorCaminataSegura
+          |                     |                     |
+          |                     |                     |
+          v                     v                     v
+     Comandos de voz       GPS, batería,          Ruta Segura
+     Transcripción         acelerómetro           Offline
+     Clasificación IA-1    GNSS periódico          Check-in
+                                |
+                                v
+                           GestorMalla
+                                |
+                   +------------+------------+
+                   |                         |
+                   v                         v
+              Bluetooth BLE             Servidor Linux
+                   |
+                   v
+             Otros dispositivos
+                   |
+                   v
+          Modo Operador Ad-Hoc
+          Cifrado AES-GCM
+          Firma HMAC-SHA256
+                   |
+                   v
+       PersistenciaOfflineModulo2
+                   |
+                   v
+             SQLite ER-06
+             cola_alerta
+             paquete_visto
+
+                    ServicioEmergencias
+                    Mantiene el servicio
+                    Android en primer plano
 ```
 
 ### Comunicación entre las clases
 
-`ModuloEmergencias` crea las instancias de los gestores y conecta sus eventos mediante callbacks.
+`ModuloEmergencias` crea las instancias de los gestores y conecta sus eventos mediante callbacks y flujos reactivos.
 
 Por ejemplo:
 
 - Cuando `GestorVozPanico` reconoce una palabra clave, notifica a `ModuloEmergencias`.
+- Cuando `GestorVozPanico` transcribe el relato, IA-1 puede clasificarlo localmente y actualizar la información de la alerta activa.
 - Cuando `GestorTelemetria` detecta un impacto, notifica a `ModuloEmergencias`.
 - Cuando vence el temporizador de `GestorCaminataSegura`, se solicita una alerta.
 - Cuando se activa una alerta, `ModuloEmergencias` obtiene la telemetría inicial, genera el objeto `AlertaEmergencia` y solicita su transmisión mediante `GestorMalla`.
+- Cuando no existe conectividad, los datos pendientes pueden conservarse mediante `GestorColaLocalSQLiteER06`.
+- Cuando un dispositivo recibe un paquete BLE, `GestorMalla` comprueba su integridad, evita procesar paquetes repetidos y puede retransmitirlo.
+- Cuando una unidad operativa recibe una alerta, puede generar un paquete de acuse ACK para informar que atenderá el incidente.
+
+La comunicación entre los módulos debe realizarse mediante interfaces y modelos compartidos, evitando que el Frontend manipule directamente las tablas SQLite o las operaciones internas de Bluetooth.
 
 ---
 
@@ -94,13 +131,54 @@ emergencias/
 |-- ModelosEmergencia.kt
 |-- ModuloEmergencias.kt
 |-- ServicioEmergencias.kt
+|-- PersistenciaOfflineModulo2.kt
 ```
 
-Se deben conservar los modelos de datos utilizados por los gestores, ya que las clases intercambian información mediante objetos como `AlertaEmergencia`, `DatosTelemetria`, `PaqueteMalla` y `EstadoCaminataSegura`.
+### Responsabilidades de cada archivo
+
+| Archivo | Responsabilidad |
+|---|---|
+| `GestorCaminataSegura.kt` | Seguimiento de caminatas, check-in, detección de desviaciones y cálculo de rutas seguras offline mediante Dijkstra ponderado. |
+| `GestorMalla.kt` | Comunicación BLE, retransmisión, cifrado AES-GCM de 128 bits, firma HMAC-SHA256 y Modo Operador Ad-Hoc. |
+| `GestorTelemetria.kt` | Ubicación, GNSS, batería, acelerómetro y generación de datos de telemetría. |
+| `GestorVozPanico.kt` | Reconocimiento de palabras clave, transcripción de voz y clasificación local de incidentes mediante IA-1. |
+| `ModelosEmergencia.kt` | Modelos de alertas, telemetría, paquetes, estados, rutas y eventos. |
+| `ModuloEmergencias.kt` | Coordinación general de los gestores y administración del ciclo de vida de las alertas. |
+| `ServicioEmergencias.kt` | Servicio Android en primer plano para mantener las funciones de protección autorizadas. |
+| `PersistenciaOfflineModulo2.kt` | Administración de la cola de alertas pendientes y registro de paquetes BLE vistos mediante SQLite ER-06. |
+
+### Persistencia local ER-06
+
+La clase `PersistenciaOfflineModulo2.kt` incorpora el gestor:
+
+```kotlin
+GestorColaLocalSQLiteER06
+```
+
+Este componente administra la persistencia local para los escenarios sin conexión.
+
+Su responsabilidad principal es conservar las alertas y los paquetes que necesitan controlarse aunque el dispositivo no tenga acceso a Internet.
+
+Las tablas principales del diagrama ER-06 son:
+
+| Tabla | Responsabilidad |
+|---|---|
+| `cola_alerta` | Conserva alertas o elementos pendientes de procesamiento y transmisión, junto con su vigencia. |
+| `paquete_visto` | Registra identificadores de paquetes BLE que ya fueron recibidos o procesados para evitar duplicados. |
+
+Funciones principales:
+
+```kotlin
+encolarPendienteConVigencia(...)
+registrarPaqueteMallaVisto(...)
+pendientesCola(...)
+```
+
+La persistencia local permite separar la creación de una alerta de su entrega efectiva al servidor. De esta manera, una interrupción de conectividad no debe provocar que la información desaparezca.
 
 ### Dependencias
 
-El proyecto necesita las bibliotecas de AndroidX y Kotlin Coroutines utilizadas por el código.
+El proyecto necesita las bibliotecas de AndroidX, SQLite y Kotlin Coroutines utilizadas por el código.
 
 Por ejemplo, en el archivo `build.gradle.kts` del módulo:
 
@@ -111,6 +189,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:<version>")
 }
 ```
+
+Si la implementación utiliza SQLite mediante `SQLiteOpenHelper`, no es necesario agregar Room únicamente por utilizar SQLite.
 
 Utiliza versiones compatibles con las que ya tiene configuradas el proyecto. No es necesario agregar estas dependencias si ya están instaladas.
 
@@ -132,6 +212,7 @@ En `AndroidManifest.xml`, dentro de la etiqueta `manifest`, se deben declarar lo
 
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
 <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -142,14 +223,34 @@ En `AndroidManifest.xml`, dentro de la etiqueta `manifest`, se deben declarar lo
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 ```
 
+Para utilizar el micrófono desde un servicio en primer plano en Android 14 o superior:
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+```
+
 ### Permisos Bluetooth
 
 Para Android 12 o superior:
 
 ```xml
-<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+<uses-permission
+    android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+
 <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
 <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+```
+
+La bandera `neverForLocation` indica que el escaneo Bluetooth no se utiliza para derivar la ubicación física del usuario. Debe conservarse únicamente si esa declaración corresponde al uso real que hace la aplicación.
+
+Para Android 13 o superior, si se utiliza Wi-Fi Direct o funcionalidades que requieren este permiso:
+
+```xml
+<uses-permission
+    android:name="android.permission.NEARBY_WIFI_DEVICES"
+    android:usesPermissionFlags="neverForLocation" />
 ```
 
 Para versiones anteriores:
@@ -164,7 +265,7 @@ Para versiones anteriores:
     android:maxSdkVersion="30" />
 ```
 
-### Permiso adicional para reconocimiento de voz en segundo plano
+### Permisos de reconocimiento de voz en segundo plano
 
 Si se pretende utilizar el micrófono mediante un servicio en primer plano en Android 14 o superior, también se necesita:
 
@@ -184,9 +285,11 @@ Dentro de la etiqueta `application`:
     android:foregroundServiceType="location|connectedDevice|microphone" />
 ```
 
-**Importante:** el código actual de `ServicioEmergencias` declara los tipos `LOCATION` y `CONNECTED_DEVICE` al ejecutar `startForeground()`. Si también se va a mantener el micrófono mediante ese servicio, se debe agregar `FOREGROUND_SERVICE_TYPE_MICROPHONE` en Android 14 o superior y solicitar los permisos necesarios.
+**Importante:** `ServicioEmergencias` soporta dinámicamente el tipo `FOREGROUND_SERVICE_TYPE_MICROPHONE` en Android 14 o superior (API 34+) cuando el permiso `RECORD_AUDIO` ha sido concedido.
 
-El permiso de micrófono debe concederse antes de iniciar el reconocimiento. Android también impone restricciones para iniciar servicios de micrófono desde segundo plano; normalmente debe iniciarse mientras la aplicación está visible.
+La declaración del tipo en el Manifest no sustituye la comprobación del permiso. Antes de iniciar el servicio con ese tipo, el código debe comprobar que el usuario concedió el permiso de micrófono y que se cumplen las restricciones de Android para iniciar un servicio de primer plano de tipo micrófono.
+
+Si el permiso no está disponible, el servicio debe iniciar únicamente con los tipos autorizados y no debe intentar utilizar el micrófono.
 
 ### Consulta de servicios de reconocimiento
 
@@ -208,10 +311,14 @@ La aplicación debe solicitar al usuario los permisos de:
 
 - Micrófono.
 - Ubicación precisa o aproximada, según las funciones habilitadas.
+- Ubicación en segundo plano, cuando corresponda y de acuerdo con las restricciones de Android.
 - Bluetooth Scan, Advertise y Connect en Android 12 o superior.
+- Dispositivos Wi-Fi cercanos, cuando se utilice la funcionalidad correspondiente.
 - Notificaciones en Android 13 o superior.
 
 No se deben iniciar los gestores que necesitan un permiso hasta que este haya sido concedido.
+
+La ubicación en segundo plano requiere una solicitud y justificación separadas en las versiones de Android que así lo establecen. No debe asumirse que conceder ubicación mientras se utiliza la aplicación autoriza automáticamente su uso en segundo plano.
 
 ---
 
@@ -238,6 +345,8 @@ override fun onCreate(savedInstanceState: Bundle?) {
 
 El identificador `"USR_LOCAL_01"` es un valor de ejemplo. Debe sustituirse por el identificador del usuario obtenido desde el sistema de autenticación de la aplicación.
 
+El identificador debe mantenerse consistente durante la sesión y utilizarse al generar alertas, paquetes BLE y registros locales.
+
 ### Iniciar la protección
 
 Una vez concedidos los permisos:
@@ -251,6 +360,7 @@ Este método realiza las siguientes acciones:
 1. Inicia `ServicioEmergencias`.
 2. Activa la vigilancia del acelerómetro.
 3. Solicita que `GestorMalla` inicie el escaneo BLE.
+4. Prepara los componentes necesarios para mantener la protección.
 
 ### Activar el reconocimiento de voz
 
@@ -268,13 +378,39 @@ Las palabras clave predeterminadas son:
 
 Cuando el reconocedor detecta una coincidencia, se ejecuta el callback de `GestorVozPanico` y se solicita una alerta de emergencia.
 
-**Limitación actual:** `iniciarProteccionSegundoPlano()` no llama a `escucharComandoVozMicrofono()`. Por lo tanto, iniciar el servicio no activa automáticamente el micrófono. Además, el reconocedor está alojado actualmente en `ModuloEmergencias`, no dentro de `ServicioEmergencias`. Para que la escucha pueda administrarse de forma consistente después de cerrar la Activity, se recomienda trasladar la propiedad del motor de voz a un componente de larga duración, como el servicio en primer plano, y evitar crear dos instancias independientes de `ModuloEmergencias`.
+### Activación mediante atajo físico
 
-El reconocimiento de Android depende del servicio de voz instalado y de sus idiomas disponibles. En algunos dispositivos puede no funcionar, incluso si el micrófono tiene permiso. La escucha continua tampoco está garantizada por Android. Por eso, el botón SOS debe mantenerse disponible como alternativa.
+El módulo incorpora el indicador:
+
+```kotlin
+moduloEmergencias.atajoCincoToquesEncendidoActivo
+```
+
+Este valor permite consultar si está habilitado el atajo físico de cinco presiones del botón de encendido.
+
+El receptor:
+
+```kotlin
+receptorBotonEncendido5x
+```
+
+es el componente asociado a la detección de cinco presiones, cuando el sistema y las condiciones de ejecución permiten recibir el evento.
+
+**Limitación de Android:** una aplicación normal no dispone de acceso universal a todos los eventos físicos del botón de encendido. El comportamiento puede depender del fabricante, de la versión del sistema y de las funciones SOS nativas. Debe validarse en cada dispositivo de prueba.
+
+### Persistencia y operación offline
+
+El gestor `GestorColaLocalSQLiteER06` debe inicializarse con el contexto de aplicación y mantenerse disponible para las operaciones de persistencia.
+
+Su objetivo es conservar las alertas pendientes y controlar los paquetes que ya fueron procesados.
+
+No se debe asumir que almacenar una alerta localmente significa que ya fue recibida por el servidor. El estado de persistencia y el estado de entrega son conceptos diferentes.
+
+**Limitación del reconocimiento de voz:** `iniciarProteccionSegundoPlano()` y `escucharComandoVozMicrofono()` deben administrarse de acuerdo con el ciclo de vida del servicio y las restricciones de Android. La escucha continua no está garantizada en todos los dispositivos. Por eso, el botón SOS y los demás detonadores deben mantenerse disponibles como alternativas.
 
 ---
 
-## 6. Activación de una alerta SOS
+## 6. Activación de una alerta SOS, voz e IA-1 — Proceso P4
 
 Existen diferentes detonadores definidos en `TipoDetonador`:
 
@@ -283,7 +419,9 @@ enum class TipoDetonador {
     BOTON_SOS,
     COMANDO_VOZ,
     CAIDA_IMPACTO,
-    VENCIMIENTO_CAMINATA_SEGURA
+    VENCIMIENTO_CAMINATA_SEGURA,
+    ATAJO_FISICO,
+    WIDGET
 }
 ```
 
@@ -308,15 +446,167 @@ La función realiza las siguientes operaciones:
 7. Inicia la telemetría en tiempo real.
 8. Inicia el hilo de actualización periódica.
 
+### Activación mediante cuenta regresiva — Pantalla A-05
+
+La pantalla A-05 incorpora una cuenta regresiva previa al envío de la alerta.
+
+La función de integración es:
+
+```kotlin
+moduloEmergencias.iniciarCuentaRegresivaYEnvioBase(
+    detonador = TipoDetonador.BOTON_SOS,
+    segundosCuenta = 5,
+    omitirCuentaEnviarYa = false
+)
+```
+
+Parámetros:
+
+| Parámetro | Descripción |
+|---|---|
+| `detonador` | Origen de la activación de la alerta. |
+| `segundosCuenta` | Duración de la cuenta regresiva. |
+| `omitirCuentaEnviarYa` | Permite omitir la cuenta y solicitar el envío inmediato. |
+
+El flujo de funcionamiento es:
+
+```text
+       USUARIO PRESIONA SOS
+                |
+                v
+    iniciarCuentaRegresivaYEnvioBase()
+                |
+                v
+      Estado EN_CUENTA_REGRESIVA
+                |
+                v
+       Mostrar cuenta en A-05
+                |
+                v
+         ¿Cuenta llegó a 0?
+                |
+                v
+        Generar alerta base
+                |
+                v
+       Estado PENDIENTE_ENVIO
+                |
+                v
+        Emitir alerta genérica
+                |
+                v
+       Asignar folio ALR-2026-XXXXXX
+                |
+                v
+       Continuar enriquecimiento
+       con telemetría e IA-1
+```
+
+Al llegar la cuenta regresiva a cero, se envía la alerta base como **«Genérica»**, con un folio de referencia en el formato:
+
+```text
+ALR-2026-XXXXXX
+```
+
+El objetivo es que la clasificación y el enriquecimiento de la información no retrasen la solicitud inicial de ayuda.
+
+Cuando se configura:
+
+```kotlin
+omitirCuentaEnviarYa = true
+```
+
+se solicita omitir la espera y continuar con el envío inmediato, de acuerdo con la lógica implementada por el motor.
+
+La cuenta regresiva no debe convertirse en un requisito para que una alerta de voz, un detonador físico o una detección automática pueda solicitar ayuda cuando el flujo correspondiente requiera envío inmediato.
+
+### Nuevos detonadores
+
+| Detonador | Descripción |
+|---|---|
+| `BOTON_SOS` | Activación manual desde la interfaz. |
+| `COMANDO_VOZ` | Detección de una palabra clave. |
+| `CAIDA_IMPACTO` | Detección de un impacto mediante acelerómetro. |
+| `VENCIMIENTO_CAMINATA_SEGURA` | Vencimiento del tiempo de check-in. |
+| `ATAJO_FISICO` | Cinco presiones del botón de encendido detectadas mediante `receptorBotonEncendido5x`. |
+| `WIDGET` | Activación desde el widget de la aplicación. |
+
 ### Activación por voz
 
-No es necesario que la interfaz active manualmente la alerta cuando se reconoce una palabra clave. El callback ya está conectado en `ModuloEmergencias`:
+No es necesario que la interfaz active manualmente la alerta cuando se reconoce una palabra clave. El callback está conectado en `ModuloEmergencias`:
 
 ```kotlin
 onDetonadorVozActivado = { motivo ->
     activarAlertaEmergencia(TipoDetonador.COMANDO_VOZ)
 }
 ```
+
+El reconocimiento de palabras clave permite activar el flujo de emergencia sin depender de que el usuario navegue hasta la pantalla del botón SOS.
+
+### Transcripción de voz a texto — Pantalla A-06
+
+Se incorpora la función:
+
+```kotlin
+transcribirVozATextoOffline()
+```
+
+Su responsabilidad es transcribir el relato del usuario para obtener información adicional del incidente.
+
+La transcripción alimenta el flujo de clasificación local mediante IA-1.
+
+El reconocimiento contempla un cooldown de 2.5 segundos para administrar la escucha continua y permitir múltiples disparos de voz sin bloquear el micrófono después de la primera alerta.
+
+El objetivo es que el motor pueda seguir recibiendo eventos de voz y actualizar la información de una alerta activa sin depender de una única detección.
+
+La transcripción se expone mediante:
+
+```kotlin
+gestorVozPanico.textoTranscritoEnVivo
+```
+
+Este flujo puede observarse desde la pantalla A-06 para mostrar el texto reconocido.
+
+**Nota técnica:** la transcripción offline depende del motor de reconocimiento y del modelo de idioma disponible en el dispositivo. La disponibilidad de la función debe comprobarse antes de afirmar que un dispositivo puede procesar voz sin conexión.
+
+### Clasificación local mediante IA-1
+
+La nueva función es:
+
+```kotlin
+clasificarIncidenteConIA1Local(
+    relato: String
+): ResultadoClasificacionIA1
+```
+
+Su objetivo es extraer información del relato y estructurarla en cuatro elementos:
+
+| Elemento | Información extraída |
+|---|---|
+| QUÉ | Tipo de incidente o situación reportada. |
+| DÓNDE | Lugar o referencia de ubicación mencionada. |
+| QUIÉN | Personas involucradas o afectadas. |
+| CUÁNDO | Momento en que ocurrió o está ocurriendo el incidente. |
+
+La clasificación calcula un nivel de confianza y utiliza el umbral:
+
+```text
+0.70
+```
+
+Cuando el resultado alcanza el umbral establecido, puede utilizarse para actualizar la información de la alerta activa.
+
+Cuando no alcanza el umbral, el resultado debe tratarse como información incierta y no sustituir datos confirmados.
+
+**Importante:** IA-1 trabaja después de la activación inicial. La clasificación no debe retrasar el envío de la alerta genérica.
+
+El resultado se expone mediante:
+
+```kotlin
+gestorVozPanico.ultimaClasificacionIA1
+```
+
+La interfaz puede utilizar este estado para mostrar los campos identificados y su nivel de confianza.
 
 ### Activación por caída o impacto
 
@@ -334,17 +624,19 @@ onCaidaDetectada()
 TipoDetonador.CAIDA_IMPACTO
 ```
 
-Se incluye un intervalo de protección de dos segundos para evitar que varias lecturas consecutivas generen múltiples alertas.
+Se incluye un intervalo de protección para evitar que varias lecturas consecutivas generen múltiples alertas.
 
 ### Desactivar una alerta
 
 Para cancelar normalmente una alerta:
 
 ```kotlin
-moduloEmergencias.desactivarAlertaEmergencia()
+moduloEmergencias.desactivarAlertaEmergencia(
+    simulacionCoaccion = false
+)
 ```
 
-Esto detiene el hilo de telemetría, las actualizaciones GPS y la transmisión BLE, y elimina el estado de alerta activa.
+Esto ejecuta el flujo normal de desactivación de la alerta y detiene los procesos que correspondan.
 
 El parámetro:
 
@@ -354,15 +646,17 @@ moduloEmergencias.desactivarAlertaEmergencia(
 )
 ```
 
-activa la simulación del modo de coacción P8. En la implementación actual, conserva el estado de la alerta y registra el modo silencioso, pero no implementa por sí solo toda la lógica de un sistema de coacción completo.
+activa la simulación del modo de coacción P8.
+
+La integración debe distinguir una cancelación normal de una situación de coacción. El modo de coacción no debe mostrarse en la interfaz como una cancelación ordinaria.
 
 ---
 
-## 7. Configuración de parámetros de seguridad
+## 7. Configuración de parámetros de seguridad — Proceso P3
 
 La función `actualizarParametrosSeguridad()` permite conectar los parámetros configurados desde el Módulo 1.
 
-Ejemplo:
+La firma actualizada incorpora un cuarto parámetro para la cuenta regresiva:
 
 ```kotlin
 moduloEmergencias.actualizarParametrosSeguridad(
@@ -373,7 +667,8 @@ moduloEmergencias.actualizarParametrosSeguridad(
         "sendero seguro"
     ),
     sensibilidadCaidaG = 2.8f,
-    intervaloCheckInSegundos = 60L
+    intervaloCheckInSegundos = 60L,
+    segundosCuentaRegresiva = 5
 )
 ```
 
@@ -381,17 +676,161 @@ Los parámetros modificados son:
 
 | Parámetro | Descripción |
 |---|---|
-| `nuevasPalabrasVoz` | Palabras que pueden activar el SOS |
-| `sensibilidadCaidaG` | Umbral de aceleración para detectar impactos |
-| `intervaloCheckInSegundos` | Tiempo máximo entre confirmaciones de presencia |
+| `nuevasPalabrasVoz` | Palabras que pueden activar el SOS. |
+| `sensibilidadCaidaG` | Umbral de aceleración para detectar impactos. |
+| `intervaloCheckInSegundos` | Tiempo máximo entre confirmaciones de presencia. |
+| `segundosCuentaRegresiva` | Tiempo previo al envío de la alerta, configurable entre 3 y 10 segundos. |
 
 La lista de palabras clave se normaliza para facilitar la comparación del texto reconocido.
 
+### Configuración de la cuenta regresiva
+
+El valor predeterminado es:
+
+```kotlin
+segundosCuentaRegresiva = 5
+```
+
+El rango de configuración permitido es:
+
+```text
+3 a 10 segundos
+```
+
+La pantalla A-05 debe consultar el valor configurado y mostrar la cuenta regresiva correspondiente.
+
+La cuenta regresiva no debe utilizarse para retrasar procesos de emergencia que deban enviar una alerta inmediatamente.
+
+### Atajo físico de cinco presiones
+
+El módulo expone:
+
+```kotlin
+moduloEmergencias.atajoCincoToquesEncendidoActivo: Boolean
+```
+
+Esta propiedad permite consultar si el atajo de cinco presiones del botón de encendido está habilitado.
+
+El detonador asociado es:
+
+```kotlin
+TipoDetonador.ATAJO_FISICO
+```
+
+La detección se realiza mediante:
+
+```kotlin
+receptorBotonEncendido5x
+```
+
+La disponibilidad de este evento depende de las restricciones del sistema operativo y del fabricante del dispositivo.
+
+### Ajuste del escaneo BLE según batería
+
+Para reducir el consumo energético, `GestorMalla` incorpora:
+
+```kotlin
+gestorMalla.ajustarEscaneoMallaPorBateria(
+    nivelBateria: Int
+)
+```
+
+La frecuencia de escaneo se ajusta según el nivel de batería:
+
+| Nivel de batería | Comportamiento |
+|---|---|
+| Mayor a 20% | Escaneo cada 2 minutos. |
+| Menor o igual a 20% | Modo de ahorro: escaneo cada 10 minutos. |
+
+Este mecanismo busca equilibrar la disponibilidad de la malla BLE y el consumo energético del dispositivo.
+
+La reducción de frecuencia puede incrementar el tiempo necesario para detectar otros dispositivos. Por ello, el modo de ahorro debe considerarse una optimización energética y no una garantía de recepción inmediata.
+
 ---
 
-## 8. Integración de Caminata Segura
+## 8. Ruta Segura Offline y Caminata Segura — Proceso P7
 
-`GestorCaminataSegura` implementa el modo de acompañamiento durante un recorrido.
+`GestorCaminataSegura` implementa el modo de acompañamiento durante un recorrido y el cálculo de rutas seguras sin conexión.
+
+El gestor se divide en dos partes funcionales:
+
+- **Parte A:** Cálculo de Ruta Segura Offline — Pantalla A-18.
+- **Parte B:** Modo Acompañamiento / Caminata Segura.
+
+### Parte A. Cálculo de Ruta Segura Offline — Pantalla A-18
+
+El cálculo de rutas se realiza directamente en el dispositivo mediante un grafo vial almacenado localmente.
+
+La función principal es:
+
+```kotlin
+calcularRutasEnDispositivoOffline(
+    origen: PuntoRuta,
+    destino: PuntoRuta,
+    aristasGrafoCache: List<AristaVialOffline>
+): ComparativaRutasP7
+```
+
+Parámetros:
+
+| Parámetro | Descripción |
+|---|---|
+| `origen` | Coordenada inicial del recorrido. |
+| `destino` | Coordenada final solicitada. |
+| `aristasGrafoCache` | Lista de conexiones viales almacenadas en caché local. |
+
+El algoritmo utiliza Dijkstra sobre el grafo local.
+
+Cada arista representa una conexión entre puntos del grafo y puede contener información sobre distancia, riesgo e iluminación.
+
+El cálculo pondera el costo de cada tramo utilizando la fórmula:
+
+\[
+peso = distancia \times (1 + \alpha \times riesgo)
+\]
+
+Donde:
+
+- `distancia` representa la longitud del tramo.
+- `alfa` representa el factor de ponderación del riesgo.
+- `riesgo` representa el nivel de riesgo asociado al tramo.
+
+La función:
+
+```kotlin
+ponderarRiesgoEIluminacionRuta(...)
+```
+
+participa en la evaluación de los tramos para priorizar recorridos con mejores condiciones de seguridad.
+
+El cálculo contempla:
+
+- Evitar polígonos de riesgo alto.
+- Priorizar calles iluminadas.
+- Penalizar los tramos con mayor riesgo.
+- Comparar la distancia total de las alternativas.
+- Realizar el cálculo local sin depender de una consulta al servidor durante la generación de la ruta.
+
+El resultado `ComparativaRutasP7` permite presentar dos alternativas:
+
+| Alternativa | Descripción |
+|---|---|
+| Ruta segura RECOMENDADA | Ruta que pondera el riesgo y la iluminación para favorecer condiciones más seguras. |
+| Ruta Más corta | Ruta que prioriza reducir la distancia total del recorrido. |
+
+El resultado se expone mediante:
+
+```kotlin
+gestorCaminataSegura.comparativaRutasOffline
+```
+
+La pantalla A-18 debe observar este flujo para mostrar las alternativas calculadas.
+
+**Importante:** la calidad de la ruta depende de que el grafo vial, los polígonos de riesgo y los datos de iluminación estén disponibles y actualizados en la caché local. El algoritmo no puede garantizar que una calle sea segura si la información de origen está incompleta o desactualizada.
+
+### Parte B. Modo Acompañamiento / Caminata Segura
+
+Esta parte implementa el seguimiento del recorrido seleccionado.
 
 Sus funciones principales son:
 
@@ -439,7 +878,7 @@ moduloEmergencias.gestorCaminataSegura.finalizarCaminataSegura()
 
 ### Eventos automáticos
 
-La clase ya está conectada con `ModuloEmergencias`.
+La clase está conectada con `ModuloEmergencias`.
 
 Cuando vence el check-in:
 
@@ -451,11 +890,19 @@ se solicita una alerta automáticamente.
 
 Cuando el usuario llega a menos de 20 metros del último punto de la ruta, el gestor finaliza la caminata y ejecuta el callback de llegada exitosa.
 
-La desviación se calcula mediante la distancia entre la ubicación actual y los puntos de la ruta. Para recorridos largos conviene mejorar el cálculo utilizando segmentos de ruta y no únicamente los puntos individuales.
+### Mejora del cálculo de desviación
+
+El cálculo de desviación se mejoró para utilizar la distancia geométrica perpendicular entre la ubicación actual y los segmentos de la polilínea de la ruta.
+
+Anteriormente, el cálculo se basaba en la distancia hacia los vértices individuales de la ruta. Esto podía generar mediciones poco precisas cuando los puntos estaban separados entre sí.
+
+Ahora se utiliza la distancia punto-a-segmento, lo que permite evaluar la distancia mínima entre la ubicación actual y cada tramo de la polilínea.
+
+De esta forma, la detección de desviaciones representa mejor la distancia real respecto al recorrido definido.
 
 ---
 
-## 9. Integración de telemetría
+## 9. Integración de telemetría y estados — Proceso P6
 
 `GestorTelemetria` obtiene información del dispositivo y mantiene un flujo actualizado de datos.
 
@@ -463,14 +910,43 @@ La estructura `DatosTelemetria` contiene:
 
 | Campo | Descripción |
 |---|---|
-| `latitud` | Latitud GPS |
-| `longitud` | Longitud GPS |
-| `precision` | Precisión de la ubicación |
-| `velocidadMps` | Velocidad en metros por segundo |
-| `rumboGrados` | Dirección de desplazamiento |
-| `aceleracionG` | Magnitud de aceleración expresada en G |
-| `nivelBateria` | Porcentaje de batería |
-| `timestamp` | Momento de la lectura |
+| `latitud` | Latitud de la ubicación obtenida. |
+| `longitud` | Longitud de la ubicación obtenida. |
+| `precision` | Precisión de la ubicación. |
+| `velocidadMps` | Velocidad en metros por segundo. |
+| `rumboGrados` | Dirección de desplazamiento. |
+| `aceleracionG` | Magnitud de aceleración expresada en G. |
+| `nivelBateria` | Porcentaje de batería. |
+| `timestamp` | Momento de la lectura. |
+| `fuente` | Fuente utilizada para obtener la ubicación. |
+
+El campo:
+
+```kotlin
+fuente: FuenteUbicacion
+```
+
+permite identificar el origen de la coordenada.
+
+Los valores contemplados son:
+
+```kotlin
+enum class FuenteUbicacion {
+    GNSS,
+    WIFI,
+    CELULAR,
+    ULTIMA_CONOCIDA
+}
+```
+
+| Fuente | Descripción |
+|---|---|
+| `GNSS` | Ubicación obtenida mediante sistemas satelitales. |
+| `WIFI` | Ubicación estimada mediante información de redes Wi-Fi. |
+| `CELULAR` | Ubicación estimada mediante información de redes celulares. |
+| `ULTIMA_CONOCIDA` | Última ubicación disponible cuando no se obtiene una lectura nueva. |
+
+La fuente debe conservarse junto con la coordenada para que los módulos consumidores puedan interpretar correctamente su precisión y antigüedad.
 
 ### Iniciar telemetría
 
@@ -479,6 +955,26 @@ moduloEmergencias.gestorTelemetria.iniciarTelemetriaTiempoReal(
     intervaloMs = 3000L
 )
 ```
+
+### Emisión periódica de ubicación GNSS
+
+Durante una alerta activa se utiliza la función:
+
+```kotlin
+emitirUbicacionGNSSPeriodica()
+```
+
+El intervalo oficial de actualización es:
+
+```kotlin
+10_000L
+```
+
+Es decir, una emisión cada 10,000 milisegundos.
+
+El objetivo es mantener actualizada la ubicación del incidente mientras la alerta permanezca activa.
+
+La función debe respetar los permisos de ubicación, el estado del proveedor GNSS y las restricciones de ejecución de Android.
 
 ### Detener telemetría
 
@@ -494,6 +990,7 @@ val datos = moduloEmergencias.gestorTelemetria.emitirInstantaneaTelemetria()
 Log.d("TELEMETRIA", "Latitud: ${datos.latitud}")
 Log.d("TELEMETRIA", "Longitud: ${datos.longitud}")
 Log.d("TELEMETRIA", "Batería: ${datos.nivelBateria}%")
+Log.d("TELEMETRIA", "Fuente: ${datos.fuente}")
 ```
 
 ### Simular una ubicación para pruebas
@@ -507,19 +1004,140 @@ moduloEmergencias.gestorTelemetria.simularUbicacionParaPruebas(
 
 Esta función permite probar la lógica de ubicación sin desplazarse físicamente.
 
-**Advertencia:** actualmente, si no se obtiene una ubicación GPS o de red, el código utiliza las coordenadas de ESCOM como valor predeterminado. Esto es útil para algunas pruebas, pero debe sustituirse antes de utilizar la aplicación en situaciones reales. Una coordenada de prueba nunca debe mostrarse como si fuera la ubicación real del usuario.
+**Advertencia:** una coordenada de prueba nunca debe mostrarse como si fuera la ubicación real del usuario. Se debe comprobar la fuente, la precisión y la antigüedad de la ubicación antes de incluirla en una alerta.
+
+### Máquina de estados oficial E01
+
+El ciclo de vida de una alerta se representa mediante:
+
+```kotlin
+EstadoAlertaE01
+```
+
+Los estados oficiales son:
+
+| Estado | Descripción |
+|---|---|
+| `CREADA` | La alerta ha sido generada. |
+| `EN_CUENTA_REGRESIVA` | La alerta se encuentra en la cuenta regresiva previa al envío. |
+| `PENDIENTE_ENVIO` | La alerta está pendiente de ser transmitida o confirmada. |
+| `EXPIRADA` | La alerta superó su vigencia definida. |
+| `ENVIADA` | La alerta fue transmitida. |
+| `ASIGNADA` | Una unidad operativa fue asignada al incidente. |
+| `ESCALADA` | La alerta fue escalada a otro nivel de atención. |
+| `ACUSADA` | Se recibió un acuse de atención. |
+| `EN_ATENCION` | El incidente está siendo atendido. |
+| `ATENDIDA` | La atención del incidente fue realizada. |
+| `CERRADA` | El ciclo de atención fue cerrado. |
+| `CANCELADA` | La alerta fue cancelada. |
+
+La máquina de estados permite que el Frontend y los módulos Backend conozcan el estado actual de la alerta sin depender únicamente de una variable local de pantalla.
+
+### Historial de eventos de alerta
+
+La función:
+
+```kotlin
+actualizarHistorialEventoAlerta(...)
+```
+
+permite incorporar eventos al historial de una alerta.
+
+Los eventos alimentan:
+
+```kotlin
+historialEventosAlerta
+```
+
+Este flujo contiene una lista de:
+
+```kotlin
+List<EventoHistorialAlerta>
+```
+
+La finalidad es mostrar una línea de tiempo con los cambios relevantes del incidente.
+
+Por ejemplo:
+
+```text
+ALERTA CREADA
+     |
+     v
+ALERTA ENVIADA
+     |
+     v
+UNIDAD ASIGNADA
+     |
+     v
+ACUSE RECIBIDO
+     |
+     v
+UNIDAD EN ATENCIÓN
+     |
+     v
+ALERTA ATENDIDA
+     |
+     v
+ALERTA CERRADA
+```
+
+Los eventos deben conservar su marca de tiempo y la información necesaria para reconstruir el historial.
+
+### Sincronización con la red de apoyo y emisora
+
+La función:
+
+```kotlin
+sincronizarVistaRedApoyoYEmisora(...)
+```
+
+actualiza la información de seguimiento de la unidad asignada.
+
+El estado se expone mediante:
+
+```kotlin
+vistaSincronizadaAtencion
+```
+
+Su tipo es:
+
+```kotlin
+StateFlow<EstadoSeguimientoAtencion?>
+```
+
+La información puede incluir:
+
+- Identificador de la unidad asignada.
+- Distancia respecto al incidente.
+- Hora en que se recibió el acuse.
+- Estado actual del seguimiento.
+
+Ejemplo de información que puede mostrarse en la interfaz:
+
+```text
+Unidad asignada: P-214
+Distancia al incidente: 180 m
+Estado: ACUSADA
+Hora de acuse: 18:42
+```
+
+La información de la unidad debe proceder de una actualización recibida o de un cálculo realizado con coordenadas válidas. No debe inventarse una distancia ni mostrarse una asignación que no haya sido confirmada.
 
 ---
 
-## 10. Integración de la malla Bluetooth BLE
+## 10. Integración de la malla Bluetooth BLE y Modo Operador Ad-Hoc — Proceso P5.1
 
 `GestorMalla` permite transmitir y recibir paquetes de emergencia utilizando Bluetooth Low Energy.
 
-Su funcionamiento se divide en tres partes:
+Su funcionamiento se divide en:
 
 1. Escaneo de anuncios BLE.
 2. Transmisión de paquetes de emergencia.
-3. Retransmisión de paquetes recibidos.
+3. Recepción y validación de paquetes.
+4. Retransmisión de paquetes recibidos.
+5. Protección criptográfica de la información.
+6. Operación Ad-Hoc para unidades de campo sin Internet.
+7. Emisión de paquetes de acuse ACK.
 
 ### Activar el escaneo
 
@@ -546,13 +1164,98 @@ gestorMalla.emitirAlertaEnMalla(
 )
 ```
 
-Se genera un `PaqueteMalla` que contiene:
+Se genera un `PaqueteMalla` con la información necesaria para propagar el incidente.
 
-- Identificador del paquete.
-- Identificador del emisor.
-- Coordenadas.
-- Nivel de batería.
-- TTL o tiempo de vida del paquete.
+### Estructura actualizada de PaqueteMalla
+
+El modelo incorpora los siguientes elementos:
+
+| Campo | Descripción |
+|---|---|
+| Identificador del paquete | Identifica de manera única el paquete. |
+| Identificador del emisor | Identifica el dispositivo o usuario que originó el mensaje. |
+| Coordenadas | Ubicación asociada a la alerta. |
+| Nivel de batería | Porcentaje de batería del dispositivo emisor. |
+| `ttl` | Cantidad de retransmisiones o saltos permitidos restantes. |
+| `saltosRecorridos` | Número de saltos que ha recorrido el paquete. |
+| `cargaCifradaBase64` | Contenido protegido mediante AES-GCM y codificado en Base64. |
+| `firmaHmacHex` | Firma de integridad calculada mediante HMAC-SHA256. |
+
+### Control de saltos y TTL
+
+El paquete incorpora dos valores complementarios:
+
+- `saltosRecorridos` aumenta en una unidad cuando el paquete se retransmite.
+- `ttl` disminuye en una unidad cuando el paquete avanza por la malla.
+
+Ejemplo conceptual:
+
+```text
+PAQUETE ORIGINAL
+ttl = 5
+saltosRecorridos = 0
+       |
+       v
+PRIMER DISPOSITIVO
+ttl = 4
+saltosRecorridos = 1
+       |
+       v
+SEGUNDO DISPOSITIVO
+ttl = 3
+saltosRecorridos = 2
+       |
+       v
+TERCER DISPOSITIVO
+ttl = 2
+saltosRecorridos = 3
+```
+
+Cuando el TTL llega al límite establecido, el paquete deja de retransmitirse.
+
+Este mecanismo evita la propagación indefinida de un mismo paquete.
+
+### Seguridad criptográfica de los paquetes
+
+La implementación incorpora dos mecanismos:
+
+**AES-GCM de 128 bits**
+
+La carga útil se cifra mediante AES-GCM con una clave de 128 bits.
+
+El resultado se codifica en Base64 y se almacena en:
+
+```kotlin
+cargaCifradaBase64
+```
+
+AES-GCM proporciona confidencialidad y autenticación criptográfica del contenido cifrado mediante su etiqueta de autenticación.
+
+**HMAC-SHA256**
+
+La integridad del paquete se verifica mediante una firma HMAC-SHA256 almacenada en:
+
+```kotlin
+firmaHmacHex
+```
+
+Este mecanismo permite comprobar que el contenido firmado no fue modificado y que corresponde a quien conoce la clave compartida.
+
+La verificación debe realizarse antes de procesar o retransmitir el contenido como una alerta válida.
+
+**Nota técnica:** AES-GCM y HMAC requieren una administración segura de claves. Las claves no deben incluirse directamente en el código fuente ni enviarse dentro del mismo paquete que protegen. También se debe evitar la reutilización de nonces con una misma clave AES-GCM.
+
+### Compatibilidad con versiones anteriores de Android
+
+Se incorpora soporte retrocompatible para dispositivos con Android API inferior a 26 mediante:
+
+```kotlin
+emitirModoLegacyRespaldo(...)
+```
+
+Esta función permite utilizar el mecanismo de respaldo definido para versiones antiguas.
+
+La compatibilidad debe comprobarse en dispositivos reales, ya que las capacidades BLE disponibles dependen tanto de la versión de Android como del hardware.
 
 ### Retransmisión de paquetes
 
@@ -562,9 +1265,24 @@ Cuando un dispositivo recibe un paquete BLE válido, ejecuta:
 interceptarYRetransmitir(paqueteEntrante)
 ```
 
-La función comprueba si el paquete ya fue procesado y reduce el TTL antes de retransmitirlo.
+La función debe:
 
-Esto permite propagar alertas entre dispositivos cercanos sin retransmitir indefinidamente el mismo paquete.
+1. Validar la estructura del paquete.
+2. Comprobar la integridad criptográfica.
+3. Consultar si el paquete ya fue procesado.
+4. Registrar el identificador en la persistencia de paquetes vistos.
+5. Verificar que el TTL permita continuar la propagación.
+6. Actualizar `saltosRecorridos`.
+7. Reducir `ttl`.
+8. Retransmitir el paquete cuando corresponda.
+
+El registro de paquetes procesados se realiza mediante:
+
+```kotlin
+registrarPaqueteMallaVisto(...)
+```
+
+Esto permite reducir retransmisiones duplicadas y evitar ciclos innecesarios.
 
 ### Configurar el servidor Linux
 
@@ -577,7 +1295,82 @@ moduloEmergencias.gestorMalla.urlServidorLinux =
 
 El servidor debe estar accesible desde la red del dispositivo y aceptar solicitudes HTTP POST con contenido JSON.
 
-La función `enviarAServidorLinux()` se ejecuta durante la retransmisión de un paquete recibido. En la implementación actual, la emisión inicial de una alerta no realiza automáticamente ese envío HTTP.
+La función:
+
+```kotlin
+enviarAServidorLinux(...)
+```
+
+permite enviar la información del paquete al servidor.
+
+La emisión inicial de una alerta por BLE y su envío HTTP son operaciones diferentes. Debe verificarse el punto del flujo que invoca la transmisión HTTP para garantizar que también se atiendan los paquetes originales cuando así lo requiera la integración.
+
+### Modo Operador Ad-Hoc — Pantalla A-14
+
+El Modo Operador Ad-Hoc permite que una unidad de campo consulte alertas recibidas mediante la malla BLE sin depender de una conexión a Internet.
+
+La función:
+
+```kotlin
+mostrarAlertaAdHocModoOperador(
+    paquete: PaqueteMalla,
+    latitudOperador: Double,
+    longitudOperador: Double
+): AlertaAdHocOperadorVista
+```
+
+genera una vista de la alerta a partir del paquete recibido y de la ubicación actual del operador.
+
+La función calcula:
+
+- Distancia entre el operador y el incidente.
+- Rumbo cardinal hacia la ubicación de la alerta.
+- Información necesaria para mostrar la alerta en la pantalla A-14.
+
+Ejemplo de presentación:
+
+```text
+ALERTA RECIBIDA
+
+Distancia: 180 m
+Dirección: noreste
+
+Referencia:
+180 m al noreste
+```
+
+La distancia y el rumbo deben calcularse a partir de coordenadas válidas. Si no se cuenta con una ubicación confiable, la interfaz debe indicarlo en lugar de mostrar una dirección estimada como si fuera precisa.
+
+### Acuse de atención offline por malla
+
+La función:
+
+```kotlin
+acusarYAcudirOfflinePorMalla(
+    paqueteOriginal: PaqueteMalla,
+    unidadOperativaId: String = "P-214"
+): PaqueteMalla
+```
+
+permite que una unidad operativa genere un paquete de acuse sin depender de Internet.
+
+El identificador predeterminado de unidad es:
+
+```text
+P-214
+```
+
+La función genera un paquete de respuesta con un identificador de acuse en el formato:
+
+```text
+ACK-XXXX
+```
+
+Este paquete se emite por BLE para comunicar que la unidad recibió y acusó la alerta.
+
+El acuse debe conservar una referencia al paquete original para permitir relacionar la respuesta con el incidente correspondiente.
+
+**Importante:** emitir un ACK por BLE no significa que el servidor central ya haya recibido el acuse. La confirmación local y la sincronización con el servidor deben manejarse como estados diferentes.
 
 ---
 
@@ -585,16 +1378,23 @@ La función `enviarAServidorLinux()` se ejecuta durante la retransmisión de un 
 
 Los gestores exponen flujos de datos para que la interfaz pueda observar los cambios sin consultar manualmente cada clase.
 
-Los principales flujos disponibles desde `ModuloEmergencias` son:
+Los principales flujos disponibles desde `ModuloEmergencias` y sus gestores son:
 
 | Flujo | Tipo | Información |
 |---|---|---|
-| `alertaActiva` | StateFlow | Alerta actual |
-| `flujoTelemetria` | StateFlow | Telemetría actual |
-| `estadoCaminata` | StateFlow | Estado de la caminata |
-| `estadoRedYMalla` | StateFlow | Conectividad y estado BLE |
-| `flujoPaquetesMalla` | SharedFlow | Paquetes emitidos o retransmitidos |
-| `colaTelemetriaOfflineP11` | SharedFlow | Lecturas para almacenamiento offline |
+| `alertaActiva` | StateFlow | Alerta actual. |
+| `flujoTelemetria` | StateFlow | Telemetría actual. |
+| `estadoCaminata` | StateFlow | Estado de la caminata. |
+| `estadoRedYMalla` | StateFlow | Conectividad y estado BLE. |
+| `flujoPaquetesMalla` | SharedFlow | Paquetes emitidos o retransmitidos. |
+| `colaTelemetriaOfflineP11` | SharedFlow | Lecturas para almacenamiento offline. |
+| `segundosRestantesPreEnvio` | StateFlow | Segundos restantes de la cuenta regresiva previa al envío. |
+| `historialEventosAlerta` | StateFlow | Línea de tiempo de eventos de la alerta. |
+| `vistaSincronizadaAtencion` | StateFlow | Estado de seguimiento de la unidad asignada. |
+| `gestorVozPanico.textoTranscritoEnVivo` | StateFlow | Texto reconocido durante la transcripción de voz. |
+| `gestorVozPanico.ultimaClasificacionIA1` | StateFlow | Último resultado de clasificación local IA-1. |
+| `gestorMalla.alertaModoOperadorAdHoc` | StateFlow | Vista de alerta para el operador de campo. |
+| `gestorCaminataSegura.comparativaRutasOffline` | StateFlow | Comparativa de rutas calculadas localmente. |
 
 ### Ejemplo de observación en una Activity
 
@@ -626,6 +1426,18 @@ lifecycleScope.launch {
                 )
             }
         }
+
+        launch {
+            moduloEmergencias.segundosRestantesPreEnvio.collect { segundos ->
+                Log.d("SOS", "Cuenta regresiva: $segundos")
+            }
+        }
+
+        launch {
+            moduloEmergencias.historialEventosAlerta.collect { eventos ->
+                Log.d("SOS", "Eventos registrados: ${eventos.size}")
+            }
+        }
     }
 }
 ```
@@ -649,6 +1461,20 @@ val alerta by moduloEmergencias.alertaActiva.collectAsState()
 val telemetria by moduloEmergencias.flujoTelemetria.collectAsState()
 
 val estadoMalla by moduloEmergencias.estadoRedYMalla.collectAsState()
+
+val segundosRestantes by moduloEmergencias.segundosRestantesPreEnvio.collectAsState()
+
+val historial by moduloEmergencias.historialEventosAlerta.collectAsState()
+
+val seguimiento by moduloEmergencias.vistaSincronizadaAtencion.collectAsState()
+
+val textoVoz by moduloEmergencias.gestorVozPanico.textoTranscritoEnVivo.collectAsState()
+
+val clasificacion by moduloEmergencias.gestorVozPanico.ultimaClasificacionIA1.collectAsState()
+
+val alertaOperador by moduloEmergencias.gestorMalla.alertaModoOperadorAdHoc.collectAsState()
+
+val rutasOffline by moduloEmergencias.gestorCaminataSegura.comparativaRutasOffline.collectAsState()
 ```
 
 Imports:
@@ -658,7 +1484,295 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 ```
 
-La interfaz puede utilizar estos valores para actualizar indicadores, mostrar la ubicación, informar si existe una alerta y mostrar el estado de la malla BLE.
+La interfaz puede utilizar estos valores para actualizar indicadores, mostrar la ubicación, informar si existe una alerta, presentar la clasificación del incidente y mostrar el estado de la malla BLE.
+
+### 11.1. Contrato de Integración con los demás Módulos
+
+Esta sección define las funciones y los flujos que deben utilizar los demás equipos para integrar el Módulo 2.
+
+El objetivo es que los equipos consuman las interfaces públicas del motor y no repliquen la lógica de emergencia, persistencia, telemetría o comunicación BLE.
+
+#### A. Módulo Backend 1 — P1, P2, P3 y P8
+
+Este módulo es responsable de la información del usuario, configuración de seguridad y parámetros asociados al funcionamiento del sistema.
+
+**1. Inyectar el usuario actual**
+
+Al crear el motor, debe proporcionarse el identificador real del usuario autenticado:
+
+```kotlin
+val moduloEmergencias = ModuloEmergencias(
+    context = applicationContext,
+    usuarioIdActual = usuarioIdActual
+)
+```
+
+`usuarioIdActual` debe provenir del sistema de autenticación del proyecto.
+
+No se debe utilizar un identificador fijo de prueba en una versión integrada.
+
+**2. Actualizar parámetros de seguridad**
+
+Cuando el usuario modifique sus preferencias, el Módulo Backend 1 debe invocar:
+
+```kotlin
+moduloEmergencias.actualizarParametrosSeguridad(
+    nuevasPalabrasVoz = palabrasClaveConfiguradas,
+    sensibilidadCaidaG = sensibilidadCaida,
+    intervaloCheckInSegundos = intervaloCheckIn,
+    segundosCuentaRegresiva = segundosCuenta
+)
+```
+
+Los valores deben respetar las restricciones de configuración:
+
+- Cuenta regresiva: de 3 a 10 segundos.
+- Sensibilidad de caída: de acuerdo con la calibración definida.
+- Intervalo de check-in: según la configuración del usuario.
+- Palabras de voz: lista de palabras admitidas por el motor.
+
+**3. Desactivación normal o simulación de coacción**
+
+Para cancelar una alerta mediante el flujo normal:
+
+```kotlin
+moduloEmergencias.desactivarAlertaEmergencia(
+    simulacionCoaccion = false
+)
+```
+
+Para solicitar el flujo de simulación de coacción:
+
+```kotlin
+moduloEmergencias.desactivarAlertaEmergencia(
+    simulacionCoaccion = true
+)
+```
+
+El Backend 1 debe distinguir ambos casos y evitar tratar una simulación de coacción como una cancelación normal.
+
+La lógica de P8 debe conservar la semántica del estado de alerta y coordinarse con el Backend correspondiente.
+
+#### B. Módulo Backend 3 — P9, P10, P11 y P12
+
+Este módulo consume la persistencia local, la cola offline, los datos de telemetría y la información vial.
+
+**1. Utilizar la persistencia local ER-06**
+
+La clase responsable es:
+
+```kotlin
+GestorColaLocalSQLiteER06
+```
+
+Funciones principales:
+
+```kotlin
+encolarPendienteConVigencia(...)
+```
+
+Agrega un elemento pendiente a la cola local con su vigencia correspondiente.
+
+```kotlin
+registrarPaqueteMallaVisto(...)
+```
+
+Registra un paquete BLE que ya fue procesado para evitar duplicados.
+
+```kotlin
+pendientesCola
+```
+
+Permite consultar los elementos que permanecen pendientes de procesamiento o sincronización.
+
+El Backend 3 debe utilizar estas funciones para coordinar el almacenamiento offline y la posterior recuperación de los elementos pendientes.
+
+No debe insertar directamente en las tablas si existe una función pública del gestor que ya realiza esa operación.
+
+**2. Escuchar la telemetría pendiente P11**
+
+El flujo:
+
+```kotlin
+moduloEmergencias.colaTelemetriaOfflineP11
+```
+
+permite recibir las lecturas que deben conservarse o procesarse cuando no existe conectividad.
+
+Ejemplo:
+
+```kotlin
+lifecycleScope.launch {
+    moduloEmergencias.colaTelemetriaOfflineP11.collect { datos ->
+        // Procesar o entregar la lectura al mecanismo de persistencia P11.
+    }
+}
+```
+
+El Backend 3 debe coordinar la persistencia y la sincronización de estas lecturas con el servidor cuando vuelva a existir conexión.
+
+**3. Proporcionar la caché vial para rutas offline**
+
+El cálculo de rutas necesita una lista de aristas del grafo local:
+
+```kotlin
+val comparativa = moduloEmergencias.gestorCaminataSegura
+    .calcularRutasEnDispositivoOffline(
+        origen = origen,
+        destino = destino,
+        aristasGrafoCache = aristasViales
+    )
+```
+
+Donde:
+
+```kotlin
+aristasViales: List<AristaVialOffline>
+```
+
+La lista debe proceder de la caché local administrada por el módulo responsable de los datos geográficos.
+
+El Backend 3 es responsable de entregar la información al motor de rutas. El cálculo Dijkstra se realiza en el dispositivo.
+
+La estructura de cada arista debe corresponder al modelo `AristaVialOffline` compartido por el proyecto.
+
+#### C. Módulo Backend 4 — Nube / Servidor
+
+El Backend 4 recibe las alertas transmitidas desde los dispositivos y coordina la sincronización con el servidor.
+
+**1. Recepción de paquetes mediante HTTP**
+
+El punto de integración es:
+
+```kotlin
+enviarAServidorLinux(...)
+```
+
+La URL se configura mediante:
+
+```kotlin
+moduloEmergencias.gestorMalla.urlServidorLinux =
+    "http://DIRECCION_IP:8080/alerta"
+```
+
+El envío se realiza mediante HTTP POST con contenido JSON.
+
+El contrato de transporte debe contemplar los datos necesarios para identificar y procesar el paquete:
+
+| Dato | Descripción |
+|---|---|
+| Identificador del paquete | Identificador único del mensaje. |
+| Identificador del emisor | Usuario o dispositivo que origina el paquete. |
+| Identificador de alerta | Folio del incidente asociado. |
+| Coordenadas | Ubicación asociada al incidente. |
+| Marca de tiempo | Momento de generación o transmisión. |
+| TTL | Saltos restantes. |
+| Saltos recorridos | Número de retransmisiones realizadas. |
+| Carga cifrada | Contenido protegido en Base64. |
+| Firma HMAC | Valor de integridad en hexadecimal. |
+
+Ejemplo conceptual del contenido:
+
+```json
+{
+  "idPaquete": "PKT-XXXX",
+  "emisorId": "USR_LOCAL_01",
+  "idAlerta": "ALR-2026-XXXXXX",
+  "latitud": 19.5045,
+  "longitud": -99.1469,
+  "timestamp": 1790000000000,
+  "ttl": 4,
+  "saltosRecorridos": 1,
+  "cargaCifradaBase64": "<contenido_cifrado>",
+  "firmaHmacHex": "<firma_hmac>"
+}
+```
+
+Este ejemplo representa los campos del contrato lógico, no sustituye el serializador real del proyecto. Los nombres, tipos, formato de timestamp y estructura definitiva deben coincidir exactamente con el DTO que genera `enviarAServidorLinux()` y con el endpoint del Backend 4.
+
+El servidor debe validar la estructura y la integridad antes de procesar el contenido. La verificación criptográfica debe utilizar las claves administradas por el sistema y no claves recibidas dentro del mismo paquete.
+
+**2. Sincronizar estados de atención**
+
+Cuando el servidor actualice el estado de una alerta, la integración debe reflejarlo mediante:
+
+```kotlin
+sincronizarVistaRedApoyoYEmisora(...)
+```
+
+La información debe alimentar:
+
+```kotlin
+vistaSincronizadaAtencion
+```
+
+La interfaz podrá consultar la unidad asignada, su distancia y la hora de acuse.
+
+**3. Actualizar el historial**
+
+Los cambios relevantes del ciclo de vida deben incorporarse mediante:
+
+```kotlin
+actualizarHistorialEventoAlerta(...)
+```
+
+El resultado se refleja en:
+
+```kotlin
+historialEventosAlerta
+```
+
+El Backend 4 debe conservar la correspondencia entre el folio de alerta, los eventos y los estados E01.
+
+#### D. Frontend 1 y Frontend 2
+
+Los equipos de interfaz deben observar los flujos del Módulo 2 para actualizar las pantallas sin duplicar la lógica de los gestores.
+
+| Pantalla | Flujos y datos que debe observar |
+|---|---|
+| A-04 | `alertaActiva`, `flujoTelemetria`, estado general de protección y estado de la alerta. |
+| A-05 | `segundosRestantesPreEnvio`, `alertaActiva` y estado E01 para mostrar la cuenta regresiva y el resultado del envío. |
+| A-06 | `gestorVozPanico.textoTranscritoEnVivo`, `gestorVozPanico.ultimaClasificacionIA1` y `alertaActiva`. |
+| A-07 | `estadoCaminata`, `flujoTelemetria` y estado del check-in. |
+| A-08 | `historialEventosAlerta` y `vistaSincronizadaAtencion` para presentar el seguimiento del incidente. |
+| A-12 | `estadoRedYMalla`, `flujoPaquetesMalla` y estado de sincronización. |
+| A-14 | `gestorMalla.alertaModoOperadorAdHoc` y paquetes recibidos mediante BLE. |
+| A-18 | `gestorCaminataSegura.comparativaRutasOffline` para mostrar la ruta segura recomendada y la ruta más corta. |
+| A-19 | `historialEventosAlerta`, `vistaSincronizadaAtencion` y estado E01 para presentar el seguimiento y cierre de la atención. |
+
+**Reglas de integración del Frontend:**
+
+1. No generar alertas directamente desde las pantallas manipulando los gestores internos.
+2. Utilizar las funciones públicas de `ModuloEmergencias`.
+3. Observar los `StateFlow` para mantener la interfaz sincronizada.
+4. No asumir que una alerta fue enviada únicamente porque existe en `alertaActiva`.
+5. Diferenciar los estados locales de los estados confirmados por el servidor.
+6. Mostrar cuando una ubicación procede de `ULTIMA_CONOCIDA`.
+7. Mostrar la clasificación IA-1 como información estimada, acompañada de su confianza.
+8. No presentar una unidad operativa como asignada si no existe una confirmación correspondiente.
+9. Mantener disponible el botón SOS como alternativa a los detonadores automáticos.
+
+### Responsabilidad de cada módulo
+
+```text
+       FRONTEND 1 / FRONTEND 2
+                 |
+                 v
+        Presentación y eventos UI
+                 |
+                 v
+          ModuloEmergencias
+                 |
+      +----------+-----------+
+      |          |           |
+      v          v           v
+  BACKEND 1  BACKEND 3   BACKEND 4
+  Usuarios   Offline     Nube/Servidor
+  Seguridad  SQLite      Sincronización
+  Parámetros Rutas       Estados E01
+```
+
+El Módulo 2 debe actuar como motor de coordinación. Los demás módulos consumen sus funciones y estados sin replicar internamente sus responsabilidades.
 
 ---
 
@@ -678,25 +1792,64 @@ Y se detiene con:
 ServicioEmergencias.detener(context)
 ```
 
-Sus responsabilidades actuales son:
+Sus responsabilidades son:
 
 - Crear el canal de notificaciones.
 - Mostrar una notificación de protección activa.
 - Adquirir un `PARTIAL_WAKE_LOCK`.
 - Solicitar que Android mantenga el servicio en primer plano.
+- Declarar los tipos de servicio que corresponden a las funciones activas.
 - Liberar el WakeLock cuando se destruye el servicio.
 
 El servicio utiliza `START_STICKY`, que permite a Android intentar recrearlo si el proceso es terminado por el sistema. Esto no garantiza que permanezca activo permanentemente.
 
-**Importante:** el servicio actual no contiene una instancia de `ModuloEmergencias` ni inicia directamente `GestorVozPanico`. Para tener una arquitectura robusta, se recomienda que el servicio sea responsable del ciclo de vida del motor de protección y que la interfaz se comunique con él, en lugar de mantener los gestores únicamente dentro de una Activity.
+### Tipos de servicio
 
-También debe comprobarse que el WakeLock se libere correctamente y que se maneje su expiración, ya que actualmente se adquiere con una duración máxima de una hora.
+Los tipos deben corresponder a las funciones que realmente se ejecutan.
+
+| Tipo | Uso |
+|---|---|
+| `LOCATION` | Actualización de ubicación durante la protección. |
+| `CONNECTED_DEVICE` | Funciones de comunicación con dispositivos cercanos. |
+| `MICROPHONE` | Reconocimiento de voz mediante el micrófono. |
+
+En Android 14 o superior, el tipo `MICROPHONE` requiere su permiso correspondiente y que se cumplan las restricciones de inicio del servicio.
+
+La implementación actual soporta agregar dinámicamente:
+
+```kotlin
+ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+```
+
+cuando se ha concedido `RECORD_AUDIO`.
+
+### WakeLock
+
+El servicio utiliza un:
+
+```kotlin
+PARTIAL_WAKE_LOCK
+```
+
+para mantener la CPU activa durante las operaciones autorizadas.
+
+Debe comprobarse que el WakeLock se libere correctamente y que se maneje su expiración, ya que mantenerlo durante periodos prolongados puede incrementar el consumo de batería.
+
+### Consideración de arquitectura
+
+El servicio debe coordinar el ciclo de vida de las funciones de protección.
+
+Si el reconocimiento de voz se administra desde el servicio, debe evitarse crear una segunda instancia independiente de `GestorVozPanico` desde una Activity.
+
+La interfaz debe observar los flujos compartidos y comunicarse con el servicio o con la instancia central del motor.
+
+El servicio debe detener o liberar los recursos correspondientes cuando finalice el ciclo de protección.
 
 ---
 
 ## 13. Consideraciones importantes antes de utilizar el módulo
 
-El módulo cuenta con varias funcionalidades implementadas, pero todavía existen aspectos que deben revisarse antes de considerarlo un sistema de protección confiable.
+El módulo incorpora las funcionalidades necesarias para el Entregable 3, pero todavía existen aspectos que deben revisarse y validarse antes de considerarlo un sistema de protección confiable.
 
 ### Reconocimiento de voz
 
@@ -706,13 +1859,27 @@ En las pruebas realizadas se observó que algunos dispositivos con servicios de 
 
 El error de reconocimiento 2 corresponde a un problema de red. El error 12 indica que el idioma solicitado no es compatible con el reconocedor seleccionado.
 
-No se debe asumir que todos los dispositivos Android pueden mantener una escucha continua, especialmente con la pantalla apagada.
+La transcripción offline depende de la disponibilidad de un motor y modelo de idioma compatible. No se debe asumir que todos los dispositivos Android pueden procesar voz sin conexión.
+
+La escucha continua tampoco está garantizada por Android, especialmente con la pantalla apagada o cuando el sistema restringe el acceso al micrófono.
+
+### Clasificación IA-1
+
+La clasificación local permite estructurar la información del relato en QUÉ, DÓNDE, QUIÉN y CUÁNDO.
+
+El umbral de confianza de 0.70 debe utilizarse como referencia para decidir si un resultado puede incorporarse a la alerta.
+
+Un resultado con confianza insuficiente no debe sustituir información confirmada ni utilizarse como una afirmación definitiva sobre el incidente.
+
+La clasificación no debe retrasar el envío de la alerta inicial.
 
 ### Servicio en primer plano
 
 Para utilizar ubicación y micrófono en segundo plano se deben declarar los tipos de servicio adecuados y cumplir las restricciones de Android.
 
 Un WakeLock no garantiza que Android mantenga todos los procesos activos ni evita que el fabricante aplique restricciones adicionales de batería.
+
+El servicio debe solicitar únicamente los tipos y permisos necesarios para las funciones que realmente ejecuta.
 
 ### Telemetría y detección de caídas
 
@@ -722,17 +1889,93 @@ También es recomendable agregar mecanismos para evitar múltiples detecciones c
 
 ### Ubicación
 
-No se debe enviar una ubicación de prueba como si fuera una ubicación GPS real. Se debe comprobar la precisión y disponibilidad de la coordenada antes de utilizarla en una alerta.
+No se debe enviar una ubicación de prueba como si fuera una ubicación GPS real.
 
-### Bluetooth BLE
+Se debe comprobar:
+
+- La fuente de ubicación.
+- La precisión.
+- La antigüedad de la lectura.
+- La disponibilidad de permisos.
+- La validez de las coordenadas.
+
+El valor `ULTIMA_CONOCIDA` debe distinguirse de una ubicación GNSS recién obtenida.
+
+### Persistencia offline ER-06
+
+La base SQLite permite conservar alertas pendientes y registrar paquetes ya vistos.
+
+Sin embargo, la persistencia local no representa una confirmación de recepción por parte del servidor.
+
+Se debe controlar:
+
+- La vigencia de los elementos en `cola_alerta`.
+- La eliminación o actualización de pendientes ya sincronizados.
+- La prevención de duplicados mediante `paquete_visto`.
+- La recuperación de registros después de reiniciar la aplicación.
+- La consistencia entre los estados locales y los confirmados por el servidor.
+
+### Bluetooth BLE y seguridad
+
+La implementación ahora incorpora cifrado AES-GCM de 128 bits y firma HMAC-SHA256.
+
+Por lo tanto, la información transmitida cuenta con mecanismos criptográficos para proteger la confidencialidad y comprobar la integridad de los paquetes.
+
+Esto no elimina todos los riesgos de comunicación.
+
+Se deben revisar:
+
+- Administración y almacenamiento de claves.
+- Generación y unicidad de nonces AES-GCM.
+- Verificación de la etiqueta de autenticación.
+- Verificación HMAC antes de procesar el paquete.
+- Prevención de repetición de mensajes.
+- Vigencia de los paquetes.
+- Compatibilidad entre versiones del formato.
+- Validación de identificadores y campos recibidos.
+
+El TTL y `saltosRecorridos` controlan la propagación, pero no sustituyen los mecanismos criptográficos.
 
 El alcance de BLE depende del hardware, del entorno y de las condiciones de radio. La recepción de un anuncio no garantiza que el paquete haya llegado a un servidor o a un servicio de emergencia.
 
-La implementación actual tampoco incluye autenticación ni cifrado de los paquetes BLE. Antes de utilizarla en producción, deben incorporarse mecanismos de integridad, autenticación y protección de datos.
+### Modo Operador Ad-Hoc
+
+El Modo Operador permite consultar y acusar alertas mediante BLE sin Internet.
+
+Un paquete ACK emitido por BLE confirma una acción local de acuse, pero no garantiza que el servidor central haya recibido esa información.
+
+La sincronización posterior debe conservar el identificador del paquete original y el identificador del acuse para evitar asociaciones incorrectas.
+
+### Rutas seguras offline
+
+El algoritmo Dijkstra calcula rutas utilizando el grafo local disponible.
+
+La ruta recomendada depende de la vigencia y calidad de los datos de:
+
+- Conectividad vial.
+- Polígonos de riesgo.
+- Iluminación.
+- Distancias entre nodos.
+
+La aplicación debe informar cuando no exista una ruta válida o cuando la caché local esté incompleta.
+
+Una ruta recomendada por el algoritmo no constituye una garantía de seguridad física.
+
+### Atajo físico de cinco presiones
+
+La detección de cinco presiones del botón de encendido puede entrar en conflicto con el SOS nativo del sistema operativo.
+
+Para realizar pruebas controladas, se debe revisar la configuración del teléfono y desactivar temporalmente el **SOS de emergencia nativo de Android**, si el dispositivo permite hacerlo, para evitar que las cinco presiones abran el flujo de llamada al 911 del sistema.
+
+Esta modificación debe limitarse al entorno de pruebas. En un dispositivo de uso cotidiano no se recomienda desactivar las protecciones de emergencia del sistema sin valorar sus consecuencias.
+
+Además, la recepción del evento depende de las restricciones del fabricante y de Android. No debe considerarse un detonador universalmente disponible.
 
 ### Modo de coacción
 
-La implementación de `simulacionCoaccion` es parcial. Debe completarse y probarse cuidadosamente antes de presentarse como una funcionalidad operativa.
+La implementación de `simulacionCoaccion` debe distinguirse de una cancelación normal.
+
+Debe completarse y probarse cuidadosamente antes de presentarse como una funcionalidad operativa.
 
 ---
 
@@ -750,17 +1993,34 @@ Solicitar permisos Android
 Crear ModuloEmergencias
           |
           v
-Iniciar protección
-          |
-          +----------------------+
-          |                      |
-          v                      v
-    Vigilancia de          Escaneo BLE
-     acelerómetro
+Inicializar persistencia ER-06
           |
           v
- Activar reconocimiento
-      de voz
+Iniciar protección
+          |
+          +---------------------------+
+          |                           |
+          v                           v
+    Vigilancia de                 Escaneo BLE
+     acelerómetro                      |
+          |                            |
+          v                            v
+ Activar reconocimiento           Recibir paquetes
+      de voz                       y validar firma
+          |                            |
+          v                            v
+ Transcribir relato             Consultar paquete_visto
+          |                            |
+          v                            v
+ Clasificar mediante IA-1       ¿Paquete nuevo?
+          |                            |
+          |                       +----+----+
+          |                       |         |
+          |                      NO        SÍ
+          |                       |         |
+          |                       v         v
+          |                    Ignorar   Procesar
+          |                              y retransmitir
           |
           v
 ¿Se detectó un detonador?
@@ -770,22 +2030,40 @@ Iniciar protección
     NO        SÍ
      |         |
      v         v
-Continuar   Activar alerta SOS
+Continuar   Iniciar flujo SOS
 monitoreo       |
                 v
-        Obtener telemetría
+       ¿Requiere cuenta regresiva?
                 |
                 v
-          Crear alerta
+        Estado EN_CUENTA_REGRESIVA
+                |
+                v
+          Generar alerta base
+                |
+                v
+        Estado PENDIENTE_ENVIO
+                |
+                v
+          Asignar folio
+                |
+                v
+        Obtener telemetría
                 |
                 v
         Emitir paquete BLE
                 |
                 v
-        Iniciar telemetría
+       Persistir si es necesario
                 |
                 v
-       Actualizar información
+       Sincronizar con servidor
+                |
+                v
+       Actualizar estados E01
+                |
+                v
+       Actualizar historial
                 |
                 v
        ¿Se desactivó alerta?
@@ -803,24 +2081,72 @@ monitoreo       |
 
 ## 15. Lista de comprobación de integración
 
-Antes de considerar conectado el Módulo 2 con el frontend, verificar los siguientes puntos:
+Antes de considerar conectado el Módulo 2 con el frontend y los demás módulos, verificar los siguientes puntos:
+
+### Configuración y permisos
 
 - [ ] Todos los archivos Kotlin están dentro del paquete correcto.
+- [ ] Se agregó `PersistenciaOfflineModulo2.kt`.
 - [ ] Se agregaron las dependencias necesarias.
 - [ ] Se declararon los permisos en `AndroidManifest.xml`.
+- [ ] Se declaró `ACCESS_BACKGROUND_LOCATION` cuando corresponda.
+- [ ] Se declaró `NEARBY_WIFI_DEVICES` cuando se utilice Wi-Fi Direct.
+- [ ] Se configuró `BLUETOOTH_SCAN` con `neverForLocation` cuando corresponda.
 - [ ] Se implementó la solicitud de permisos en tiempo de ejecución.
+- [ ] Se verificó el permiso de micrófono antes de iniciar el tipo de servicio `MICROPHONE`.
+
+### Motor de emergencias
+
 - [ ] Se creó una instancia única de `ModuloEmergencias`.
+- [ ] Se inyectó el identificador real del usuario.
 - [ ] Se conectó el botón SOS.
-- [ ] Se inició la vigilancia del acelerómetro.
+- [ ] Se conectó la cuenta regresiva de la pantalla A-05.
+- [ ] Se verificó la generación del folio de alerta.
 - [ ] Se conectó el reconocimiento de voz.
-- [ ] Se conectó el servicio en primer plano.
-- [ ] Se habilitó el escaneo BLE.
-- [ ] Se conectó la pantalla de telemetría mediante StateFlow.
+- [ ] Se verificó la transcripción de voz.
+- [ ] Se verificó la clasificación local IA-1.
+- [ ] Se conectó la detección de movimiento brusco.
+- [ ] Se conectó el atajo físico de cinco presiones cuando el dispositivo lo permita.
+- [ ] Se conectó el widget SOS.
+
+### Caminata Segura y telemetría
+
 - [ ] Se conectó el modo Caminata Segura.
+- [ ] Se verificó el check-in.
+- [ ] Se verificó el cálculo de desviación punto-a-segmento.
+- [ ] Se conectó la caché vial local.
+- [ ] Se probó el cálculo Dijkstra offline.
+- [ ] Se verificó la ruta segura recomendada.
+- [ ] Se verificó la ruta más corta.
+- [ ] Se verificó el intervalo GNSS de 10,000 ms durante una alerta activa.
+- [ ] Se verificó la fuente de ubicación `FuenteUbicacion`.
+
+### Persistencia y malla
+
+- [ ] Se verificaron las tablas `cola_alerta` y `paquete_visto`.
+- [ ] Se probó `encolarPendienteConVigencia(...)`.
+- [ ] Se probó `registrarPaqueteMallaVisto(...)`.
+- [ ] Se probó la recuperación de `pendientesCola`.
 - [ ] Se probó la transmisión y recepción de paquetes BLE.
+- [ ] Se verificó el cifrado AES-GCM.
+- [ ] Se verificó la firma HMAC-SHA256.
+- [ ] Se verificó el control de TTL y `saltosRecorridos`.
+- [ ] Se probó la compatibilidad legacy.
+- [ ] Se probó el Modo Operador Ad-Hoc.
+- [ ] Se probó la emisión de paquetes ACK.
+
+### Integración con Backend y Frontend
+
+- [ ] Se conectaron los flujos StateFlow y SharedFlow.
+- [ ] Se conectó el historial de eventos de alerta.
+- [ ] Se conectó la sincronización de la unidad asignada.
+- [ ] Se verificó el contrato JSON con el Backend 4.
+- [ ] Se verificó la sincronización de estados E01.
+- [ ] Se conectaron las pantallas A-04, A-05, A-06, A-07, A-08, A-12, A-14, A-18 y A-19.
 - [ ] Se verificó el comportamiento sin conexión a Internet.
-- [ ] Se revisó el comportamiento con la pantalla apagada.
 - [ ] Se comprobó que la cancelación detenga los procesos correspondientes.
+- [ ] Se revisó el comportamiento con la pantalla apagada.
+- [ ] Se realizaron pruebas en diferentes dispositivos Android.
 
 ---
 
@@ -828,8 +2154,25 @@ Antes de considerar conectado el Módulo 2 con el frontend, verificar los siguie
 
 El Módulo 2 de Sendero Seguro centraliza las funciones de emergencia en `ModuloEmergencias`, permitiendo que los distintos gestores trabajen de manera coordinada.
 
-La interfaz únicamente necesita comunicarse con esta clase para activar las funciones, modificar parámetros y observar los flujos de información.
+La arquitectura facilita la integración con los demás módulos del proyecto, especialmente el frontend, la configuración de seguridad, la persistencia local, la comunicación con el servidor y el almacenamiento offline de telemetría.
 
-La arquitectura facilita la integración con los demás módulos del proyecto, especialmente el frontend, la configuración de seguridad y el almacenamiento local de telemetría.
+Para el Entregable 3, el motor incorpora:
 
-**Nota:** esta implementación constituye una base funcional para pruebas y desarrollo. Antes de utilizarla como sistema real de emergencia, es necesario completar la integración del micrófono con el servicio en primer plano, validar permisos y restricciones de Android, asegurar las comunicaciones y probar el comportamiento en diferentes dispositivos.
+- Activación de alertas mediante diferentes detonadores.
+- Cuenta regresiva previa al envío de la alerta.
+- Transcripción de voz y clasificación local mediante IA-1.
+- Persistencia offline mediante SQLite ER-06.
+- Cifrado AES-GCM y firma HMAC-SHA256 en la malla BLE.
+- Modo Operador Ad-Hoc para unidades de campo sin Internet.
+- Emisión de paquetes ACK.
+- Cálculo de rutas seguras offline mediante Dijkstra ponderado.
+- Cálculo geométrico de desviación mediante distancia punto-a-segmento.
+- Telemetría con identificación de la fuente de ubicación.
+- Actualización periódica GNSS durante una alerta activa.
+- Máquina de estados E01 e historial de eventos.
+- Sincronización de la unidad asignada y seguimiento de atención.
+- Contratos de integración para Backend 1, Backend 3, Backend 4 y los equipos Frontend.
+
+La interfaz únicamente necesita comunicarse con las funciones públicas del motor, modificar parámetros y observar los flujos de información.
+
+**Nota final:** esta implementación constituye una base de integración para el desarrollo y las pruebas del Entregable 3. Antes de utilizarla como sistema real de emergencia, es necesario validar el comportamiento en diferentes dispositivos, comprobar las restricciones de Android, verificar los mecanismos criptográficos, asegurar la persistencia y sincronización de datos y probar los flujos de atención de extremo a extremo. La disponibilidad de BLE, GNSS, reconocimiento de voz y servicios en segundo plano depende del dispositivo, del sistema operativo y de los permisos concedidos.
