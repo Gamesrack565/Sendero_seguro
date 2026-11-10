@@ -3,19 +3,24 @@ package com.escom.sendero_seguro.identidad
 import com.escom.sendero_seguro.identidad.datos.remoto.ClienteHttp
 import com.escom.sendero_seguro.identidad.datos.remoto.ServicioRemotoRetrofit
 import com.escom.sendero_seguro.identidad.dominio.AvisoVinculacion
+import com.escom.sendero_seguro.identidad.dominio.CancelacionMotivo
 import com.escom.sendero_seguro.identidad.dominio.CodigoEstado
 import com.escom.sendero_seguro.identidad.dominio.ConsentimientoPendiente
 import com.escom.sendero_seguro.identidad.dominio.Contacto
 import com.escom.sendero_seguro.identidad.dominio.DatosRegistro
 import com.escom.sendero_seguro.identidad.dominio.ErrorIdentidad
 import com.escom.sendero_seguro.identidad.dominio.InfoDispositivo
+import com.escom.sendero_seguro.identidad.dominio.MetodoAutenticacion
 import com.escom.sendero_seguro.identidad.dominio.MiembroEstado
 import com.escom.sendero_seguro.identidad.dominio.NotificacionCanal
 import com.escom.sendero_seguro.identidad.dominio.Resultado
+import com.escom.sendero_seguro.identidad.dominio.SolicitudCancelacion
 import com.escom.sendero_seguro.identidad.dominio.TipoComunidad
 import com.escom.sendero_seguro.identidad.dominio.UsuarioEstado
 import com.escom.sendero_seguro.identidad.dominio.UsuarioRol
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -29,7 +34,7 @@ import java.util.UUID
 import kotlin.random.Random
 
 /**
- * Prueba de punta a punta del P1 y el P2 contra el servidor real (Módulo 4): usa el mismo cliente Retrofit de la app.
+ * Prueba de punta a punta del P1, el P2 y el P8 contra el servidor real (Módulo 4): usa el mismo cliente Retrofit de la app.
  *
  * Necesita el servidor corriendo en local (`.\gradlew.bat :server:run`). Si no está prendido, la prueba se salta.
  * Otro servidor: `-Dsendero.servidor=http://.../api/v1/` o la variable SENDERO_SERVIDOR.
@@ -245,5 +250,69 @@ class ConexionServidorTest {
         assertEquals(MiembroEstado.ACTIVA, estados[profe.id])
         assertEquals(MiembroEstado.RETIRADA, estados[alumna.id])
         assertEquals(MiembroEstado.DADA_DE_BAJA, estados[alumno.id])
+    }
+
+    // ------------------------------------------------------------------ P8
+
+    /** Petición directa al servidor (para lo que la app del Módulo 1 no hace: crear la alerta y verla). */
+    private fun http(metodo: String, ruta: String, token: String? = null, cuerpo: String? = null): String =
+        (URL(baseUrl + ruta).openConnection() as HttpURLConnection).run {
+            requestMethod = metodo
+            token?.let { setRequestProperty("Authorization", "Bearer $it") }
+            if (cuerpo != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                outputStream.use { it.write(cuerpo.toByteArray()) }
+            }
+            assertTrue("$metodo $ruta respondió $responseCode", responseCode in 200..299)
+            inputStream.bufferedReader().readText()
+        }
+
+    private fun campo(json: String, clave: String) =
+        kotlinx.serialization.json.Json.parseToJsonElement(json).jsonObject.getValue(clave).jsonPrimitive.content
+
+    /** Una alerta de Ana creada con la ruta de desarrollo (en la nube no existe; la alerta real la manda el Módulo 2). */
+    private fun alertaDeAna(): String = campo(http("POST", "dev/alertas", cuerpo = "{}"), "alertaId")
+
+    private fun estadoComoLoVe(cuenta: String, alertaId: String): String {
+        val token = campo(http("POST", "dev/token", cuerpo = """{"cuenta":"$cuenta"}"""), "token")
+        return campo(http("GET", "alertas/$alertaId", token), "estado")
+    }
+
+    private suspend fun anaConSesion(): Pair<ServicioRemotoRetrofit, InfoDispositivo> {
+        val suAlmacen = AlmacenEnMemoria()
+        val suRemoto = ServicioRemotoRetrofit(ClienteHttp.crear(baseUrl, suAlmacen, false), ClienteHttp.json)
+        val disp = dispositivo.copy(id = UUID.randomUUID().toString())
+        // Cuenta de prueba del servidor local (R__datos_prueba): Ana 5510000001 / sendero123.
+        val sesion = ok(suRemoto.iniciarSesion("5510000001", "sendero123", disp))
+        suAlmacen.guardarToken(sesion.token, sesion.expiraEnMs)
+        return suRemoto to disp
+    }
+
+    private fun solicitud(alertaId: String, disp: InfoDispositivo, exitoso: Boolean, ms: Long = System.currentTimeMillis()) =
+        SolicitudCancelacion(
+            alertaId = alertaId, usuarioId = "", dispositivoId = disp.id,
+            motivo = if (exitoso) CancelacionMotivo.YA_ESTOY_A_SALVO else null,
+            metodo = MetodoAutenticacion.PIN, exitoso = exitoso, intentadoEnMs = ms,
+        )
+
+    @Test
+    fun cancelarConElPinCorrecto() = runBlocking<Unit> {
+        val (ana, disp) = anaConSesion()
+        val alerta = alertaDeAna()
+        val s = solicitud(alerta, disp, exitoso = true)
+        ok(ana.registrarCancelacion(s))
+        ok(ana.registrarCancelacion(s)) // reintento desde la cola: no pasa nada
+        assertEquals("CANCELADA", estadoComoLoVe("admin", alerta))
+        assertTrue(error(ana.registrarCancelacion(solicitud(UUID.randomUUID().toString(), disp, true))) is ErrorIdentidad.NoEncontrado)
+    }
+
+    @Test
+    fun conUnPinQueNoCoincideLaAlertaSigue() = runBlocking<Unit> {
+        val (ana, disp) = anaConSesion()
+        val alerta = alertaDeAna()
+        ok(ana.registrarCancelacion(solicitud(alerta, disp, exitoso = false)))
+        assertEquals("Ana la ve cancelada", "CANCELADA", estadoComoLoVe("ana", alerta))
+        assertNotEquals("La consola ve que sigue activa", "CANCELADA", estadoComoLoVe("admin", alerta))
     }
 }

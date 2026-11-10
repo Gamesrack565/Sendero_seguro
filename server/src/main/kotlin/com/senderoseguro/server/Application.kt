@@ -17,6 +17,8 @@ import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
 import com.senderoseguro.server.cuentas.CuentasServicio
 import com.senderoseguro.server.cuentas.rutasCuentas
+import com.senderoseguro.server.cancelacion.CancelacionServicio
+import com.senderoseguro.server.cancelacion.rutasCancelacion
 import com.senderoseguro.server.redapoyo.RedApoyoServicio
 import com.senderoseguro.server.redapoyo.rutasRedApoyo
 import com.senderoseguro.server.avisos.EnvioAvisos
@@ -106,6 +108,7 @@ fun Application.module() {
     // Cuentas y sesiones (P1 del Módulo 1). Cada petición con token revisa que su sesión siga viva.
     val cuentas = CuentasServicio(baseDatos.dataSource, tokens, config.property("jwt.sesionDias").getString().toInt().days)
     val redApoyo = RedApoyoServicio(baseDatos.dataSource)
+    val cancelacion = CancelacionServicio(baseDatos.dataSource, dispersion)
     val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
     val politicaAvisos = EnvioAvisos.Politica(
         maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
@@ -165,6 +168,7 @@ fun Application.module() {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
             rutasCuentas(cuentas)
             rutasRedApoyo(redApoyo)
+            rutasCancelacion(cancelacion)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)
