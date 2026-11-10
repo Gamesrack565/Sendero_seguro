@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,9 +67,17 @@ class PantallaDiagnosticoModulo2_vista : ComponentActivity() {
 
 @Composable
 fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val colaSqlite = remember { GestorColaLocalSQLiteER06(context) }
+
     val alerta by modulo.alertaActiva.collectAsState()
+    val segundosPreEnvio by modulo.segundosRestantesPreEnvio.collectAsState()
     val telemetria by modulo.flujoTelemetria.collectAsState()
     val caminata by modulo.estadoCaminata.collectAsState()
+    val comparativaRutas by modulo.gestorCaminataSegura.comparativaRutasOffline.collectAsState()
+    val clasificacionIA1 by modulo.gestorVozPanico.ultimaClasificacionIA1.collectAsState()
+    val vistaOperadorAdHoc by modulo.gestorMalla.alertaModoOperadorAdHoc.collectAsState()
+    val pendientesSQLite by colaSqlite.pendientesCola.collectAsState()
 
     var ipLinux by remember { mutableStateOf("10.100.88.182") }
     var ultimaAlertaMallaRecibida by remember { mutableStateOf<PaqueteMalla?>(null) }
@@ -81,18 +90,23 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
 
     LaunchedEffect(Unit) {
         modulo.gestorMalla.urlServidorLinux = "http://$ipLinux:8080/alerta"
+        colaSqlite.refrescarFlujoPendientes()
     }
 
     LaunchedEffect(Unit) {
         modulo.gestorVozPanico.flujoEventosVoz.collect { msg ->
-            registrarEvento("P4 VOZ", msg)
+            registrarEvento("P4 VOZ/IA-1", msg)
         }
     }
 
     LaunchedEffect(Unit) {
         modulo.flujoPaquetesMalla.collect { pkt ->
+            colaSqlite.registrarPaqueteMallaVisto(pkt.packetId, pkt.alertaId, true)
             if (pkt.emisorId == "NODO_CERCANO") {
                 ultimaAlertaMallaRecibida = pkt
+                val latPropia = telemetria?.latitud ?: 19.5045
+                val lonPropia = telemetria?.longitud ?: -99.1469
+                modulo.gestorMalla.mostrarAlertaAdHocModoOperador(pkt, latPropia, lonPropia)
             }
         }
     }
@@ -106,7 +120,16 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
     LaunchedEffect(alerta) {
         alerta?.let {
             if (it.activa) {
-                registrarEvento("P4 ALERTA", "¡SOS ACTIVO! (${it.detonador}) | Bat: ${it.nivelBateria}%")
+                colaSqlite.encolarPendienteConVigencia(
+                    alertaId = it.idAlerta,
+                    payloadBytes = it.folio.toByteArray(),
+                    tipoElemento = "ALERTA",
+                    ultimoCanal = it.canalRecepcion.name
+                )
+                registrarEvento(
+                    "P4 ALERTA",
+                    "¡SOS ACTIVO! Folio: ${it.folio} | Estado: ${it.estadoActual} | Tipo: ${it.nombreTipoIncidente}"
+                )
             }
         }
     }
@@ -121,7 +144,6 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
         } else true
 
         if (gpsOk) {
-            // Iniciar servicio en primer plano (pantalla apagada) + GPS
             modulo.iniciarProteccionSegundoPlano()
             modulo.gestorTelemetria.iniciarTelemetriaTiempoReal(2000L)
             registrarEvento("SERVICIO", "Protección con pantalla apagada ACTIVA")
@@ -131,7 +153,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
 
         if (btOk) {
             modulo.gestorMalla.asegurarEscaneoMallaActivo()
-        }else {
+        } else {
             registrarEvento("PERMISOS", "❌ Permite 'Dispositivos cercanos' en Ajustes de la App")
         }
     }
@@ -139,13 +161,13 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
     LaunchedEffect(Unit) {
         val listaPermisos = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.RECORD_AUDIO
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             listaPermisos.add(Manifest.permission.BLUETOOTH_SCAN)
             listaPermisos.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             listaPermisos.add(Manifest.permission.BLUETOOTH_CONNECT)
-            listaPermisos.add(Manifest.permission.RECORD_AUDIO)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             listaPermisos.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -160,15 +182,15 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
         modifier = modifier
             .fillMaxSize()
             .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        Text("Diagnóstico en Vivo - Módulo 2", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Text("Diagnóstico Módulo 2 (E3 + Malla + IA-1)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
 
-        // 1. MAPA (Ubicación propia, ruta P7 y alertas recibidas por Malla P5.1)
+        // 1. MAPA (Ubicación propia, Ruta Segura Offline A-18, Caminata P7 y Nodos Malla P5.1)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(175.dp)
+                .height(155.dp)
                 .clip(RoundedCornerShape(12.dp))
         ) {
             AndroidView(
@@ -177,7 +199,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
                     MapView(ctx).apply {
                         setTileSource(TileSourceFactory.MAPNIK)
                         setMultiTouchControls(true)
-                        controller.setZoom(18.0)
+                        controller.setZoom(17.5)
                         controller.setCenter(GeoPoint(lat, lon))
                     }
                 },
@@ -185,6 +207,22 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
                     val puntoActual = GeoPoint(lat, lon)
                     mapView.controller.animateTo(puntoActual)
                     mapView.overlays.clear()
+
+                    // Dibujar Ruta Más Corta (Naranja) vs Ruta Segura Recomendada (Verde) de A-18
+                    comparativaRutas?.let { comp ->
+                        val lineaCorta = Polyline().apply {
+                            setPoints(comp.rutaMasCorta.nodos.map { GeoPoint(it.latitud, it.longitud) })
+                            outlinePaint.color = AndroidColor.rgb(255, 140, 0)
+                            outlinePaint.strokeWidth = 7f
+                        }
+                        val lineaSegura = Polyline().apply {
+                            setPoints(comp.rutaSeguraRecomendada.nodos.map { GeoPoint(it.latitud, it.longitud) })
+                            outlinePaint.color = AndroidColor.rgb(0, 150, 136)
+                            outlinePaint.strokeWidth = 11f
+                        }
+                        mapView.overlays.add(lineaCorta)
+                        mapView.overlays.add(lineaSegura)
+                    }
 
                     if (caminata.rutaObjetivo.isNotEmpty()) {
                         val lineaRuta = Polyline().apply {
@@ -198,7 +236,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
                     val marcadorPropio = Marker(mapView).apply {
                         position = puntoActual
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                        title = if (alerta?.activa == true) "🚨 TU ALERTA ACTIVA" else "📍 Tu ubicación"
+                        title = if (alerta?.activa == true) "🚨 ${alerta?.folio}" else "📍 Tu ubicación"
                     }
                     mapView.overlays.add(marcadorPropio)
 
@@ -206,7 +244,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
                         val marcadorVecino = Marker(mapView).apply {
                             position = GeoPoint(alertaVecino.latitud, alertaVecino.longitud)
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_TOP)
-                            title = "📲 ALERTA MALLA: ${alertaVecino.packetId} (TTL: ${alertaVecino.ttl})"
+                            title = "📲 MALLA: ${alertaVecino.packetId} (Saltos: ${alertaVecino.saltosRecorridos})"
                         }
                         mapView.overlays.add(marcadorVecino)
                     }
@@ -216,7 +254,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
             )
         }
 
-        // 2. TARJETA DE SENSORES Y TELEMETRÍA LOCAL (P4, P6 y P7)
+        // 2. TARJETA DE ALERTA P4 (A-05/A-06), IA-1 Y TELEMETRÍA P6
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = if (alerta?.activa == true) Color(0xFFFFEBEE) else Color(0xFFE8F5E9)
@@ -224,60 +262,102 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(8.dp)) {
+                val textoEstado = when {
+                    segundosPreEnvio != null && (segundosPreEnvio ?: 0) > 0 ->
+                        "⏳ A-05 Cuenta regresiva: Enviando como Genérica en ${segundosPreEnvio}s..."
+                    alerta?.activa == true ->
+                        "🚨 P4 ACTIVA: ${alerta?.folio} | Estado E-01: ${alerta?.estadoActual} | Tipo: ${alerta?.nombreTipoIncidente}"
+                    else ->
+                        "✅ P4: En espera | Cola SQLite (ER-06): ${pendientesSQLite.size} pendientes"
+                }
                 Text(
-                    text = if (alerta?.activa == true) "🚨 P4: ALERTA PROPIA ACTIVA (${alerta?.detonador})" else "✅ P4: En espera (Funciona con pantalla apagada)",
+                    text = textoEstado,
                     fontWeight = FontWeight.Bold,
                     color = if (alerta?.activa == true) Color.Red else Color(0xFF1B5E20),
-                    fontSize = 12.sp
-                )
-                Text(
-                    text = "P6 GPS: ${"%.5f".format(lat)}, ${"%.5f".format(lon)} | Fuerza G: ${"%.2f".format(telemetria?.aceleracionG ?: 1f)}G | Bat: ${telemetria?.nivelBateria ?: 100}%",
                     fontSize = 11.sp
                 )
-                if (caminata.activa) {
+                Text(
+                    text = "P6 (${telemetria?.fuente ?: "GNSS"}): ${"%.5f".format(lat)}, ${"%.5f".format(lon)} (±${telemetria?.precision?.toInt() ?: 8}m) | G: ${"%.2f".format(telemetria?.aceleracionG ?: 1f)}G | Bat: ${telemetria?.nivelBateria ?: 100}%",
+                    fontSize = 10.sp
+                )
+                clasificacionIA1?.let { ia ->
                     Text(
-                        text = "P7 Caminata: Check-in en ${caminata.segundosRestantesCheckIn}s | Desvío: ${caminata.desviacionActualMetros.toInt()}m " +
-                                if (caminata.fueraDeRuta) "⚠️ FUERA DE RUTA" else "✓ En ruta",
-                        fontSize = 11.sp,
-                        color = if (caminata.fueraDeRuta) Color.Red else Color.Blue,
-                        fontWeight = FontWeight.Bold
+                        text = "🤖 IA-1 (A-06): ${ia.nombreTipoSugerido} (${(ia.confianza * 100).toInt()}%) | QUÉ: ${ia.que} | DÓNDE: ${ia.donde} | QUIÉN: ${ia.quien}",
+                        fontSize = 10.sp,
+                        color = Color(0xFF0D47A1),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                comparativaRutas?.let { comp ->
+                    Text(
+                        text = "🛡️ P7 Ruta Segura (A-18): ${comp.rutaSeguraRecomendada.distanciaTotalKm} km (${comp.rutaSeguraRecomendada.tiempoEstimadoMin} min) vs Corta: ${comp.rutaMasCorta.distanciaTotalKm} km (${comp.rutaMasCorta.advertenciasZonasRiesgo.firstOrNull() ?: "Riesgo alto"})",
+                        fontSize = 10.sp,
+                        color = Color(0xFF004D40),
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
         }
 
-        // 3. TARJETA VISUAL DE RECEPCIÓN BLUETOOTH MALLA (P5.1)
+        // 3. TARJETA MALLA P5.1 Y MODO OPERADOR AD-HOC (A-14)
         Card(
             colors = CardDefaults.cardColors(
-                containerColor = if (ultimaAlertaMallaRecibida != null) Color(0xFFF3E5F5) else Color(0xFFF5F5F5)
+                containerColor = if (vistaOperadorAdHoc != null) Color(0xFFF3E5F5) else Color(0xFFF5F5F5)
             ),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(8.dp)) {
-                val pkt = ultimaAlertaMallaRecibida
-                if (pkt != null) {
-                    Text(
-                        text = "📲 P5.1 MALLA RECIBIDA POR BLUETOOTH: ${pkt.packetId}",
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF6A1B9A),
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        text = "Coordenadas compañero: ${"%.5f".format(pkt.latitud)}, ${"%.5f".format(pkt.longitud)} | Bat: ${pkt.nivelBateria}% | Nuevo TTL: ${pkt.ttl}",
-                        fontSize = 11.sp,
-                        color = Color(0xFF4A148C)
-                    )
-                } else {
-                    Text(
-                        text = "📡 P5.1 Malla Bluetooth: Escuchando alertas (soporta pantalla apagada)...",
-                        fontSize = 11.sp,
-                        color = Color.DarkGray
-                    )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    val vistaOp = vistaOperadorAdHoc
+                    if (vistaOp != null) {
+                        Text(
+                            text = "🚨 A-14 MODO OPERADOR AD-HOC: ${vistaOp.paquete.packetId} (Saltos: ${vistaOp.paquete.saltosRecorridos})",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF6A1B9A),
+                            fontSize = 11.sp
+                        )
+                        Text(
+                            text = "Brújula: ${vistaOp.textoDistanciaYRumbo} | Acuse: ${if (vistaOp.acusadaLocalmente) "ENVIADO POR MALLA" else "PENDIENTE"}",
+                            fontSize = 10.sp,
+                            color = Color(0xFF4A148C)
+                        )
+                    } else {
+                        Text(
+                            text = "📡 P5.1 Malla BLE activa (Escuchando paquetes P2P con pantalla apagada)...",
+                            fontSize = 10.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+                if (vistaOperadorAdHoc != null) {
+                    Button(
+                        onClick = {
+                            vistaOperadorAdHoc?.paquete?.let { pkt ->
+                                val acuse = modulo.gestorMalla.acusarYAcudirOfflinePorMalla(pkt, "P-214")
+                                colaSqlite.encolarPendienteConVigencia(
+                                    alertaId = acuse.packetId,
+                                    payloadBytes = acuse.packetId.toByteArray(),
+                                    tipoElemento = "ACUSE",
+                                    ultimoCanal = "MALLA"
+                                )
+                                registrarEvento("A-14 OPERADOR", "Acuse offline emitido por unidad P-214 y guardado en cola_alerta (vigencia 2h)")
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("Acusar A-14", fontSize = 10.sp)
+                    }
                 }
             }
         }
 
-        // 4. CONFIGURACIÓN DEL SERVIDOR DE PRUEBA EN LINUX (WiFi)
+        // 4. CONFIGURACIÓN DEL SERVIDOR EN LINUX (WiFi)
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -295,95 +375,105 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
             )
             OutlinedButton(
                 onClick = {
-                    modulo.gestorMalla.urlServidorLinux = "http://$ipLinux:8080/alerta"
-                    modulo.gestorMalla.enviarAServidorLinux(
-                        PaqueteMalla(
-                            packetId = "TEST-${(100..999).random()}",
-                            emisorId = "PRUEBA_WIFI",
-                            latitud = lat,
-                            longitud = lon,
-                            nivelBateria = telemetria?.nivelBateria ?: 80,
-                            ttl = 4
-                        )
+                    val pktSimulado = PaqueteMalla(
+                        packetId = "SOS-${(1000..9999).random()}",
+                        emisorId = "NODO_CERCANO",
+                        latitud = lat + 0.0012,
+                        longitud = lon + 0.0010,
+                        nivelBateria = 78,
+                        ttl = 4,
+                        saltosRecorridos = 2
                     )
+                    ultimaAlertaMallaRecibida = pktSimulado
+                    modulo.gestorMalla.mostrarAlertaAdHocModoOperador(pktSimulado, lat, lon)
+                    modulo.gestorMalla.enviarAServidorLinux(pktSimulado)
                 },
                 modifier = Modifier.weight(1f)
             ) {
-                Text("Test Consola Linux", fontSize = 11.sp)
+                Text("Simular Malla A-14", fontSize = 10.sp)
             }
         }
 
-        // 5. BOTONES DE EMERGENCIA Y CAMINATA SEGURA
+        // 5. BOTONES DE EMERGENCIA P4 (Cuenta regresiva, Voz + IA-1, Reinicio)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    // Limpia la alerta anterior sin apagar el escáner y lanza una nueva ráfaga al instante
                     modulo.desactivarAlertaEmergencia(false)
                     modulo.gestorMalla.reiniciarEstadoParaNuevaPrueba()
-                    modulo.activarAlertaEmergencia(TipoDetonador.BOTON_SOS)
+                    modulo.iniciarCuentaRegresivaYEnvioBase(TipoDetonador.BOTON_SOS, segundosCuenta = 3)
+                    registrarEvento("P4 (A-05)", "Cuenta regresiva de 3s iniciada antes de envío genérico")
                 },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
-            ) { Text("P4: Emitir SOS", fontSize = 11.sp) }
+            ) { Text("P4: SOS (3s)", fontSize = 10.sp) }
 
             Button(
                 onClick = {
-                    registrarEvento("P4 MICRÓFONO", "🎙️ Escuchando... Di 'auxilio' o 'sendero seguro'")
-                    modulo.escucharComandoVozMicrofono()
+                    // Prueba directa del clasificador IA-1 + apertura de micrófono offline
+                    val ejemploRelato = "Un hombre con sudadera gris me viene siguiendo desde la salida del metro Politécnico hace 10 minutos sobre Wilfrido Massieu"
+                    val resultado = modulo.gestorVozPanico.clasificarIncidenteConIA1Local(ejemploRelato)
+                    registrarEvento(
+                        "P4 IA-1 (A-06)",
+                        "Sugerencia: ${resultado.nombreTipoSugerido} (${(resultado.confianza * 100).toInt()}% en ${resultado.latenciaMs}ms)"
+                    )
+                    modulo.gestorVozPanico.transcribirVozATextoOffline()
                 },
                 modifier = Modifier.weight(1f)
-            ) { Text("P4: Voz 🎙️", fontSize = 11.sp) }
+            ) { Text("P4: Voz + IA-1", fontSize = 10.sp) }
 
             OutlinedButton(
                 onClick = {
                     modulo.desactivarAlertaEmergencia(false)
                     modulo.gestorMalla.reiniciarEstadoParaNuevaPrueba()
                     ultimaAlertaMallaRecibida = null
-                    registrarEvento("REINICIO", "Listo para recibir nueva alerta sin cerrar la app")
+                    registrarEvento("P8 REINICIO", "Alerta cancelada y malla lista")
                 },
                 modifier = Modifier.weight(1f)
-            ) { Text("Reiniciar", fontSize = 11.sp) }
+            ) { Text("Reiniciar", fontSize = 10.sp) }
         }
 
+        // 6. BOTONES P7: RUTA SEGURA OFFLINE (A-18) Y CAMINATA SEGURA
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    val ruta = listOf(
-                        PuntoRuta(lat, lon),
-                        PuntoRuta(lat + 0.0008, lon + 0.0008),
-                        PuntoRuta(lat + 0.0016, lon + 0.0016)
+                    val comp = modulo.gestorCaminataSegura.calcularRutasEnDispositivoOffline(
+                        origen = PuntoRuta(19.5045, -99.1469),
+                        destino = PuntoRuta(19.5010, -99.1490)
                     )
                     modulo.gestorCaminataSegura.iniciarCaminataSegura(
-                        rutaObjetivo = ruta,
-                        tiempoEstimadoLlegadaMs = 300_000L,
-                        intervaloCheckInSeg = 12L,
+                        rutaObjetivo = comp.rutaSeguraRecomendada.nodos,
+                        tiempoEstimadoLlegadaMs = comp.rutaSeguraRecomendada.tiempoEstimadoMin * 60_000L,
+                        intervaloCheckInSeg = 15L,
                         toleranciaMetros = 50.0
                     )
-                    registrarEvento("P7 RUTA", "Caminata Segura iniciada (Check-in: 12s)")
+                    registrarEvento(
+                        "P7 (A-18)",
+                        "Ruta Segura calculada offline: ${comp.rutaSeguraRecomendada.distanciaTotalKm}km (${comp.rutaSeguraRecomendada.tiempoEstimadoMin} min) evitando Salida Metro Politécnico"
+                    )
                 },
                 modifier = Modifier.weight(1f)
-            ) { Text("P7: Iniciar Ruta", fontSize = 11.sp) }
+            ) { Text("P7: Ruta Segura", fontSize = 10.sp) }
 
             Button(
                 onClick = {
                     modulo.gestorCaminataSegura.confirmarPresenciaCheckIn()
-                    registrarEvento("P7 CHECK-IN", "Check-in confirmado (12s)")
+                    registrarEvento("P7 CHECK-IN", "Presencia confirmada por el usuario")
                 },
                 modifier = Modifier.weight(1f)
-            ) { Text("P7: Check-In", fontSize = 11.sp) }
+            ) { Text("P7: Check-In", fontSize = 10.sp) }
 
             OutlinedButton(
                 onClick = {
                     val latLejana = lat + 0.0020
                     modulo.gestorTelemetria.simularUbicacionParaPruebas(latLejana, lon)
                     modulo.gestorCaminataSegura.evaluarUbicacionEnRuta(latLejana, lon)
-                    registrarEvento("P7 DESVÍO", "Desviación simulada a +200m")
+                    registrarEvento("P7 DESVÍO", "Desviación simulada a +200m de la polilínea")
                 },
                 modifier = Modifier.weight(1f)
-            ) { Text("P7: Desviar", fontSize = 11.sp) }
+            ) { Text("P7: Desviar", fontSize = 10.sp) }
         }
 
-        // 6. BITÁCORA EN PANTALLA
+        // 7. BITÁCORA EN PANTALLA
         Text("Bitácora de Procesos (Evidencia en vivo):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
         LazyColumn(
             modifier = Modifier
@@ -397,7 +487,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
                     text = linea,
                     color = Color(0xFF00E676),
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
+                    fontSize = 10.5.sp,
                     modifier = Modifier.padding(vertical = 2.dp)
                 )
             }

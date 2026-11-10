@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.PriorityQueue
 import kotlin.math.*
 
 class GestorCaminataSegura(
@@ -19,13 +20,15 @@ class GestorCaminataSegura(
 ) {
 
     companion object {
-        private const val TAG = "MODULO2_CAMINATA_P7"
+        private const val TAG = "MODULO2_RUTA_Y_CAMINATA_P7"
         private const val RADIO_TIERRA_METROS = 6371000.0
         private const val RADIO_LLEGADA_DESTINO_METROS = 20.0
+        private const val VELOCIDAD_PEATON_MPS = 1.32 // ~4.75 km/h
     }
 
-    // Configurable desde P3 (Configuración de Parámetros de Seguridad)
     var intervaloCheckInPorDefectoSeg: Long = 60L
+    // E3 P7 / W-10: Factor alfa para penalizar tramos de riesgo en Ruta Segura
+    var factorAlfaRiesgo: Double = 3.5
 
     private var intervaloCheckInActualSeg: Long = 60L
     private var toleranciaDesviacionMetros: Double = 100.0
@@ -34,9 +37,190 @@ class GestorCaminataSegura(
     private val _estadoCaminata = MutableStateFlow(EstadoCaminataSegura())
     val estadoCaminata: StateFlow<EstadoCaminataSegura> = _estadoCaminata.asStateFlow()
 
+    private val _comparativaRutasOffline = MutableStateFlow<ComparativaRutasP7?>(null)
+    val comparativaRutasOffline: StateFlow<ComparativaRutasP7?> = _comparativaRutasOffline.asStateFlow()
+
+    // =========================================================================
+    // PARTE A: E3 P7 (A-18) CÁLCULO DE RUTA SEGURA OFFLINE CON GRAFO LOCAL
+    // =========================================================================
+
     /**
-     * P7: Inicia el Modo Acompañamiento con ruta objetivo, ETA y temporizador de check-in.
+     * E3 P7 (A-18): Traza opciones de camino entre el origen y destino usando el grafo local
+     * sin conexión y compara la «Ruta segura RECOMENDADA» frente a la «Más corta».
      */
+    fun calcularRutasEnDispositivoOffline(
+        origen: PuntoRuta,
+        destino: PuntoRuta,
+        aristasGrafoCache: List<AristaVialOffline> = obtenerGrafoZacatencoPorDefecto()
+    ): ComparativaRutasP7 {
+        // 1. Calcular Ruta Más Corta (alfa = 0.0 -> solo importa la distancia física)
+        val rutaMasCorta = ejecutarDijkstraPonderado(
+            origen = origen,
+            destino = destino,
+            aristas = aristasGrafoCache,
+            alfa = 0.0,
+            nombreRuta = "Más corta",
+            esRecomendada = false
+        )
+
+        // 2. Calcular Ruta Segura Recomendada (ponderando riesgo IA-2 v42 e iluminación)
+        val rutaSegura = ponderarRiesgoEIluminacionRuta(
+            origen = origen,
+            destino = destino,
+            aristasGrafoCache = aristasGrafoCache,
+            alfa = factorAlfaRiesgo
+        )
+
+        val comparativa = ComparativaRutasP7(
+            rutaSeguraRecomendada = rutaSegura,
+            rutaMasCorta = rutaMasCorta,
+            versionCapaRiesgo = 42
+        )
+        _comparativaRutasOffline.value = comparativa
+        return comparativa
+    }
+
+    /**
+     * E3 P7 (A-18): Evalúa los trazos contra la capa local de riesgo predictivo (IA-2 v42)
+     * y reportes de iluminación usando la fórmula oficial: peso = distancia * (1 + alfa * riesgo).
+     */
+    fun ponderarRiesgoEIluminacionRuta(
+        origen: PuntoRuta,
+        destino: PuntoRuta,
+        aristasGrafoCache: List<AristaVialOffline>,
+        alfa: Double = factorAlfaRiesgo
+    ): OpcionRutaCalculada {
+        return ejecutarDijkstraPonderado(
+            origen = origen,
+            destino = destino,
+            aristas = aristasGrafoCache,
+            alfa = alfa,
+            nombreRuta = "Ruta segura RECOMENDADA",
+            esRecomendada = true
+        )
+    }
+
+    private fun ejecutarDijkstraPonderado(
+        origen: PuntoRuta,
+        destino: PuntoRuta,
+        aristas: List<AristaVialOffline>,
+        alfa: Double,
+        nombreRuta: String,
+        esRecomendada: Boolean
+    ): OpcionRutaCalculada {
+        if (aristas.isEmpty()) {
+            val distDirecta = calcularDistanciaHaversineMetros(origen, destino)
+            return OpcionRutaCalculada(
+                nombreRuta = nombreRuta,
+                esRecomendada = esRecomendada,
+                nodos = listOf(origen, destino),
+                distanciaTotalKm = ((distDirecta / 1000.0) * 100.0).roundToInt() / 100.0,
+                tiempoEstimadoMin = ((distDirecta / VELOCIDAD_PEATON_MPS) / 60.0).roundToInt().coerceAtLeast(1),
+                puntajeRiesgoPromedio = 0.15,
+                advertenciasZonasRiesgo = emptyList()
+            )
+        }
+
+        val todosLosNodos = (aristas.map { it.nodoOrigen } + aristas.map { it.nodoDestino })
+            .distinctBy { "${it.latitud}_${it.longitud}" }
+
+        val nodoInicial = todosLosNodos.minByOrNull { calcularDistanciaHaversineMetros(origen, it) } ?: origen
+        val nodoFinal = todosLosNodos.minByOrNull { calcularDistanciaHaversineMetros(destino, it) } ?: destino
+
+        val costos = HashMap<PuntoRuta, Double>().withDefault { Double.MAX_VALUE }
+        val previos = HashMap<PuntoRuta, Pair<PuntoRuta, AristaVialOffline>>()
+        val cola = PriorityQueue<Pair<PuntoRuta, Double>>(compareBy { it.second })
+
+        costos[nodoInicial] = 0.0
+        cola.add(nodoInicial to 0.0)
+
+        while (cola.isNotEmpty()) {
+            val (actual, costoActual) = cola.poll()
+            if (actual == nodoFinal) break
+            if (costoActual > costos.getValue(actual)) continue
+
+            val vecinas = aristas.filter { it.nodoOrigen == actual || it.nodoDestino == actual }
+            for (arista in vecinas) {
+                val vecino = if (arista.nodoOrigen == actual) arista.nodoDestino else arista.nodoOrigen
+                val penalizacionSinLuz = if (!arista.bienIluminada && alfa > 0.0) 0.25 else 0.0
+                val riesgoEfectivo = (arista.riesgoNormalizado + penalizacionSinLuz).coerceIn(0.0, 1.0)
+
+                // Fórmula oficial del E3 (Diccionario de datos: riesgo_tramo / A-18)
+                val pesoTramo = arista.longitudMetros * (1.0 + alfa * riesgoEfectivo)
+                val nuevoCosto = costoActual + pesoTramo
+
+                if (nuevoCosto < costos.getValue(vecino)) {
+                    costos[vecino] = nuevoCosto
+                    previos[vecino] = actual to arista
+                    cola.add(vecino to nuevoCosto)
+                }
+            }
+        }
+
+        val caminoNodos = mutableListOf<PuntoRuta>()
+        val aristasRecorridas = mutableListOf<AristaVialOffline>()
+        var cursor: PuntoRuta? = nodoFinal
+
+        while (cursor != null) {
+            caminoNodos.add(0, cursor)
+            val pasoPrevio = previos[cursor]
+            if (pasoPrevio != null) {
+                aristasRecorridas.add(0, pasoPrevio.second)
+                cursor = pasoPrevio.first
+            } else {
+                cursor = null
+            }
+        }
+
+        val distanciaMetros = if (aristasRecorridas.isNotEmpty()) {
+            aristasRecorridas.sumOf { it.longitudMetros }
+        } else {
+            calcularDistanciaHaversineMetros(origen, destino)
+        }
+
+        val riesgoMedio = if (aristasRecorridas.isNotEmpty()) {
+            aristasRecorridas.map { it.riesgoNormalizado }.average()
+        } else 0.1
+
+        val advertencias = aristasRecorridas
+            .filter { it.riesgoNormalizado >= 0.65 && it.zonaRiesgoNombre != null }
+            .mapNotNull { "Cruza «${it.zonaRiesgoNombre}» (riesgo ALTO, 21-24 h)" }
+            .distinct()
+
+        return OpcionRutaCalculada(
+            nombreRuta = nombreRuta,
+            esRecomendada = esRecomendada,
+            nodos = caminoNodos,
+            distanciaTotalKm = ((distanciaMetros / 1000.0) * 100.0).roundToInt() / 100.0,
+            tiempoEstimadoMin = ((distanciaMetros / VELOCIDAD_PEATON_MPS) / 60.0).roundToInt().coerceAtLeast(1),
+            puntajeRiesgoPromedio = (riesgoMedio * 100.0).roundToInt() / 100.0,
+            advertenciasZonasRiesgo = if (esRecomendada && advertencias.isEmpty()) {
+                listOf("Evita la zona de riesgo alto · calles iluminadas")
+            } else advertencias,
+            calculadaOffline = true
+        )
+    }
+
+    private fun obtenerGrafoZacatencoPorDefecto(): List<AristaVialOffline> {
+        val nEscom = PuntoRuta(19.5045, -99.1469, 1L)
+        val nWilfrido = PuntoRuta(19.5028, -99.1450, 2L)
+        val nAvIpnIluminada = PuntoRuta(19.5038, -99.1432, 3L)
+        val nMetroPoli = PuntoRuta(19.5010, -99.1490, 4L)
+
+        return listOf(
+            // Ruta directa corta pero con riesgo alto en la noche (0.82)
+            AristaVialOffline(101L, nEscom, nMetroPoli, "Paso directo Salida Metro Politécnico", 1100.0, 0.82, false, "Salida metro Politécnico"),
+            // Ruta segura por calles iluminadas (1.5 km total, bajo riesgo)
+            AristaVialOffline(102L, nEscom, nAvIpnIluminada, "Av. Juan de Dios Bátiz (Luminarias activas)", 650.0, 0.15, true, null),
+            AristaVialOffline(103L, nAvIpnIluminada, nWilfrido, "Av. Wilfrido Massieu", 450.0, 0.18, true, null),
+            AristaVialOffline(104L, nWilfrido, nMetroPoli, "Acceso Vigilado Politécnico", 400.0, 0.20, true, null)
+        )
+    }
+
+    // =========================================================================
+    // PARTE B: MODO ACOMPAÑAMIENTO ("CAMINATA SEGURA")
+    // =========================================================================
+
     fun iniciarCaminataSegura(
         rutaObjetivo: List<PuntoRuta>,
         tiempoEstimadoLlegadaMs: Long,
@@ -59,36 +243,25 @@ class GestorCaminataSegura(
             destinoAlcanzado = false
         )
 
-        Log.i(TAG, "Caminata Segura INICIADA (Check-in: ${intervaloCheckInSeg}s | ETA: ${etaSegundos}s | Tolerancia: ${toleranciaMetros}m)")
-        iniciarTemporizadores(reiniciarSoloCheckIn = false)
+        iniciarTemporizadores()
     }
 
-    /**
-     * P7: El usuario confirma periódicamente su presencia y reinicia la cuenta regresiva de check-in.
-     */
     fun confirmarPresenciaCheckIn() {
         if (!_estadoCaminata.value.activa) return
-        Log.i(TAG, "Check-in confirmado por el usuario. Reiniciando cuenta regresiva a ${intervaloCheckInActualSeg}s.")
         _estadoCaminata.value = _estadoCaminata.value.copy(
             segundosRestantesCheckIn = intervaloCheckInActualSeg
         )
     }
 
-    /**
-     * P7: Evalúa la desviación geográfica contra los segmentos de la ruta y verifica si ya llegó al destino final.
-     */
     fun evaluarUbicacionEnRuta(latitudActual: Double, longitudActual: Double) {
         val estadoActual = _estadoCaminata.value
         if (!estadoActual.activa || estadoActual.rutaObjetivo.isEmpty()) return
 
         val puntoActual = PuntoRuta(latitudActual, longitudActual)
-
-        // 1. Verificar distancia al destino final (último nodo de la ruta)
         val nodoDestino = estadoActual.rutaObjetivo.last()
         val distanciaAlDestino = calcularDistanciaHaversineMetros(puntoActual, nodoDestino)
 
         if (distanciaAlDestino <= RADIO_LLEGADA_DESTINO_METROS && estadoActual.rutaObjetivo.size > 1) {
-            Log.i(TAG, "¡Usuario llegó al destino final (${distanciaAlDestino.toInt()}m)! Finalizando Caminata Segura.")
             jobTemporizador?.cancel()
             _estadoCaminata.value = estadoActual.copy(
                 activa = false,
@@ -101,11 +274,8 @@ class GestorCaminataSegura(
             return
         }
 
-        // 2. Calcular la distancia mínima hacia la ruta objetivo
-        val distanciaMinima = estadoActual.rutaObjetivo.minOf { puntoRuta ->
-            calcularDistanciaHaversineMetros(puntoActual, puntoRuta)
-        }
-
+        // Mejora geométrica: Distancia mínima punto-a-segmento (no solo a los vértices)
+        val distanciaMinima = calcularDistanciaMinimaAPolilineaMetros(puntoActual, estadoActual.rutaObjetivo)
         val excedioTolerancia = distanciaMinima > toleranciaDesviacionMetros
 
         _estadoCaminata.value = estadoActual.copy(
@@ -115,7 +285,6 @@ class GestorCaminataSegura(
         )
 
         if (excedioTolerancia) {
-            Log.w(TAG, "¡Desviación geográfica detectada! Distancia: ${distanciaMinima.toInt()}m (Tolerancia: ${toleranciaDesviacionMetros.toInt()}m)")
             onDesviacionRutaExcedida(distanciaMinima)
         }
     }
@@ -123,10 +292,9 @@ class GestorCaminataSegura(
     fun finalizarCaminataSegura() {
         jobTemporizador?.cancel()
         _estadoCaminata.value = EstadoCaminataSegura(activa = false)
-        Log.i(TAG, "Caminata Segura FINALIZADA.")
     }
 
-    private fun iniciarTemporizadores(reiniciarSoloCheckIn: Boolean) {
+    private fun iniciarTemporizadores() {
         jobTemporizador?.cancel()
         jobTemporizador = scope.launch {
             while (isActive && _estadoCaminata.value.activa) {
@@ -143,12 +311,39 @@ class GestorCaminataSegura(
                 )
 
                 if (nuevoCheckIn == 0L) {
-                    Log.e(TAG, "¡Tiempo de Check-in VENCIDO en Caminata Segura! Disparando alerta automática (P4)...")
+                    Log.e(TAG, "¡Tiempo de Check-in VENCIDO! Disparando alerta automática (P4)...")
                     onTiempoCheckInVencido()
                     break
                 }
             }
         }
+    }
+
+    private fun calcularDistanciaMinimaAPolilineaMetros(punto: PuntoRuta, polilinea: List<PuntoRuta>): Double {
+        if (polilinea.size == 1) return calcularDistanciaHaversineMetros(punto, polilinea.first())
+        var minDistancia = Double.MAX_VALUE
+        for (i in 0 until polilinea.size - 1) {
+            val d = distanciaPuntoASegmentoMetros(punto, polilinea[i], polilinea[i + 1])
+            if (d < minDistancia) minDistancia = d
+        }
+        return minDistancia
+    }
+
+    private fun distanciaPuntoASegmentoMetros(p: PuntoRuta, a: PuntoRuta, b: PuntoRuta): Double {
+        val latMediaRad = Math.toRadians((a.latitud + b.latitud) / 2.0)
+        val mPorGradoLat = 111132.92
+        val mPorGradoLon = 111412.84 * cos(latMediaRad)
+
+        val px = (p.longitud - a.longitud) * mPorGradoLon
+        val py = (p.latitud - a.latitud) * mPorGradoLat
+        val bx = (b.longitud - a.longitud) * mPorGradoLon
+        val by = (b.latitud - a.latitud) * mPorGradoLat
+
+        val lenSq = bx * bx + by * by
+        val t = if (lenSq == 0.0) 0.0 else ((px * bx + py * by) / lenSq).coerceIn(0.0, 1.0)
+        val proyX = t * bx
+        val proyY = t * by
+        return hypot(px - proyX, py - proyY)
     }
 
     fun calcularDistanciaHaversineMetros(p1: PuntoRuta, p2: PuntoRuta): Double {

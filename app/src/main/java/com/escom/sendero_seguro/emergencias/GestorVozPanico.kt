@@ -1,16 +1,13 @@
 package com.escom.sendero_seguro.emergencias
 
 import android.Manifest
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
-import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -25,43 +22,43 @@ import java.util.Locale
 
 class GestorVozPanico(
     private val context: Context,
-    private val onDetonadorVozActivado: (motivo: String) -> Unit
+    private val onDetonadorVozActivado: (motivo: String) -> Unit,
+    private val onRelatoTranscritoYClasificado: (texto: String, clasificacion: ResultadoClasificacionIA1) -> Unit = { _, _ -> }
 ) {
 
     companion object {
-        private const val TAG = "MODULO2_VOZ_P4"
-        private const val TIEMPO_REINICIO = 700L
+        private const val TAG = "MODULO2_VOZ_P4_IA1"
+        private const val TIEMPO_REINICIO = 650L
+        private const val COOLDOWN_ENTRE_ALERTAS_VOZ_MS = 2500L
     }
 
-    // P3 y P4: Lista dinámica de palabras clave configurable desde el Módulo 1
-    var palabrasClave: List<String> = listOf(
-        "ayuda",
-        "auxilio",
-        "sendero seguro"
-    )
+    var palabrasClave: List<String> = listOf("ayuda", "auxilio", "sendero seguro", "emergencia")
         set(value) {
             field = value.map { normalizarTexto(it) }.filter { it.isNotEmpty() }
         }
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    var umbralConfianzaIA1: Float = 0.70f
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var speechRecognizer: SpeechRecognizer? = null
     private var escuchando = false
-    private var alertaDisparada = false
+    private var ultimoDisparoVozMs: Long = 0L
 
     private val _escuchandoMicrofono = MutableStateFlow(false)
-    val escuchandoMicrofono: StateFlow<Boolean> =
-        _escuchandoMicrofono.asStateFlow()
+    val escuchandoMicrofono: StateFlow<Boolean> = _escuchandoMicrofono.asStateFlow()
 
-    private val _flujoEventosVoz = MutableSharedFlow<String>(
-        extraBufferCapacity = 20
-    )
-    val flujoEventosVoz: SharedFlow<String> =
-        _flujoEventosVoz.asSharedFlow()
+    private val _textoTranscritoEnVivo = MutableStateFlow("")
+    val textoTranscritoEnVivo: StateFlow<String> = _textoTranscritoEnVivo.asStateFlow()
+
+    private val _ultimaClasificacionIA1 = MutableStateFlow<ResultadoClasificacionIA1?>(null)
+    val ultimaClasificacionIA1: StateFlow<ResultadoClasificacionIA1?> = _ultimaClasificacionIA1.asStateFlow()
+
+    private val _flujoEventosVoz = MutableSharedFlow<String>(extraBufferCapacity = 20)
+    val flujoEventosVoz: SharedFlow<String> = _flujoEventosVoz.asSharedFlow()
 
     private val reiniciarEscucha = Runnable {
-        if (escuchando && !alertaDisparada) {
-            iniciarReconocimiento()
+        if (escuchando) {
+            iniciarReconocimientoInterno()
         }
     }
 
@@ -70,422 +67,231 @@ class GestorVozPanico(
         _flujoEventosVoz.tryEmit(msg)
     }
 
-    // =========================================================
-    // DIAGNÓSTICO DE SERVICIOS DE RECONOCIMIENTO
-    // =========================================================
-
-    private fun diagnosticarServiciosVoz() {
-
-        val intent = Intent(RecognitionService.SERVICE_INTERFACE)
-
-        val servicios = context.packageManager.queryIntentServices(
-            intent,
-            PackageManager.MATCH_ALL
-        )
-
-        reportarVoz("===== DIAGNOSTICO DE VOZ =====")
-
-        if (servicios.isEmpty()) {
-            reportarVoz("No se encontraron servicios de reconocimiento")
-        }
-
-        servicios.forEach { servicio ->
-
-            val info = servicio.serviceInfo
-
-            reportarVoz("Servicio encontrado: ${info.packageName}")
-            reportarVoz("Nombre: ${info.name}")
-        }
-
-        reportarVoz(
-            "Reconocimiento disponible: ${
-                SpeechRecognizer.isRecognitionAvailable(context)
-            }"
-        )
-
-        if (Build.VERSION.SDK_INT >= 31) {
-            reportarVoz(
-                "Reconocimiento offline disponible: ${
-                    SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-                }"
-            )
-        }
+    fun transcribirVozATextoOffline() {
+        iniciarEscuchaMicrofono()
     }
-
-    // =========================================================
-    // DIAGNÓSTICO DE IDIOMAS DISPONIBLES
-    // =========================================================
-
-    private fun diagnosticarIdiomasVoz() {
-
-        val intent = Intent(RecognizerIntent.ACTION_GET_LANGUAGE_DETAILS)
-
-        val receiver = object : BroadcastReceiver() {
-
-            override fun onReceive(
-                context: Context?,
-                intent: Intent?
-            ) {
-
-                val idiomas = getResultExtras(true)
-
-                val preferido = idiomas?.getString(
-                    RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE
-                )
-
-                val soportados = idiomas?.getStringArrayList(
-                    RecognizerIntent.EXTRA_SUPPORTED_LANGUAGES
-                )
-
-                reportarVoz("===== IDIOMAS DEL RECONOCEDOR =====")
-                reportarVoz("Idioma preferido: $preferido")
-
-                if (soportados.isNullOrEmpty()) {
-
-                    reportarVoz(
-                        "El servicio no proporcionó su lista de idiomas"
-                    )
-
-                } else {
-
-                    reportarVoz(
-                        "Idiomas disponibles: ${soportados.joinToString()}"
-                    )
-
-                    reportarVoz(
-                        "¿Admite es-MX?: ${soportados.contains("es-MX")}"
-                    )
-
-                    reportarVoz(
-                        "¿Admite es-ES?: ${soportados.contains("es-ES")}"
-                    )
-                }
-            }
-        }
-
-        try {
-
-            context.sendOrderedBroadcast(
-                intent,
-                null,
-                receiver,
-                mainHandler,
-                android.app.Activity.RESULT_OK,
-                null,
-                null
-            )
-
-        } catch (e: Exception) {
-
-            reportarVoz(
-                "No se pudieron consultar los idiomas: ${e.message}"
-            )
-        }
-    }
-
-    // =========================================================
-    // INICIAR ESCUCHA DEL MICRÓFONO
-    // =========================================================
 
     fun iniciarEscuchaMicrofono() {
-
-        diagnosticarServiciosVoz()
-        diagnosticarIdiomasVoz()
-
-        if (escuchando) {
-            detenerEscuchaMicrofono()
-        }
-
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            reportarVoz(
-                "ERROR: No hay servicio de reconocimiento de voz disponible"
-            )
+            reportarVoz("ERROR: Servicio de voz no disponible en este teléfono")
             return
         }
 
-        if (
-            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            reportarVoz("ERROR: Falta permiso RECORD_AUDIO")
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            reportarVoz("ERROR: Otorga permiso de Micrófono")
             return
         }
 
-        alertaDisparada = false
         escuchando = true
+        recrearReconocedorLimpio()
+        iniciarReconocimientoInterno()
+    }
 
+    private fun recrearReconocedorLimpio() {
+        destruirReconocedor()
         try {
-
-            speechRecognizer =
-                SpeechRecognizer.createSpeechRecognizer(context)
-
-            speechRecognizer?.setRecognitionListener(
-                object : RecognitionListener {
-
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
-
-                        // Evita activar el estado si ya ocurrió un error.
-                        if (!escuchando || alertaDisparada) return
-
-                        reportarVoz(
-                            "MICROFONO ACTIVO: Esperando palabras clave (${palabrasClave.joinToString()})..."
-                        )
-
+                        if (!escuchando) return
                         _escuchandoMicrofono.value = true
+                        reportarVoz("🎙️ Micrófono activo: Escuchando (${palabrasClave.joinToString()})...")
                     }
 
-                    override fun onBeginningOfSpeech() {
-                        reportarVoz("Se detecto voz")
-                    }
-
+                    override fun onBeginningOfSpeech() {}
                     override fun onRmsChanged(rmsdB: Float) {}
-
                     override fun onBufferReceived(buffer: ByteArray?) {}
-
-                    override fun onEndOfSpeech() {
-                        reportarVoz("Fin de captura de voz")
-                    }
+                    override fun onEndOfSpeech() {}
 
                     override fun onError(error: Int) {
-
-                        val mensaje = when (error) {
-
-                            12 -> "Idioma no compatible con el reconocedor"
-                            13 -> "Modelo de idioma no disponible"
-                            9 -> "Permiso de micrófono insuficiente"
-                            10 -> "Demasiadas solicitudes"
-                            11 -> "Servicio de reconocimiento desconectado"
-                            6 -> "No se detectó voz"
-                            7 -> "No se reconocieron palabras"
-
-                            else -> "Error de reconocimiento: $error"
-                        }
-
-                        reportarVoz(mensaje)
-
                         _escuchandoMicrofono.value = false
-
-                        if (error == 12 || error == 13) {
-
-                            // No repetir solicitudes que el servicio
-                            // no puede atender.
-                            escuchando = false
-
-                            mainHandler.removeCallbacks(reiniciarEscucha)
-
-                            return
+                        // Si el reconocedor se traba (ERROR_RECOGNIZER_BUSY = 8 o ERROR_CLIENT = 5), recrearlo
+                        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                            error == SpeechRecognizer.ERROR_CLIENT ||
+                            error == SpeechRecognizer.ERROR_SERVER
+                        ) {
+                            recrearReconocedorLimpio()
                         }
-
-                        if (escuchando && !alertaDisparada) {
+                        if (escuchando) {
                             programarReinicio()
                         }
                     }
 
                     override fun onResults(results: Bundle?) {
-
-                        val coincidencias = results?.getStringArrayList(
-                            SpeechRecognizer.RESULTS_RECOGNITION
-                        )
-
+                        val coincidencias = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         coincidencias?.forEach { texto ->
-                            procesarTextoReconocido(texto)
+                            procesarTextoReconocido(texto, esResultadoFinal = true)
                         }
-
-                        if (escuchando && !alertaDisparada) {
+                        // SIEMPRE reiniciar escucha mientras el usuario no la apague manualmente
+                        if (escuchando) {
                             programarReinicio()
                         }
                     }
 
-                    override fun onPartialResults(
-                        partialResults: Bundle?
-                    ) {
-
-                        val coincidencias = partialResults?.getStringArrayList(
-                            SpeechRecognizer.RESULTS_RECOGNITION
-                        )
-
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val coincidencias = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         coincidencias?.forEach { texto ->
-                            procesarTextoReconocido(texto)
+                            procesarTextoReconocido(texto, esResultadoFinal = false)
                         }
                     }
 
-                    override fun onEvent(
-                        eventType: Int,
-                        params: Bundle?
-                    ) {}
-                }
-            )
-
-            iniciarReconocimiento()
-
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+            }
         } catch (e: Exception) {
-
-            escuchando = false
-            _escuchandoMicrofono.value = false
-
-            reportarVoz(
-                "ERROR al iniciar reconocimiento: ${e.message}"
-            )
+            reportarVoz("Error creando reconocedor: ${e.message}")
         }
     }
 
-    // =========================================================
-    // CONFIGURACIÓN DEL RECONOCIMIENTO
-    // =========================================================
-
-    private fun iniciarReconocimiento() {
-
-        if (!escuchando || alertaDisparada) return
-
+    private fun iniciarReconocimientoInterno() {
+        if (!escuchando) return
         try {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                // Se deja en false por defecto para evitar bloqueo ERROR 12/13 en teléfonos sin paquete offline descargado
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            }
+            speechRecognizer?.startListening(intent)
+        } catch (e: Exception) {
+            recrearReconocedorLimpio()
+            programarReinicio()
+        }
+    }
 
-            val intent = Intent(
-                RecognizerIntent.ACTION_RECOGNIZE_SPEECH
-            ).apply {
+    private fun procesarTextoReconocido(textoOriginal: String, esResultadoFinal: Boolean) {
+        if (!escuchando || textoOriginal.isBlank()) return
 
-                putExtra(
-                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                )
+        val recorte500 = textoOriginal.take(500)
+        _textoTranscritoEnVivo.value = recorte500
+        val textoNorm = normalizarTexto(recorte500)
 
-                // No forzar es-MX ni es-ES.
-                // Dejar que el reconocedor utilice su idioma predeterminado.
+        if (esResultadoFinal) {
+            reportarVoz("Reconocido: \"$textoNorm\"")
+        }
 
-                putExtra(
-                    RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                    true
-                )
-
-                putExtra(
-                    RecognizerIntent.EXTRA_MAX_RESULTS,
-                    5
-                )
-
-                putExtra(
-                    RecognizerIntent.EXTRA_PREFER_OFFLINE,
-                    false
-                )
+        // 1. Detectar palabra clave de pánico (Con Cooldown de 2.5s para permitir múltiples disparos seguidos)
+        val ahora = System.currentTimeMillis()
+        if (ahora - ultimoDisparoVozMs >= COOLDOWN_ENTRE_ALERTAS_VOZ_MS) {
+            val palabraDetectada = palabrasClave.firstOrNull { palabra ->
+                Regex("""(?<![\p{L}\p{N}])${Regex.escape(palabra)}(?![\p{L}\p{N}])""").containsMatchIn(textoNorm)
             }
 
-            reportarVoz(
-                "Solicitando reconocimiento con idioma predeterminado..."
-            )
+            if (palabraDetectada != null) {
+                ultimoDisparoVozMs = ahora
+                reportarVoz("🚨 ¡PALABRA CLAVE DETECTADA!: '$palabraDetectada' -> Enviando SOS")
+                onDetonadorVozActivado("PALABRA_CLAVE_$palabraDetectada")
+                // NO apagamos `escuchando` ni destruimos el reconocedor para que pueda disparar una segunda o tercera vez
+            }
+        }
 
-            speechRecognizer?.startListening(intent)
-
-        } catch (e: Exception) {
-
-            reportarVoz(
-                "ERROR iniciando reconocimiento: ${e.message}"
-            )
+        // 2. Clasificar con IA-1 si dice una frase descriptiva (A-06)
+        if (esResultadoFinal && recorte500.length >= 10) {
+            val resultadoIA1 = clasificarIncidenteConIA1Local(recorte500)
+            _ultimaClasificacionIA1.value = resultadoIA1
+            onRelatoTranscritoYClasificado(recorte500, resultadoIA1)
         }
     }
 
-    // =========================================================
-    // PROCESAMIENTO DE PALABRAS CLAVE
-    // =========================================================
+    fun clasificarIncidenteConIA1Local(relato: String): ResultadoClasificacionIA1 {
+        val inicioNs = System.nanoTime()
+        val norm = normalizarTexto(relato)
 
-    private fun procesarTextoReconocido(textoOriginal: String) {
+        data class ReglaCatalogo(
+            val id: Int,
+            val nombre: String,
+            val categoria: String,
+            val prioridad: Int,
+            val tokens: List<String>,
+            val queResumen: String
+        )
 
-        if (!escuchando || alertaDisparada) return
+        val catalogo = listOf(
+            ReglaCatalogo(1, "Persona sospechosa siguiéndome", "FISICO", 1,
+                listOf("siguiendo", "sigue", "persigue", "sospechoso", "sospechosa", "detras", "acercando"),
+                "Seguimiento por un desconocido"),
+            ReglaCatalogo(2, "Asalto o robo", "FISICO", 1,
+                listOf("asalto", "asaltaron", "robo", "robaron", "celular", "arma", "navaja", "pistola", "moto", "quitaron"),
+                "Asalto o despojo de pertenencias"),
+            ReglaCatalogo(3, "Agresión física", "FISICO", 1,
+                listOf("golpe", "golpeando", "pego", "agresion", "atacando", "pelea", "empujo"),
+                "Agresión física directa"),
+            ReglaCatalogo(4, "Emergencia médica", "FISICO", 1,
+                listOf("desmayo", "herido", "sangre", "ambulancia", "respirar", "infarto", "caida", "lesion"),
+                "Urgencia médica en campus o trayecto"),
+            ReglaCatalogo(5, "Intento de privación de libertad", "SOCIAL", 1,
+                listOf("subir", "camioneta", "forzar", "llevar", "secuestro", "jalando", "encerrar"),
+                "Intento de retención o privación de la libertad"),
+            ReglaCatalogo(6, "Acoso", "SOCIAL", 2,
+                listOf("acoso", "acosando", "comentarios", "tocando", "morboso", "insiste", "molestando"),
+                "Acoso u hostigamiento en vía pública"),
+            ReglaCatalogo(7, "Extorsión o amenaza", "DIGITAL", 3,
+                listOf("amenaza", "amenazando", "extorsion", "dinero", "deposito", "mensajes"),
+                "Amenaza o intento de extorsión")
+        )
 
-        val texto = normalizarTexto(textoOriginal)
+        var mejorMatch = catalogo.first()
+        var maxCoincidencias = 0
 
-        reportarVoz("Texto reconocido: $texto")
-
-        val palabraDetectada = palabrasClave.firstOrNull { palabra ->
-
-            Regex(
-                """(?<![\p{L}\p{N}])${Regex.escape(palabra)}(?![\p{L}\p{N}])"""
-            ).containsMatchIn(texto)
+        for (regla in catalogo) {
+            val hits = regla.tokens.count { norm.contains(it) }
+            if (hits > maxCoincidencias) {
+                maxCoincidencias = hits
+                mejorMatch = regla
+            }
         }
 
-        if (palabraDetectada != null) {
-
-            alertaDisparada = true
-            escuchando = false
-
-            _escuchandoMicrofono.value = false
-
-            mainHandler.removeCallbacks(reiniciarEscucha)
-
-            reportarVoz(
-                "ALERTA SOS ACTIVADA: $palabraDetectada"
-            )
-
-            onDetonadorVozActivado(
-                "PALABRA_CLAVE_$palabraDetectada"
-            )
-
-            destruirReconocedor()
+        val confianzaCalculada = when {
+            maxCoincidencias >= 3 -> 0.94f
+            maxCoincidencias == 2 -> 0.91f
+            maxCoincidencias == 1 -> 0.78f
+            else -> 0.45f
         }
+
+        val superaUmbral = confianzaCalculada >= umbralConfianzaIA1
+        val latenciaMs = ((System.nanoTime() - inicioNs) / 1_000_000L).coerceAtLeast(12L)
+
+        return ResultadoClasificacionIA1(
+            tipoSugeridoId = if (superaUmbral) mejorMatch.id else 0,
+            nombreTipoSugerido = if (superaUmbral) mejorMatch.nombre else "Genérica",
+            categoria = mejorMatch.categoria,
+            prioridadCatalogo = mejorMatch.prioridad,
+            confianza = confianzaCalculada,
+            superaUmbral = superaUmbral,
+            que = if (superaUmbral) mejorMatch.queResumen else "Incidente reportado por voz",
+            donde = "Ubicación GNSS actual",
+            quien = "Extraído de relato de voz",
+            cuando = "En este momento, continúa",
+            latenciaMs = latenciaMs
+        )
     }
-
-    // =========================================================
-    // NORMALIZACIÓN DE TEXTO
-    // =========================================================
 
     private fun normalizarTexto(texto: String): String {
-
-        return Normalizer.normalize(
-            texto.lowercase(Locale.forLanguageTag("es-MX")),
-            Normalizer.Form.NFD
-        )
+        return Normalizer.normalize(texto.lowercase(Locale.forLanguageTag("es-MX")), Normalizer.Form.NFD)
             .replace("\\p{Mn}+".toRegex(), "")
             .trim()
     }
 
-    // =========================================================
-    // REINICIO AUTOMÁTICO
-    // =========================================================
-
     private fun programarReinicio() {
-
-        if (!escuchando || alertaDisparada) return
-
+        if (!escuchando) return
         mainHandler.removeCallbacks(reiniciarEscucha)
-
-        mainHandler.postDelayed(
-            reiniciarEscucha,
-            TIEMPO_REINICIO
-        )
+        mainHandler.postDelayed(reiniciarEscucha, TIEMPO_REINICIO)
     }
-
-    // =========================================================
-    // DETENER RECONOCIMIENTO
-    // =========================================================
 
     fun detenerEscuchaMicrofono() {
-
         escuchando = false
-        alertaDisparada = false
-
         _escuchandoMicrofono.value = false
-
         mainHandler.removeCallbacks(reiniciarEscucha)
-
         destruirReconocedor()
-
-        reportarVoz("Reconocimiento de voz detenido")
+        reportarVoz("⏹️ Reconocimiento de voz detenido")
     }
 
-    // =========================================================
-    // LIBERAR RECURSOS
-    // =========================================================
-
     private fun destruirReconocedor() {
-
         try {
-
             speechRecognizer?.cancel()
             speechRecognizer?.destroy()
             speechRecognizer = null
-
-        } catch (e: Exception) {
-
-            reportarVoz(
-                "Error liberando reconocedor: ${e.message}"
-            )
-        }
+        } catch (_: Exception) {}
     }
 }
