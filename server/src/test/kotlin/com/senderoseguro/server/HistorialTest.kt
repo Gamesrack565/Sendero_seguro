@@ -79,7 +79,7 @@ class HistorialTest : PruebaConBaseDatos() {
 
     @Test
     fun `cada quien ve sus alertas y trayectos, del mas nuevo al mas viejo, con filtros y cursor`() {
-        val desde = Instant.now()
+        val desde = ahoraBd()
         val primera = alerta()
         Thread.sleep(20)
         val segunda = alerta()
@@ -105,7 +105,7 @@ class HistorialTest : PruebaConBaseDatos() {
     @Test
     fun `por la ruta, el cursor trae la pagina siguiente`() = testApplication {
         montar()
-        val desde = Instant.now()
+        val desde = ahoraBd()
         val primera = alerta()
         Thread.sleep(20)
         val segunda = alerta()
@@ -123,7 +123,7 @@ class HistorialTest : PruebaConBaseDatos() {
 
     @Test
     fun `con el PIN de coaccion Ana ve su alerta CANCELADA y el Administrador ve la verdad`() {
-        val desde = Instant.now()
+        val desde = ahoraBd()
         val id = alerta()
         sql("UPDATE alerta SET coaccion_detectada = true WHERE id = ?", id)
         assertEquals("CANCELADA", historial.propio(ana, FiltrosHistorial(desde = desde)).elementos.single().estado)

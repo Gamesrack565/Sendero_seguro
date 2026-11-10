@@ -15,6 +15,8 @@ import com.senderoseguro.server.auditoria.rutasEstadisticas
 import com.senderoseguro.server.auditoria.rutasHistorial
 import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
+import com.senderoseguro.server.cuentas.CuentasServicio
+import com.senderoseguro.server.cuentas.rutasCuentas
 import com.senderoseguro.server.avisos.EnvioAvisos
 import com.senderoseguro.server.avisos.ProveedorFcm
 import com.senderoseguro.server.avisos.rutasDispositivos
@@ -63,6 +65,7 @@ import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import java.nio.file.Path
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -98,6 +101,8 @@ fun Application.module() {
     val tiempoReal = CentroTiempoReal(baseDatos.dataSource, consulta, enlaces)
     tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
     val tokens = EmisorTokens.desde(this)
+    // Cuentas y sesiones (P1 del Módulo 1). Cada petición con token revisa que su sesión siga viva.
+    val cuentas = CuentasServicio(baseDatos.dataSource, tokens, config.property("jwt.sesionDias").getString().toInt().days)
     val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
     val politicaAvisos = EnvioAvisos.Politica(
         maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
@@ -149,12 +154,13 @@ fun Application.module() {
     configurarSerializacion()
     configurarLogs()
     configurarErrores()
-    configurarSeguridad()
+    configurarSeguridad(sesiones = cuentas)
     configurarWebSockets()
 
     routing {
         route("/api/v1") {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
+            rutasCuentas(cuentas)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)

@@ -11,6 +11,8 @@ import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.auth.principal
 import io.ktor.server.response.respond
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.Date
 import java.util.UUID
@@ -77,7 +79,15 @@ class EmisorTokens(private val secreto: String, private val emisor: String, priv
     }
 }
 
-fun Application.configurarSeguridad() {
+/**
+ * Revisa en la base que la sesión del token (`sid`) siga viva: sin revocar (logout), sin vencer y con la cuenta
+ * activa. Los tokens sin `sid` (pruebas y `/dev/token`) no se revisan.
+ */
+fun interface SesionesVigentes {
+    fun vigente(sesionId: UUID): Boolean
+}
+
+fun Application.configurarSeguridad(sesiones: SesionesVigentes? = null) {
     val config = environment.config
     val secreto = config.property("jwt.secreto").getString()
     val emisor = config.property("jwt.emisor").getString()
@@ -94,7 +104,9 @@ fun Application.configurarSeguridad() {
             )
             validate { credencial ->
                 val rolValido = credencial.payload.getClaim("rol").asString() in Rol.entries.map { it.name }
-                if (rolValido && credencial.payload.subject != null) JWTPrincipal(credencial.payload) else null
+                val sesion = credencial.payload.getClaim("sid").asString()?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                val sesionViva = sesion == null || sesiones == null || withContext(Dispatchers.IO) { sesiones.vigente(sesion) }
+                if (rolValido && sesionViva && credencial.payload.subject != null) JWTPrincipal(credencial.payload) else null
             }
             challenge { _, _ ->
                 call.respond(HttpStatusCode.Unauthorized, ErrorApi("NO_AUTENTICADO", "Falta el token o venció"))
