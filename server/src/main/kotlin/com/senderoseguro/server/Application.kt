@@ -17,6 +17,8 @@ import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
 import com.senderoseguro.server.cuentas.CuentasServicio
 import com.senderoseguro.server.cuentas.rutasCuentas
+import com.senderoseguro.server.redapoyo.RedApoyoServicio
+import com.senderoseguro.server.redapoyo.rutasRedApoyo
 import com.senderoseguro.server.avisos.EnvioAvisos
 import com.senderoseguro.server.avisos.ProveedorFcm
 import com.senderoseguro.server.avisos.rutasDispositivos
@@ -103,6 +105,7 @@ fun Application.module() {
     val tokens = EmisorTokens.desde(this)
     // Cuentas y sesiones (P1 del Módulo 1). Cada petición con token revisa que su sesión siga viva.
     val cuentas = CuentasServicio(baseDatos.dataSource, tokens, config.property("jwt.sesionDias").getString().toInt().days)
+    val redApoyo = RedApoyoServicio(baseDatos.dataSource)
     val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
     val politicaAvisos = EnvioAvisos.Politica(
         maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
@@ -161,6 +164,7 @@ fun Application.module() {
         route("/api/v1") {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
             rutasCuentas(cuentas)
+            rutasRedApoyo(redApoyo)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)

@@ -2,16 +2,23 @@ package com.escom.sendero_seguro.identidad
 
 import com.escom.sendero_seguro.identidad.datos.remoto.ClienteHttp
 import com.escom.sendero_seguro.identidad.datos.remoto.ServicioRemotoRetrofit
+import com.escom.sendero_seguro.identidad.dominio.AvisoVinculacion
+import com.escom.sendero_seguro.identidad.dominio.CodigoEstado
 import com.escom.sendero_seguro.identidad.dominio.ConsentimientoPendiente
+import com.escom.sendero_seguro.identidad.dominio.Contacto
 import com.escom.sendero_seguro.identidad.dominio.DatosRegistro
 import com.escom.sendero_seguro.identidad.dominio.ErrorIdentidad
 import com.escom.sendero_seguro.identidad.dominio.InfoDispositivo
+import com.escom.sendero_seguro.identidad.dominio.MiembroEstado
+import com.escom.sendero_seguro.identidad.dominio.NotificacionCanal
 import com.escom.sendero_seguro.identidad.dominio.Resultado
 import com.escom.sendero_seguro.identidad.dominio.TipoComunidad
 import com.escom.sendero_seguro.identidad.dominio.UsuarioEstado
 import com.escom.sendero_seguro.identidad.dominio.UsuarioRol
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -22,7 +29,7 @@ import java.util.UUID
 import kotlin.random.Random
 
 /**
- * Prueba de punta a punta del P1 contra el servidor real (Módulo 4): usa el mismo cliente Retrofit de la app.
+ * Prueba de punta a punta del P1 y el P2 contra el servidor real (Módulo 4): usa el mismo cliente Retrofit de la app.
  *
  * Necesita el servidor corriendo en local (`.\gradlew.bat :server:run`). Si no está prendido, la prueba se salta.
  * Otro servidor: `-Dsendero.servidor=http://.../api/v1/` o la variable SENDERO_SERVIDOR.
@@ -155,5 +162,88 @@ class ConexionServidorTest {
         val e = error(remoto.iniciarSesion("5510000011", "sendero123", dispositivo))
         assertTrue("Llegó $e", e is ErrorIdentidad.PerfilNoPermitido)
         assertEquals(UsuarioRol.OPERADOR, (e as ErrorIdentidad.PerfilNoPermitido).rol)
+    }
+
+    // ------------------------------------------------------------------ P2
+
+    /** Cada persona con su propio cliente (y su propio token), como en su teléfono. */
+    private class Persona(val remoto: ServicioRemotoRetrofit, val id: String, val telefono: String)
+
+    private suspend fun persona(tipo: TipoComunidad = TipoComunidad.ALUMNO): Persona {
+        val suAlmacen = AlmacenEnMemoria()
+        val suRemoto = ServicioRemotoRetrofit(ClienteHttp.crear(baseUrl, suAlmacen, false), ClienteHttp.json)
+        val tel = "55" + Random.nextLong(10_000_000, 99_999_999)
+        val (d, c) = datos(tel = tel, mat = "P" + tel.drop(2))
+        val sesion = ok(suRemoto.registrar(d.copy(tipoComunidad = tipo), c, dispositivo.copy(id = UUID.randomUUID().toString())))
+        suAlmacen.guardarToken(sesion.token, sesion.expiraEnMs)
+        return Persona(suRemoto, sesion.usuario.id, tel)
+    }
+
+    @Test
+    fun contactosDeConfianza() = runBlocking<Unit> {
+        val ana = persona()
+        val amiga = persona()
+        val mama = Contacto(UUID.randomUUID().toString(), "Mamá", "55 1234 5678", 1)
+        val conApp = Contacto(UUID.randomUUID().toString(), "Amiga", amiga.telefono, 2)
+
+        val guardada = ok(ana.remoto.guardarContacto(mama))
+        assertEquals("5512345678", guardada.telefono)
+        assertEquals(NotificacionCanal.SMS, guardada.canalPreferido)
+        assertTrue(!guardada.tieneApp)
+        val vinculada = ok(ana.remoto.guardarContacto(conApp))
+        assertTrue("El teléfono es de una cuenta", vinculada.tieneApp)
+        assertEquals(NotificacionCanal.PUSH, vinculada.canalPreferido)
+
+        // Mismo número con otro id: conflicto.
+        assertTrue(error(ana.remoto.guardarContacto(mama.copy(id = UUID.randomUUID().toString()))) is ErrorIdentidad.Conflicto)
+        val malo = error(ana.remoto.guardarContacto(Contacto(UUID.randomUUID().toString(), "X", "12", 3)))
+        assertEquals(setOf("nombre", "telefono"), (malo as ErrorIdentidad.Validacion).errores.keys)
+
+        val ordenados = ok(ana.remoto.reordenarContactos(listOf(conApp.id, mama.id)))
+        assertEquals(listOf(conApp.id to 1, mama.id to 2), ordenados.map { it.id to it.prioridad })
+        ok(ana.remoto.notificarVinculacion(AvisoVinculacion.ContactoAgregado(mama.id)))
+
+        ok(ana.remoto.eliminarContacto(mama.id))
+        ok(ana.remoto.eliminarContacto(mama.id)) // idempotente
+        assertEquals(listOf(conApp.id), ok(ana.remoto.listarContactos()).map { it.id })
+        assertTrue("Amiga no ve los contactos de Ana", ok(amiga.remoto.listarContactos()).isEmpty())
+    }
+
+    @Test
+    fun circuloEscolar() = runBlocking<Unit> {
+        val profe = persona(TipoComunidad.DOCENTE)
+        val alumna = persona()
+        val alumno = persona()
+
+        assertNull(ok(profe.remoto.miCirculo()))
+        assertTrue(error(alumna.remoto.crearCirculo(UUID.randomUUID().toString(), "Grupo 5CV1")) is ErrorIdentidad.SinPermiso)
+        val circulo = ok(profe.remoto.crearCirculo(UUID.randomUUID().toString(), "Grupo 5CV1"))
+        val codigo = circulo.codigoInvitacion!!
+        assertEquals(CodigoEstado.VIGENTE, circulo.estadoCodigo)
+        assertTrue("Vence en el futuro", (circulo.codigoVenceEnMs ?: 0) > System.currentTimeMillis())
+
+        assertTrue(error(alumna.remoto.unirseACirculo("ZZZ-999")) is ErrorIdentidad.CodigoInvalido)
+        val unida = ok(alumna.remoto.unirseACirculo(codigo))
+        assertEquals(circulo.id, unida.id)
+        assertNull("El código solo lo ve el coordinador", unida.codigoInvitacion)
+        ok(alumno.remoto.unirseACirculo(codigo))
+        ok(alumna.remoto.notificarVinculacion(AvisoVinculacion.NuevoIntegrante(circulo.id)))
+        assertEquals(circulo.id, ok(alumna.remoto.miCirculo())?.id)
+
+        val miembros = ok(alumna.remoto.miembros(circulo.id))
+        assertEquals(setOf(profe.id, alumna.id, alumno.id), miembros.map { it.usuarioId }.toSet())
+
+        assertTrue(error(alumna.remoto.regenerarCodigo(circulo.id)) is ErrorIdentidad.SinPermiso)
+        val nuevo = ok(profe.remoto.regenerarCodigo(circulo.id)).codigoInvitacion
+        assertNotEquals(codigo, nuevo)
+
+        assertTrue(error(alumna.remoto.darDeBaja(circulo.id, alumno.id)) is ErrorIdentidad.SinPermiso)
+        ok(profe.remoto.darDeBaja(circulo.id, alumno.id))
+        ok(alumna.remoto.retirarse(circulo.id))
+        assertNull(ok(alumna.remoto.miCirculo()))
+        val estados = ok(profe.remoto.miembros(circulo.id)).associate { it.usuarioId to it.estado }
+        assertEquals(MiembroEstado.ACTIVA, estados[profe.id])
+        assertEquals(MiembroEstado.RETIRADA, estados[alumna.id])
+        assertEquals(MiembroEstado.DADA_DE_BAJA, estados[alumno.id])
     }
 }
