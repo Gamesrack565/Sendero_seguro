@@ -138,6 +138,23 @@ class ProcesoCancelacion(
         return pendientes.size - noEnviados.size
     }
 
+    /**
+     * Manda las cancelaciones que se quedaron en cola_alerta sin señal. Llamarlo al recuperar internet.
+     * El servidor no repite un intento ya guardado. Si responde que la alerta no existe, se conserva hasta que
+     * venza (72 h), porque la alerta puede venir en camino por la malla o por SMS.
+     */
+    suspend fun sincronizarCancelacionesPendientes(): Int {
+        var enviadas = 0
+        for (s in cola.pendientes()) {
+            when (val r = remoto.registrarCancelacion(s)) {
+                is Resultado.Exito -> { cola.quitar(s.alertaId); enviadas++ }
+                is Resultado.Error ->
+                    if (r.error is ErrorIdentidad.Validacion || r.error is ErrorIdentidad.SinPermiso) cola.quitar(s.alertaId)
+            }
+        }
+        return enviadas
+    }
+
     // ------------------------------------------------------------------ internos
 
     private suspend fun registrarIntentoFallido(alertaId: String, motivo: CancelacionMotivo?, metodo: MetodoAutenticacion) {

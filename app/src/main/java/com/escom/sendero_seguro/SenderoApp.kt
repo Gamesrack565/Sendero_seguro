@@ -1,9 +1,13 @@
 package com.escom.sendero_seguro
 
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.Network
+import android.util.Log
 import com.escom.sendero_seguro.emergencias.ModuloEmergencias
 import com.escom.sendero_seguro.emergencias.remoto.ServidorAlertasRetrofit
 import com.escom.sendero_seguro.identidad.ModuloIdentidad
+import com.escom.sendero_seguro.identidad.dominio.EventoCancelacion
 import com.escom.sendero_seguro.identidad.puertos.ClavesConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +33,34 @@ class SenderoApp : Application() {
                     config[ClavesConfig.USUARIO_ID]?.let { m.usuarioIdActual = it }
                 }
             }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+
+        // P8 → P4: al cancelar con PIN o huella (Módulo 1) se detiene la alerta del Módulo 2: GPS, envío y malla.
+        // Un PIN que no coincide no detiene nada: la alerta sigue y el servidor lo marca como posible coacción.
+        scope.launch(Dispatchers.Main) {
+            identidad.cancelacion.eventos.collect { e ->
+                if (e is EventoCancelacion.AlertaCancelada && emergencias.alertaActiva.value?.idAlerta == e.alertaId) {
+                    emergencias.desactivarAlertaEmergencia(false)
+                }
+            }
+        }
+
+        // Al abrir la app y cada vez que vuelve internet se sube lo que quedó pendiente sin señal
+        // (cancelaciones, intentos fallidos y contactos).
+        val red = getSystemService(ConnectivityManager::class.java)
+        runCatching {
+            red?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    scope.launch {
+                        runCatching { identidad.sincronizarPendientes() }
+                            .onFailure { Log.w("SenderoApp", "No se pudo subir lo pendiente", it) }
+                    }
+                }
+            })
         }
     }
 }

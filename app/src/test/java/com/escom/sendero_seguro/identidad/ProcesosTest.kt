@@ -302,4 +302,39 @@ class ProcesosTest {
         assertTrue(remoto.cancelaciones.isEmpty())
         assertTrue(cola.encoladas.isEmpty())
     }
+
+    @Test
+    fun laCancelacionSinSenalSeMandaCuandoVuelveInternet() = runBlocking<Unit> {
+        iniciarSesion()
+        p1.crearPinCancelacion("1234", "1234").ok()
+        remoto.sinConexion = true
+        p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "1234").ok()
+        p8.cancelarConPin("alr-2", CancelacionMotivo.FALSA_ALARMA, "1234").ok()
+        assertEquals(0, p8.sincronizarCancelacionesPendientes())
+        assertEquals("Sin red no se pierde nada", 2, cola.encoladas.size)
+
+        // La alerta todavía no llega al servidor (va por la malla): se conserva.
+        remoto.sinConexion = false
+        remoto.errorCancelacion = ErrorIdentidad.NoEncontrado()
+        assertEquals(0, p8.sincronizarCancelacionesPendientes())
+        assertEquals(2, cola.encoladas.size)
+
+        remoto.errorCancelacion = null
+        assertEquals(2, p8.sincronizarCancelacionesPendientes())
+        assertTrue(cola.encoladas.isEmpty())
+        assertEquals(listOf("alr-1", "alr-2"), remoto.cancelaciones.map { it.alertaId })
+        assertTrue(remoto.cancelaciones.all { it.exitoso })
+    }
+
+    @Test
+    fun unaCancelacionQueElServidorNoAceptaSeQuitaDeLaCola() = runBlocking<Unit> {
+        iniciarSesion()
+        p1.crearPinCancelacion("1234", "1234").ok()
+        remoto.sinConexion = true
+        p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "1234").ok()
+        remoto.sinConexion = false
+        remoto.errorCancelacion = ErrorIdentidad.Validacion(mapOf("motivo" to "Motivo desconocido"))
+        assertEquals(0, p8.sincronizarCancelacionesPendientes())
+        assertTrue(cola.encoladas.isEmpty())
+    }
 }

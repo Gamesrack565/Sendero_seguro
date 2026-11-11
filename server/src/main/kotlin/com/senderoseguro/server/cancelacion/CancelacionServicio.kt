@@ -1,6 +1,7 @@
 package com.senderoseguro.server.cancelacion
 
 import com.senderoseguro.server.cuentas.errorValidacion
+import com.senderoseguro.server.dispersion.AlertasRecibidas
 import com.senderoseguro.server.dispersion.Dispersion
 import com.senderoseguro.server.plataforma.ApiException
 import com.senderoseguro.server.plataforma.Bitacora
@@ -40,7 +41,7 @@ data class CancelacionEntrada(
 class CancelacionServicio(private val dataSource: DataSource, private val dispersion: Dispersion) {
 
     fun registrar(usuarioId: UUID, alertaRuta: String, entrada: CancelacionEntrada, ip: String?) {
-        val alertaId = runCatching { UUID.fromString(alertaRuta) }.getOrNull() ?: throw noEncontrada()
+        val idTelefono = runCatching { UUID.fromString(alertaRuta) }.getOrNull() ?: throw noEncontrada()
         val errores = buildMap {
             if (entrada.metodo !in METODOS) put("metodo", "Debe ser PIN o BIOMETRIA")
             if (entrada.motivo != null && entrada.motivo !in MOTIVOS) put("motivo", "Motivo desconocido")
@@ -48,7 +49,10 @@ class CancelacionServicio(private val dataSource: DataSource, private val disper
         if (errores.isNotEmpty()) throw errorValidacion(errores)
         val intentadoEn = hora(entrada.intentadoEn)
 
+        var alertaId = idTelefono
         val cancelada = dataSource.transaccion { conn ->
+            // Si la alerta llegó antes por la malla o por SMS, en el servidor tiene otro UUID con el mismo id corto.
+            alertaId = AlertasRecibidas.delTelefono(conn, usuarioId, idTelefono) ?: throw noEncontrada()
             val (dueno, estado) = conn.consultarUno(
                 "SELECT usuario_id, estado::text AS estado FROM alerta WHERE id = ? FOR UPDATE", alertaId,
             ) { it.uuid("usuario_id") to it.getString("estado") } ?: throw noEncontrada()

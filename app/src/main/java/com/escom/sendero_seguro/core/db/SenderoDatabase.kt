@@ -102,6 +102,12 @@ interface ColaAlertaDao {
 
     @Query("DELETE FROM cola_alerta WHERE alerta_id = :alertaId")
     suspend fun eliminar(alertaId: String)
+
+    @Query("SELECT * FROM cola_alerta WHERE tipo_elemento = :tipo ORDER BY creado_en")
+    suspend fun listarPorTipo(tipo: String): List<ColaAlertaEntity>
+
+    @Query("DELETE FROM cola_alerta WHERE expira_en <= :ahora")
+    suspend fun borrarVencidos(ahora: Long)
 }
 
 @Database(

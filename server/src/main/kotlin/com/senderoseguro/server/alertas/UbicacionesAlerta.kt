@@ -1,11 +1,11 @@
 package com.senderoseguro.server.alertas
 
 import com.senderoseguro.server.cuentas.errorValidacion
+import com.senderoseguro.server.dispersion.AlertasRecibidas
 import com.senderoseguro.server.plataforma.ApiException
 import com.senderoseguro.server.plataforma.consultarUno
 import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.transaccion
-import com.senderoseguro.server.plataforma.uuid
 import com.senderoseguro.server.sincronizacion.ManejadorSync
 import com.senderoseguro.server.sincronizacion.ResultadoManejo
 import io.ktor.http.HttpStatusCode
@@ -61,18 +61,11 @@ class UbicacionesAlerta(private val dataSource: DataSource) {
         else ResultadoManejo.Duplicado(referencia = alertaId.toString())
     }
 
-    /** La alerta de la persona con ese UUID o, si llegó por SMS o malla, con su mismo id corto (últimas 72 h). */
-    private fun buscar(conn: Connection, usuarioId: UUID, id: UUID): Pair<UUID, String>? =
-        conn.consultarUno(
-            "SELECT id, estado::text AS estado FROM alerta WHERE id = ? AND usuario_id = ?", id, usuarioId,
-        ) { it.uuid("id") to it.getString("estado") }
-            ?: conn.consultarUno(
-                """SELECT id, estado::text AS estado FROM alerta
-                   WHERE usuario_id = ? AND id::text LIKE ? || '%' AND canal_recepcion IN ('SMS', 'MALLA')
-                     AND registrada_en > now() - interval '72 hours'
-                   ORDER BY registrada_en DESC LIMIT 1""",
-                usuarioId, id.toString().take(8),
-            ) { it.uuid("id") to it.getString("estado") }
+    /** La alerta de la persona con ese UUID o, si llegó por SMS o malla, con su mismo id corto, y su estado. */
+    private fun buscar(conn: Connection, usuarioId: UUID, id: UUID): Pair<UUID, String>? {
+        val alerta = AlertasRecibidas.delTelefono(conn, usuarioId, id) ?: return null
+        return alerta to conn.consultarUno("SELECT estado::text FROM alerta WHERE id = ?", alerta) { it.getString(1) }!!
+    }
 
     private fun guardar(conn: Connection, alertaId: UUID, lecturas: List<Lectura>): UbicacionesAgregadas {
         var insertadas = 0

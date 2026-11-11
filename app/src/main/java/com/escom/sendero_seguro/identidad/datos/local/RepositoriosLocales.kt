@@ -6,7 +6,9 @@ import com.escom.sendero_seguro.core.db.ConfigLocalDao
 import com.escom.sendero_seguro.core.db.ConfigLocalEntity
 import com.escom.sendero_seguro.core.db.ContactoLocalDao
 import com.escom.sendero_seguro.core.db.ContactoLocalEntity
+import com.escom.sendero_seguro.identidad.dominio.CancelacionMotivo
 import com.escom.sendero_seguro.identidad.dominio.Contacto
+import com.escom.sendero_seguro.identidad.dominio.MetodoAutenticacion
 import com.escom.sendero_seguro.identidad.dominio.NotificacionCanal
 import com.escom.sendero_seguro.identidad.dominio.SolicitudCancelacion
 import com.escom.sendero_seguro.identidad.puertos.ClavesConfig
@@ -101,6 +103,28 @@ class ColaCancelacionesRoom(
             )
         )
     }
+
+    override suspend fun pendientes(): List<SolicitudCancelacion> {
+        dao.borrarVencidos(reloj())
+        return dao.listarPorTipo("CANCELACION").mapNotNull { deJson(String(it.paquete, Charsets.UTF_8)) }
+    }
+
+    override suspend fun quitar(alertaId: String) {
+        if (dao.buscar(alertaId)?.tipoElemento == "CANCELACION") dao.eliminar(alertaId)
+    }
+
+    private fun deJson(texto: String): SolicitudCancelacion? = runCatching {
+        val o = JSONObject(texto)
+        SolicitudCancelacion(
+            alertaId = o.getString("alerta_id"),
+            usuarioId = o.optString("usuario_id"),
+            dispositivoId = if (o.isNull("dispositivo_id")) null else o.getString("dispositivo_id"),
+            motivo = if (o.isNull("motivo")) null else CancelacionMotivo.valueOf(o.getString("motivo")),
+            metodo = MetodoAutenticacion.valueOf(o.getString("metodo")),
+            exitoso = o.getBoolean("exitoso"),
+            intentadoEnMs = Instant.parse(o.getString("intentado_en")).toEpochMilli()
+        )
+    }.getOrNull()
 
     private fun aJson(s: SolicitudCancelacion): String = JSONObject()
         .put("alerta_id", s.alertaId)

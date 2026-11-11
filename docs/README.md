@@ -249,6 +249,13 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - `exitoso: true`: la alerta pasa a `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`.
 - `exitoso: false` (el PIN no coincidió): se toma como posible coacción. La alerta sigue activa, la consola ve la marca y a la persona se le muestra como cancelada.
 - Reenviar el mismo intento no lo duplica, y si la alerta ya terminó, el intento se guarda sin cambiar nada.
+- Si la alerta llegó antes por la malla o por SMS (en el servidor tiene otro UUID con el mismo id corto), se cancela igual con el id del teléfono.
+
+**Cancelación en la app**
+- La pantalla A-08 usa `CancelacionViewModel` con el `idAlerta` de `SenderoApp.emergencias.alertaActiva`.
+- Al cancelar con PIN o huella, `SenderoApp` detiene la alerta del Módulo 2 (GPS, envío de ubicaciones y malla). Un PIN que no coincide no la detiene.
+- Sin señal, la cancelación queda en `cola_alerta` (tipo `CANCELACION`) y el intento fallido en `config_local`. `SenderoApp` los manda al abrir la app y cada vez que vuelve internet (`ModuloIdentidad.sincronizarPendientes`). Si el servidor responde que la alerta no existe, la cancelación se conserva hasta que vence (72 h), porque la alerta puede venir en camino.
+- `app/src/test/.../identidad/ProcesosTest.kt` prueba la cola sin señal.
 
 ## Registro de alertas
 
@@ -597,6 +604,8 @@ Reglas generales de la API:
 ## Base de datos del teléfono
 
 `db/sendero_seguro_local_sqlite.sql` es la referencia para las entidades de Room: nombres de tablas, columnas y restricciones. Para probarlo suelto: `sqlite3 prueba.db < db/sendero_seguro_local_sqlite.sql`.
+
+La base Room del Módulo 1 es `sendero_seguro_local.db`. El Módulo 2 guarda la cola de su pantalla de diagnóstico y los paquetes de la malla ya vistos en otro archivo, `sendero_seguro_malla.db`, para que las dos no choquen.
 
 Las fechas se guardan como milisegundos Unix, los booleanos como 0/1 y los UUID como texto. Los secretos (token, PIN y llaves) no van en SQLite, sino en el Android Keystore.
 

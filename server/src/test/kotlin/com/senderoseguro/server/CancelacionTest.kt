@@ -1,5 +1,7 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.alertas.RegistroAlertas
+import com.senderoseguro.server.alertas.RelevoMalla
 import com.senderoseguro.server.cancelacion.CancelacionServicio
 import com.senderoseguro.server.cancelacion.rutasCancelacion
 import com.senderoseguro.server.desarrollo.AlertasPrueba
@@ -131,4 +133,20 @@ class CancelacionTest : PruebaConBaseDatos() {
         assertEquals("ENVIADA", estado(alerta))
         assertEquals(0, numero("SELECT count(*) FROM intento_cancelacion WHERE alerta_id = ?", alerta))
     }
+
+    @Test
+    fun `si la alerta llego por la malla se cancela con el id del telefono`() = testApplication {
+        montar()
+        // Otro teléfono entregó la alerta de Ana por la malla: en el servidor tiene otro UUID con el mismo id corto.
+        val idTelefono = UUID.randomUUID()
+        val relevo = RelevoMalla(idTelefono.toString().take(8), "00000001", 19.504507, -99.146911, 40, 3, 2, Instant.now().minusSeconds(30).toString())
+        val enServidor = RegistroAlertas(dataSource, dispersion)
+            .registrarRelevo(UUID.fromString("00000000-0000-4000-8000-000000000002"), relevo, null).id
+
+        assertEquals(HttpStatusCode.NoContent, client.cancelar(idTelefono, exitoso = true).status)
+        assertEquals("CANCELADA", estado(enServidor))
+        assertEquals(1, numero("SELECT count(*) FROM intento_cancelacion WHERE alerta_id = ?", enServidor))
+        assertEquals(HttpStatusCode.NotFound, client.cancelar(idTelefono, exitoso = true, token = tokenBeto).status, "Sigue siendo solo de Ana")
+    }
 }
+

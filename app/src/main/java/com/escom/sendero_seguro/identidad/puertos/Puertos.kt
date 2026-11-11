@@ -80,6 +80,12 @@ interface AlmacenSeguro {
  */
 interface ColaCancelaciones {
     suspend fun encolar(solicitud: SolicitudCancelacion)
+
+    /** Las cancelaciones que siguen en cola y no han vencido. */
+    suspend fun pendientes(): List<SolicitudCancelacion> = emptyList()
+
+    /** Quita de la cola la cancelación de esa alerta (ya llegó al servidor o el servidor no la acepta). */
+    suspend fun quitar(alertaId: String) {}
 }
 
 interface InfoHardware {
