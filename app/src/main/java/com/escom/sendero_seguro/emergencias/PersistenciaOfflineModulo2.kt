@@ -36,7 +36,8 @@ class GestorColaLocalSQLiteER06(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
     companion object {
-        private const val DB_NAME = "sendero_seguro_local.db"
+        // Archivo propio: "sendero_seguro_local.db" es la base Room del Módulo 1, con otras tablas.
+        private const val DB_NAME = "sendero_seguro_malla.db"
         private const val DB_VERSION = 1
 
         const val EXPIRACION_ACUSE_MS = 2 * 60 * 60 * 1000L       // 2 horas (E3 Pág. 27)

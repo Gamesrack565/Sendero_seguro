@@ -154,15 +154,16 @@ class ServicioRemotoRetrofit(
     private fun mapearHttp(e: HttpException): ErrorIdentidad {
         val cuerpo = runCatching { e.response()?.errorBody()?.string() }.getOrNull()
         val dto = cuerpo?.let { runCatching { json.decodeFromString(ErrorDto.serializer(), it) }.getOrNull() } ?: ErrorDto()
+        val detalle = dto.detalle ?: DetalleErrorDto()
         return when {
             dto.codigo == "VALIDACION" || e.code() == 400 || e.code() == 422 ->
-                ErrorIdentidad.Validacion(dto.errores.ifEmpty { mapOf("general" to dto.mensaje.ifEmpty { "Revisa los datos" }) })
-            dto.codigo == "TOKEN_INVALIDO" -> ErrorIdentidad.SinSesion
-            dto.codigo == "CREDENCIALES_INVALIDAS" || e.code() == 401 -> ErrorIdentidad.CredencialesInvalidas(dto.intentosRestantes)
+                ErrorIdentidad.Validacion(detalle.errores.ifEmpty { mapOf("general" to dto.mensaje.ifEmpty { "Revisa los datos" }) })
+            dto.codigo == "TOKEN_INVALIDO" || dto.codigo == "NO_AUTENTICADO" -> ErrorIdentidad.SinSesion
+            dto.codigo == "CREDENCIALES_INVALIDAS" || e.code() == 401 -> ErrorIdentidad.CredencialesInvalidas(detalle.intentosRestantes)
             dto.codigo == "CUENTA_BLOQUEADA" || e.code() == 423 ->
-                ErrorIdentidad.CuentaBloqueada(dto.bloqueadaHasta?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() })
+                ErrorIdentidad.CuentaBloqueada(detalle.bloqueadaHasta?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() })
             dto.codigo == "CUENTA_SUSPENDIDA" -> ErrorIdentidad.CuentaSuspendida
-            dto.codigo == "PERFIL_NO_PERMITIDO" -> ErrorIdentidad.PerfilNoPermitido(enumO(dto.rol, UsuarioRol.ADMINISTRADOR))
+            dto.codigo == "PERFIL_NO_PERMITIDO" -> ErrorIdentidad.PerfilNoPermitido(enumO(detalle.rol, UsuarioRol.ADMINISTRADOR))
             dto.codigo == "CODIGO_INVALIDO" || dto.codigo == "CODIGO_VENCIDO" || e.code() == 410 -> ErrorIdentidad.CodigoInvalido
             e.code() == 403 -> ErrorIdentidad.SinPermiso
             e.code() == 404 -> ErrorIdentidad.NoEncontrado(dto.mensaje.ifEmpty { "No se encontró el registro." })

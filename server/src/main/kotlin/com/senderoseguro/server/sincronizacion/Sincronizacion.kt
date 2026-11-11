@@ -42,8 +42,11 @@ data class ElementoSync(val tipo: TipoSync, val id: UUID, val creadoEn: Instant,
 data class ContextoSync(val usuarioId: UUID, val dispositivoId: UUID)
 
 sealed interface ResultadoManejo {
-    /** Se guardó. [despachar]: id de una alerta nueva, que la plataforma despacha después de confirmar la transacción. */
-    data class Aceptado(val referencia: String? = null, val despachar: UUID? = null) : ResultadoManejo
+    /**
+     * Se guardó. [despachar]: id de una alerta nueva, que la plataforma despacha después de confirmar la transacción.
+     * [despues]: otra acción que debe correr después del commit (por ejemplo, avisar de una cancelación).
+     */
+    data class Aceptado(val referencia: String? = null, val despachar: UUID? = null, val despues: (() -> Unit)? = null) : ResultadoManejo
 
     /** Ya estaba guardado (el teléfono reenvió). */
     data class Duplicado(val referencia: String? = null) : ResultadoManejo
@@ -83,7 +86,14 @@ class Sincronizacion(
     private val log = LoggerFactory.getLogger(Sincronizacion::class.java)
 
     fun procesar(contexto: ContextoSync, elementos: List<ElementoSync>, ahora: Instant = Instant.now()): List<ResultadoSync> {
-        val resultados = elementos.sortedWith(compareBy({ it.tipo.ordinal }, { it.creadoEn }))
+        // Una alerta del temporizador de un trayecto necesita que el trayecto exista: ese trayecto va primero.
+        val trayectosDeAlertas = elementos.filter { it.tipo == TipoSync.ALERTA }
+            .mapNotNull { it.datos["trayectoId"]?.jsonPrimitive?.contentOrNull }.toSet()
+        fun orden(e: ElementoSync): Int {
+            val idTrayecto = e.datos["id"]?.jsonPrimitive?.contentOrNull ?: e.id.toString()
+            return if (e.tipo == TipoSync.TRAYECTO && idTrayecto in trayectosDeAlertas) -1 else e.tipo.ordinal
+        }
+        val resultados = elementos.sortedWith(compareBy({ orden(it) }, { it.creadoEn }))
             .associateWith { procesarUno(contexto, it, ahora) }
         return elementos.map { resultados.getValue(it) }
     }
@@ -113,6 +123,7 @@ class Sincronizacion(
         return when (resultado) {
             is ResultadoManejo.Aceptado -> {
                 resultado.despachar?.let(dispersion::despachar)
+                resultado.despues?.let { accion -> runCatching(accion).onFailure { log.error("Sincronización: falló la acción posterior de {}", e.id, it) } }
                 ResultadoSync(e.id.toString(), "ACEPTADO", referencia = resultado.referencia)
             }
             is ResultadoManejo.Duplicado -> ResultadoSync(e.id.toString(), "DUPLICADO", referencia = resultado.referencia)

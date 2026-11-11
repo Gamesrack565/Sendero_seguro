@@ -79,6 +79,13 @@ abstract class PruebaConBaseDatos {
 
     protected fun alerta(tipo: String = "GENERICA"): UUID = AlertasPrueba.crear(dataSource, AlertaPrueba(tipo = tipo)).first
 
+    /**
+     * La hora del reloj de PostgreSQL. Las alertas de prueba se fechan con `now()` de la base, y en Docker ese reloj
+     * puede ir unos milisegundos atrás del de la PC; filtrar con `Instant.now()` las dejaría fuera.
+     */
+    protected fun ahoraBd(): java.time.Instant =
+        dataSource.connection.use { conn -> conn.consultarUno("SELECT now()") { it.getTimestamp(1).toInstant() }!! }
+
     protected fun sql(sentencia: String, vararg parametros: Any?) =
         dataSource.connection.use { it.ejecutar(sentencia, *parametros) }
 

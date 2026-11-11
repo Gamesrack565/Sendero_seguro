@@ -1,6 +1,5 @@
 package com.escom.sendero_seguro.identidad.datos.remoto
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.Body
 import retrofit2.http.DELETE
@@ -11,8 +10,8 @@ import retrofit2.http.PUT
 import retrofit2.http.Path
 
 /**
- * Endpoints del backend (Ktor) que consume el Módulo 1. Nombres de campos en snake_case,
- * iguales a las columnas de PostgreSQL. Fechas en ISO-8601 (timestamptz).
+ * Endpoints del backend (Ktor) que consume el Módulo 1. Nombres de campos en camelCase, como el resto
+ * del servidor (docs/api/openapi.yaml). Fechas en ISO-8601 (timestamptz).
  * Contrato completo: docs/modulo1_contrato_api.md
  */
 interface IdentidadApi {
@@ -45,34 +44,34 @@ interface IdentidadApi {
     @POST("alertas/{id}/cancelaciones") suspend fun registrarCancelacion(@Path("id") alertaId: String, @Body body: CancelacionDto)
 }
 
-@Serializable data class AvisoDto(val id: Int, val version: String, @SerialName("contenido_hash") val contenidoHash: String)
+@Serializable data class AvisoDto(val id: Int, val version: String, val contenidoHash: String)
 @Serializable data class InstitucionDto(val id: Int, val nombre: String, val siglas: String? = null)
-@Serializable data class EscuelaDto(val id: Int, @SerialName("institucion_id") val institucionId: Int, val nombre: String)
+@Serializable data class EscuelaDto(val id: Int, val institucionId: Int, val nombre: String)
 
 @Serializable
 data class DispositivoDto(
     val id: String,
     val modelo: String,
-    @SerialName("android_api") val androidApi: Int,
-    @SerialName("soporta_wifi_aware") val soportaWifiAware: Boolean
+    val androidApi: Int,
+    val soportaWifiAware: Boolean
 )
 
 @Serializable
 data class ConsentimientoDto(
-    @SerialName("aviso_id") val avisoId: Int,
-    @SerialName("aceptado_en") val aceptadoEn: String
+    val avisoId: Int,
+    val aceptadoEn: String
 )
 
 @Serializable
 data class RegistroDto(
     val nombre: String,
-    @SerialName("telefono_movil") val telefonoMovil: String,
-    @SerialName("identificador_institucional") val identificadorInstitucional: String,
-    @SerialName("tipo_comunidad") val tipoComunidad: String,
-    @SerialName("escuela_id") val escuelaId: Int,
-    @SerialName("carrera_adscripcion") val carreraAdscripcion: String,
+    val telefonoMovil: String,
+    val identificadorInstitucional: String,
+    val tipoComunidad: String,
+    val escuelaId: Int,
+    val carreraAdscripcion: String,
     val contrasena: String,
-    @SerialName("acepta_entrenamiento_ia") val aceptaEntrenamientoIa: Boolean,
+    val aceptaEntrenamientoIa: Boolean,
     val consentimiento: ConsentimientoDto,
     val dispositivo: DispositivoDto
 )
@@ -84,24 +83,24 @@ data class LoginDto(val usuario: String, val contrasena: String, val dispositivo
 data class UsuarioDto(
     val id: String,
     val nombre: String,
-    @SerialName("telefono_movil") val telefonoMovil: String,
-    @SerialName("identificador_institucional") val identificadorInstitucional: String,
-    @SerialName("escuela_id") val escuelaId: Int,
-    @SerialName("carrera_adscripcion") val carreraAdscripcion: String? = null,
+    val telefonoMovil: String,
+    val identificadorInstitucional: String,
+    val escuelaId: Int,
+    val carreraAdscripcion: String? = null,
     val rol: String,
     val estado: String,
-    @SerialName("acepta_entrenamiento_ia") val aceptaEntrenamientoIa: Boolean = false
+    val aceptaEntrenamientoIa: Boolean = false
 )
 
 @Serializable
-data class SesionDto(val token: String, @SerialName("expira_en") val expiraEn: String, val usuario: UsuarioDto)
+data class SesionDto(val token: String, val expiraEn: String, val usuario: UsuarioDto)
 
 @Serializable
 data class PerfilCambioDto(
-    @SerialName("telefono_movil") val telefonoMovil: String? = null,
-    @SerialName("identificador_institucional") val identificadorInstitucional: String? = null,
-    @SerialName("carrera_adscripcion") val carreraAdscripcion: String? = null,
-    @SerialName("acepta_entrenamiento_ia") val aceptaEntrenamientoIa: Boolean? = null
+    val telefonoMovil: String? = null,
+    val identificadorInstitucional: String? = null,
+    val carreraAdscripcion: String? = null,
+    val aceptaEntrenamientoIa: Boolean? = null
 )
 
 @Serializable data class BajaDto(val contrasena: String)
@@ -112,8 +111,8 @@ data class ContactoDto(
     val nombre: String,
     val telefono: String,
     val prioridad: Int,
-    @SerialName("canal_preferido") val canalPreferido: String = "SMS",
-    @SerialName("usuario_vinculado_id") val usuarioVinculadoId: String? = null,
+    val canalPreferido: String = "SMS",
+    val usuarioVinculadoId: String? = null,
     val activo: Boolean = true
 )
 
@@ -122,45 +121,54 @@ data class ContactoDto(
 @Serializable
 data class CirculoDto(
     val id: String,
-    @SerialName("nombre_grupo") val nombreGrupo: String,
-    @SerialName("escuela_id") val escuelaId: Int,
-    @SerialName("coordinador_id") val coordinadorId: String,
-    @SerialName("codigo_invitacion") val codigoInvitacion: String? = null,
-    @SerialName("estado_codigo") val estadoCodigo: String = "VIGENTE",
-    @SerialName("codigo_vence_en") val codigoVenceEn: String? = null
+    val nombreGrupo: String,
+    val escuelaId: Int,
+    val coordinadorId: String,
+    val codigoInvitacion: String? = null,
+    val estadoCodigo: String = "VIGENTE",
+    val codigoVenceEn: String? = null
 )
 
 /** GET circulos/mio responde {"circulo": null} si la persona no pertenece a ninguno. */
 @Serializable data class CirculoRespuestaDto(val circulo: CirculoDto? = null)
 
-@Serializable data class CrearCirculoDto(val id: String, @SerialName("nombre_grupo") val nombreGrupo: String)
+@Serializable data class CrearCirculoDto(val id: String, val nombreGrupo: String)
 @Serializable data class UnirseDto(val codigo: String)
 
 @Serializable
-data class MiembroDto(@SerialName("usuario_id") val usuarioId: String, val nombre: String, val estado: String)
+data class MiembroDto(val usuarioId: String, val nombre: String, val estado: String)
 
 @Serializable
 data class AvisoVinculacionDto(
     val tipo: String, // CONTACTO_AGREGADO | NUEVO_INTEGRANTE (notificacion_tipo)
-    @SerialName("contacto_id") val contactoId: String? = null,
-    @SerialName("circulo_id") val circuloId: String? = null
+    val contactoId: String? = null,
+    val circuloId: String? = null
 )
 
 @Serializable
 data class CancelacionDto(
-    @SerialName("dispositivo_id") val dispositivoId: String?,
+    val dispositivoId: String?,
     val motivo: String?,
     val metodo: String,
     val exitoso: Boolean,
-    @SerialName("intentado_en") val intentadoEn: String
+    val intentadoEn: String
 )
 
+/**
+ * Error del servidor: {"codigo", "mensaje", "detalle"}. Los datos extra de cada error vienen dentro de `detalle`
+ * (errores por campo, intentos restantes, fin del bloqueo, rol).
+ */
 @Serializable
 data class ErrorDto(
     val codigo: String = "",
     val mensaje: String = "",
+    val detalle: DetalleErrorDto? = null
+)
+
+@Serializable
+data class DetalleErrorDto(
     val errores: Map<String, String> = emptyMap(),
-    @SerialName("intentos_restantes") val intentosRestantes: Int? = null,
-    @SerialName("bloqueada_hasta") val bloqueadaHasta: String? = null,
+    val intentosRestantes: Int? = null,
+    val bloqueadaHasta: String? = null,
     val rol: String? = null
 )

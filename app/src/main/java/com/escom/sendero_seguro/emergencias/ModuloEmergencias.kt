@@ -5,6 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
+import com.escom.sendero_seguro.emergencias.remoto.CanalServidorAlertas
+import com.escom.sendero_seguro.emergencias.remoto.CanalUbicaciones
+import com.escom.sendero_seguro.emergencias.remoto.EnvioUbicaciones
+import com.escom.sendero_seguro.emergencias.remoto.ResultadoServidor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,12 +20,18 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class ModuloEmergencias(
     private val context: Context,
-    private val usuarioIdActual: String = "USR_LOCAL_01"
+    // Id de la cuenta (Módulo 1). MainActivity lo pone en cuanto lee la sesión.
+    var usuarioIdActual: String = "USR_LOCAL_01",
+    // P4: registro en el servidor (Módulo 4). Sin él, la alerta solo vive en el teléfono y en la malla.
+    private val servidor: CanalServidorAlertas? = null,
+    // P6: ubicaciones de la alerta activa hacia el servidor. Por omisión, el mismo servidor de P4.
+    ubicaciones: CanalUbicaciones? = servidor as? CanalUbicaciones
 ) {
 
     companion object {
@@ -33,6 +43,12 @@ class ModuloEmergencias(
     private var jobHiloTelemetria: Job? = null
     private var jobCuentaRegresivaPreEnvio: Job? = null
     private var ultimoDisparoCaidaMs: Long = 0L
+    private val envioUbicaciones = ubicaciones?.let { EnvioUbicaciones(it) }
+
+    // P4: id de la alerta que ya no hay que mandar (el servidor la confirmó o la rechazó), y el envío en curso.
+    @Volatile private var alertaResuelta: String? = null
+    @Volatile private var envioAlerta: Job? = null
+    @Volatile private var detonadorEnCuenta: TipoDetonador = TipoDetonador.BOTON_SOS
 
     // Configurable desde P3 (A-12): 3, 5 o 10 segundos antes de enviar la alerta
     var segundosCuentaRegresivaConfig: Int = 5
@@ -179,6 +195,7 @@ class ModuloEmergencias(
             return
         }
 
+        detonadorEnCuenta = detonador
         val idTemporal = java.util.UUID.randomUUID().toString()
         _historialEventosAlerta.value = emptyList()
         actualizarHistorialEventoAlerta(idTemporal, null, EstadoAlertaE01.CREADA, "Botón presionado ($detonador)")
@@ -233,6 +250,8 @@ class ModuloEmergencias(
         )
         sincronizarVistaRedApoyoYEmisora()
 
+        if (hayInternet) enviarAlServidor(nuevaAlerta)
+
         if (modoSinRedMallaActivo) {
             gestorMalla.emitirAlertaEnMalla(nuevaAlerta, usuarioIdActual)
         }
@@ -242,6 +261,39 @@ class ModuloEmergencias(
         iniciarHiloDeFondoTelemetria(intervaloMs = 10_000L)
 
         return nuevaAlerta
+    }
+
+    /**
+     * P4: manda la alerta al servidor sin detener la activación. Reintenta 3 veces si no hubo red o el servidor
+     * falló; el servidor no la duplica. Si responde, la alerta toma el folio del servidor.
+     */
+    private fun enviarAlServidor(alerta: AlertaEmergencia) {
+        val canal = servidor ?: return
+        envioAlerta = moduloScope.launch {
+            repeat(3) { intento ->
+                when (val r = canal.enviar(alerta)) {
+                    is ResultadoServidor.Registrada -> {
+                        alertaResuelta = alerta.idAlerta
+                        _alertaActiva.update { a -> if (a?.idAlerta == alerta.idAlerta) a.copy(folio = r.folio) else a }
+                        actualizarHistorialEventoAlerta(
+                            alertaId = alerta.idAlerta,
+                            estadoAnterior = EstadoAlertaE01.ENVIADA,
+                            estadoNuevo = EstadoAlertaE01.ENVIADA,
+                            detalle = "Registrada en el servidor con folio ${r.folio}"
+                        )
+                        return@launch
+                    }
+                    is ResultadoServidor.Fallo -> {
+                        if (!r.reintentar || intento == 2) {
+                            if (!r.reintentar) alertaResuelta = alerta.idAlerta
+                            Log.w(TAG, "El servidor no registró la alerta (HTTP ${r.codigoHttp})")
+                            return@launch
+                        }
+                        delay(2000L * (intento + 1))
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -316,12 +368,20 @@ class ModuloEmergencias(
     private fun iniciarHiloDeFondoTelemetria(intervaloMs: Long = 10_000L) {
         jobHiloTelemetria?.cancel()
         jobHiloTelemetria = moduloScope.launch {
+            envioUbicaciones?.reiniciar()
             while (isActive && _alertaActiva.value?.activa == true) {
                 val datos = gestorTelemetria.emitirUbicacionGNSSPeriodica()
                 gestorMalla.ajustarEscaneoMallaPorBateria(datos.nivelBateria)
+                val alerta = _alertaActiva.value
 
+                // P6: cada lectura va al servidor; sin señal se junta y sale cuando vuelve.
+                envioUbicaciones?.agregar(datos)
                 if (!gestorMalla.hayConexionAInternet()) {
                     _colaTelemetriaOfflineP11.tryEmit(datos)
+                } else if (alerta != null) {
+                    // Si se activó sin internet, la alerta sale al servidor en cuanto vuelve la señal.
+                    if (alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) enviarAlServidor(alerta)
+                    envioUbicaciones?.enviarPendientes(alerta.idAlerta)
                 }
 
                 if (gestorCaminataSegura.estadoCaminata.value.activa) {
@@ -331,6 +391,19 @@ class ModuloEmergencias(
                 delay(intervaloMs)
             }
         }
+    }
+
+    /**
+     * P8 (RF-13): se usó el PIN de coacción. La alerta se ve cancelada pero sigue: GPS, envío al servidor y malla.
+     * Si todavía iba en la cuenta regresiva, se envía en ese momento en vez de esperar.
+     */
+    fun activarModoCoaccionSilencioso() {
+        if (_alertaActiva.value?.activa != true && jobCuentaRegresivaPreEnvio?.isActive == true) {
+            jobCuentaRegresivaPreEnvio?.cancel()
+            _segundosRestantesPreEnvio.value = null
+            activarAlertaEmergencia(detonadorEnCuenta)
+        }
+        _alertaActiva.update { a -> if (a?.activa == true) a.copy(enModoCoaccionSilencioso = true) else a }
     }
 
     fun desactivarAlertaEmergencia(simulacionCoaccion: Boolean = false) {
@@ -347,6 +420,8 @@ class ModuloEmergencias(
         }
 
         jobHiloTelemetria?.cancel()
+        alertaResuelta = null
+        moduloScope.launch { envioUbicaciones?.reiniciar() }
         gestorTelemetria.detenerTelemetriaTiempoReal()
         gestorMalla.detenerSoloTransmisionBLE()
         _alertaActiva.value = null

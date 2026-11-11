@@ -6,7 +6,7 @@ import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.avisos.ProveedorSmsGate
 import com.senderoseguro.server.avisos.ResultadoEnvio
 import com.senderoseguro.server.desarrollo.AlertasPrueba
-import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
+import com.senderoseguro.server.alertas.RegistroAlertas
 import com.senderoseguro.server.pasarela.ConfigSmsGate
 import com.senderoseguro.server.pasarela.DatosSs1
 import com.senderoseguro.server.pasarela.FirmaSmsGate
@@ -135,7 +135,7 @@ class SmsGateTest : PruebaConBaseDatos() {
             configurarSerializacion()
             configurarErrores()
             val envio = EnvioAvisos(dataSource, ProveedorSimulado(), ProveedorSimulado(), enlaces)
-            routing { route("/api/v1") { rutasSmsGate(RecepcionSms(dataSource, dispersion, RegistroSmsPrueba), envio, config) } }
+            routing { route("/api/v1") { rutasSmsGate(RecepcionSms(dataSource, dispersion, RegistroAlertas(dataSource, dispersion).registroSms), envio, config) } }
         }
     }
 

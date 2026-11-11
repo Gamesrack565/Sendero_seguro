@@ -51,12 +51,13 @@ class ModuloIdentidad(context: Context) {
     val cancelacion = ProcesoCancelacion(remoto, config, almacen, ColaCancelacionesRoom(db.colaAlertaDao()))
 
     /**
-     * Sube lo que quedó pendiente sin señal (contactos e intentos de cancelación fallidos).
-     * Llamarlo desde el Worker de sincronización del Módulo 3 (P11) al recuperar internet.
+     * Sube lo que quedó pendiente sin señal (contactos, cancelaciones e intentos de cancelación fallidos).
+     * SenderoApp lo llama al abrir la app y cada vez que vuelve internet.
      */
     suspend fun sincronizarPendientes() {
         if (autenticacion.sesionLocal()?.tokenVigente != true) return
         redApoyo.sincronizarContactos()
+        cancelacion.sincronizarCancelacionesPendientes()
         cancelacion.sincronizarIntentosFallidosPendientes()
     }
 }

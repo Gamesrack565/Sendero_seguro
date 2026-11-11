@@ -35,6 +35,8 @@ dependencies {
     implementation(libs.logback)
     // PDF de las estadísticas (P13). Va aquí y no en libs.versions.toml porque solo lo usa el servidor.
     implementation("org.apache.pdfbox:pdfbox:3.0.8")
+    // Argon2id para las contraseñas (P1) y lectura de los hash bcrypt de las cuentas de prueba.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.84")
 
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit5)

@@ -60,12 +60,18 @@ class AlmacenEnMemoria : AlmacenSeguro {
     override fun borrarToken() { token = null }
     override fun guardarHashPin(hash: String) { hashPin = hash }
     override fun leerHashPin() = hashPin
-    override fun borrarTodo() { token = null; hashPin = null }
+    var hashPinCoaccion: String? = null
+    override fun guardarHashPinCoaccion(hash: String) { hashPinCoaccion = hash }
+    override fun leerHashPinCoaccion() = hashPinCoaccion
+    override fun borrarHashPinCoaccion() { hashPinCoaccion = null }
+    override fun borrarTodo() { token = null; hashPin = null; hashPinCoaccion = null }
 }
 
 class ColaEnMemoria : ColaCancelaciones {
     val encoladas = mutableListOf<SolicitudCancelacion>()
     override suspend fun encolar(solicitud: SolicitudCancelacion) { encoladas += solicitud }
+    override suspend fun pendientes() = encoladas.toList()
+    override suspend fun quitar(alertaId: String) { encoladas.removeAll { it.alertaId == alertaId } }
 }
 
 object HardwareFalso : InfoHardware {
@@ -94,6 +100,7 @@ class RemotoFalso : ServicioRemotoIdentidad {
     var sinConexion = false
     var rolLogin = UsuarioRol.INTEGRANTE
     var errorLogin: ErrorIdentidad? = null
+    var errorCancelacion: ErrorIdentidad? = null
     var ultimoRegistro: Pair<DatosRegistro, ConsentimientoPendiente>? = null
     val contactos = mutableMapOf<String, Contacto>()
     var ordenRecibido: List<String> = emptyList()
@@ -143,5 +150,6 @@ class RemotoFalso : ServicioRemotoIdentidad {
     override suspend fun darDeBaja(circuloId: String, usuarioId: String) = resp { exito(Unit) }
     override suspend fun retirarse(circuloId: String) = resp { exito(Unit) }
     override suspend fun notificarVinculacion(aviso: AvisoVinculacion) = resp { avisos += aviso; exito(Unit) }
-    override suspend fun registrarCancelacion(solicitud: SolicitudCancelacion) = resp { cancelaciones += solicitud; exito(Unit) }
+    override suspend fun registrarCancelacion(solicitud: SolicitudCancelacion) =
+        resp { errorCancelacion?.let { falla(it) } ?: run { cancelaciones += solicitud; exito(Unit) } }
 }

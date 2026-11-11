@@ -45,6 +45,16 @@ class AlmacenSeguroKeystore(context: Context) : AlmacenSeguro {
 
     override fun leerHashPin(): String? = prefs.getString(K_PIN, null)?.let(::descifrar)
 
+    override fun guardarHashPinCoaccion(hash: String) {
+        prefs.edit().putString(K_PIN_COACCION, cifrar(hash)).commit()
+    }
+
+    override fun leerHashPinCoaccion(): String? = prefs.getString(K_PIN_COACCION, null)?.let(::descifrar)
+
+    override fun borrarHashPinCoaccion() {
+        prefs.edit().remove(K_PIN_COACCION).commit()
+    }
+
     override fun borrarTodo() {
         prefs.edit().clear().commit()
     }
@@ -93,5 +103,6 @@ class AlmacenSeguroKeystore(context: Context) : AlmacenSeguro {
         const val K_TOKEN = "token"
         const val K_TOKEN_EXPIRA = "token_expira_en"
         const val K_PIN = "pin_hash"
+        const val K_PIN_COACCION = "pin_coaccion_hash"
     }
 }

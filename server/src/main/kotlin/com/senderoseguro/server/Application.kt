@@ -1,5 +1,22 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.administracion.AdministracionServicio
+import com.senderoseguro.server.administracion.rutasAdministracion
+import com.senderoseguro.server.alertas.RegistroAlertas
+import com.senderoseguro.server.catalogo.CatalogoServicio
+import com.senderoseguro.server.comunidad.AutorProtegido
+import com.senderoseguro.server.comunidad.Comunidad
+import com.senderoseguro.server.comunidad.MapaCalorServicio
+import com.senderoseguro.server.comunidad.MapasServicio
+import com.senderoseguro.server.comunidad.ReportesServicio
+import com.senderoseguro.server.comunidad.RutaSeguraServicio
+import com.senderoseguro.server.comunidad.rutasComunidad
+import com.senderoseguro.server.catalogo.rutasCatalogo
+import com.senderoseguro.server.dispersion.AcusesSinSenal
+import com.senderoseguro.server.trayectos.TrayectosServicio
+import com.senderoseguro.server.trayectos.rutasTrayectos
+import com.senderoseguro.server.alertas.UbicacionesAlerta
+import com.senderoseguro.server.alertas.rutasRegistroAlertas
 import com.senderoseguro.server.archivos.Almacen
 import com.senderoseguro.server.archivos.AlmacenAzureBlob
 import com.senderoseguro.server.archivos.AlmacenCarpeta
@@ -15,6 +32,12 @@ import com.senderoseguro.server.auditoria.rutasEstadisticas
 import com.senderoseguro.server.auditoria.rutasHistorial
 import com.senderoseguro.server.auditoria.rutasLineaDeTiempo
 import com.senderoseguro.server.avisos.CredencialesFcm
+import com.senderoseguro.server.cuentas.CuentasServicio
+import com.senderoseguro.server.cuentas.rutasCuentas
+import com.senderoseguro.server.cancelacion.CancelacionServicio
+import com.senderoseguro.server.cancelacion.rutasCancelacion
+import com.senderoseguro.server.redapoyo.RedApoyoServicio
+import com.senderoseguro.server.redapoyo.rutasRedApoyo
 import com.senderoseguro.server.avisos.EnvioAvisos
 import com.senderoseguro.server.avisos.ProveedorFcm
 import com.senderoseguro.server.avisos.rutasDispositivos
@@ -22,8 +45,6 @@ import com.senderoseguro.server.avisos.Proveedor
 import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.avisos.ProveedorSmsGate
 import com.senderoseguro.server.avisos.ProveedorTwilio
-import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
-import com.senderoseguro.server.desarrollo.SyncAlertaPrueba
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
 import com.senderoseguro.server.dispersion.AtencionServicio
 import com.senderoseguro.server.dispersion.ConsultaAlertas
@@ -36,7 +57,6 @@ import com.senderoseguro.server.dispersion.rutasEnlace
 import com.senderoseguro.server.pasarela.ConfigPasarela
 import com.senderoseguro.server.pasarela.ConfigSmsGate
 import com.senderoseguro.server.pasarela.RecepcionSms
-import com.senderoseguro.server.pasarela.RegistroAlertasSms
 import com.senderoseguro.server.pasarela.rutasPasarela
 import com.senderoseguro.server.pasarela.rutasPruebaSms
 import com.senderoseguro.server.pasarela.rutasSmsGate
@@ -63,6 +83,7 @@ import io.ktor.server.netty.EngineMain
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import java.nio.file.Path
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -98,6 +119,10 @@ fun Application.module() {
     val tiempoReal = CentroTiempoReal(baseDatos.dataSource, consulta, enlaces)
     tiempoReal.iniciar(scope = this, cada = config.property("tiempoReal.revisionMs").getString().toLong().milliseconds)
     val tokens = EmisorTokens.desde(this)
+    // Cuentas y sesiones (P1 del Módulo 1). Cada petición con token revisa que su sesión siga viva.
+    val cuentas = CuentasServicio(baseDatos.dataSource, tokens, config.property("jwt.sesionDias").getString().toInt().days)
+    val redApoyo = RedApoyoServicio(baseDatos.dataSource)
+    val cancelacion = CancelacionServicio(baseDatos.dataSource, dispersion)
     val urlPublica = config.property("pasarela.urlPublica").getString().trimEnd('/')
     val politicaAvisos = EnvioAvisos.Politica(
         maxReintentos = config.property("avisos.maxReintentos").getString().toInt(),
@@ -115,14 +140,33 @@ fun Application.module() {
         urlEnlace = config.property("avisos.urlEnlace").getString(),
     )
     envioAvisos.iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
-    // Registro de las alertas que llegan por SMS: lo conecta el Módulo 2 (P4). Mientras, en desarrollo se usa el de prueba
-    // y en la nube los SMS válidos quedan pendientes en mensaje_sms hasta que exista.
-    val registroSms: RegistroAlertasSms? = if (modoDesarrollo) RegistroSmsPrueba else null
-    val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroSms)
-    // Manejadores de /sync/lote: cada módulo registra el de su tipo, por ejemplo manejadoresSync[TipoSync.REPORTE] = ...
-    // Mientras, en desarrollo las ALERTA usan uno de prueba; un tipo sin manejador sale RECHAZADO temporal.
+    // P4: registro de alertas. El mismo registro atiende POST /alertas, las ALERTA de /sync/lote y los SMS de la pasarela.
+    val registroAlertas = RegistroAlertas(baseDatos.dataSource, dispersion)
+    val ubicacionesAlerta = UbicacionesAlerta(baseDatos.dataSource)
+    val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroAlertas.registroSms)
+    // Manejadores de /sync/lote: cada módulo registra el de su tipo. Un tipo sin manejador saldría RECHAZADO temporal.
     val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
-    if (modoDesarrollo) manejadoresSync[TipoSync.ALERTA] = SyncAlertaPrueba
+    manejadoresSync[TipoSync.ALERTA] = registroAlertas.manejadorSync
+    manejadoresSync[TipoSync.UBICACION] = ubicacionesAlerta.manejadorSync
+    manejadoresSync[TipoSync.ACUSE] = AcusesSinSenal().manejadorSync
+    manejadoresSync[TipoSync.CANCELACION] = cancelacion.manejadorSync
+    val trayectos = TrayectosServicio(baseDatos.dataSource)
+    manejadoresSync[TipoSync.TRAYECTO] = trayectos.manejadorTrayecto
+    manejadoresSync[TipoSync.CHECKIN] = trayectos.manejadorCheckin
+    // Módulo 3 en el servidor: reportes, moderación, feed, mapa de calor, ruta segura y mapas offline.
+    val catalogo = CatalogoServicio(baseDatos.dataSource)
+    val mapaCalor = MapaCalorServicio(baseDatos.dataSource)
+    mapaCalor.iniciar(scope = this, cada = config.property("mapaCalor.revisionHoras").getString().toInt().hours)
+    val reportes = ReportesServicio(
+        baseDatos.dataSource,
+        AutorProtegido(config.property("reportes.llaveAutor").getString()),
+        alCambiarPublicados = { mapaCalor.pedirRecalculo(this) },
+    )
+    manejadoresSync[TipoSync.REPORTE] = reportes.manejadorSync
+    val comunidad = Comunidad(
+        reportes, mapaCalor, RutaSeguraServicio(baseDatos.dataSource, mapaCalor), MapasServicio(baseDatos.dataSource),
+        versionCatalogo = catalogo::numeroVigente,
+    )
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
     RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
         .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
@@ -149,12 +193,20 @@ fun Application.module() {
     configurarSerializacion()
     configurarLogs()
     configurarErrores()
-    configurarSeguridad()
+    configurarSeguridad(sesiones = cuentas)
     configurarWebSockets()
 
     routing {
         route("/api/v1") {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
+            rutasCuentas(cuentas)
+            rutasRedApoyo(redApoyo)
+            rutasAdministracion(AdministracionServicio(baseDatos.dataSource))
+            rutasCatalogo(catalogo)
+            rutasComunidad(comunidad)
+            rutasTrayectos(trayectos)
+            rutasCancelacion(cancelacion)
+            rutasRegistroAlertas(registroAlertas, ubicacionesAlerta)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)
@@ -169,7 +221,6 @@ fun Application.module() {
             rutasHistorial(Historial(baseDatos.dataSource))
             val estadisticas = Estadisticas(baseDatos.dataSource)
             rutasEstadisticas(estadisticas, Exportacion(baseDatos.dataSource, estadisticas))
-            // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }
     }

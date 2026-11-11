@@ -302,4 +302,85 @@ class ProcesosTest {
         assertTrue(remoto.cancelaciones.isEmpty())
         assertTrue(cola.encoladas.isEmpty())
     }
+
+    @Test
+    fun laCancelacionSinSenalSeMandaCuandoVuelveInternet() = runBlocking<Unit> {
+        iniciarSesion()
+        p1.crearPinCancelacion("1234", "1234").ok()
+        remoto.sinConexion = true
+        p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "1234").ok()
+        p8.cancelarConPin("alr-2", CancelacionMotivo.FALSA_ALARMA, "1234").ok()
+        assertEquals(0, p8.sincronizarCancelacionesPendientes())
+        assertEquals("Sin red no se pierde nada", 2, cola.encoladas.size)
+
+        // La alerta todavía no llega al servidor (va por la malla): se conserva.
+        remoto.sinConexion = false
+        remoto.errorCancelacion = ErrorIdentidad.NoEncontrado()
+        assertEquals(0, p8.sincronizarCancelacionesPendientes())
+        assertEquals(2, cola.encoladas.size)
+
+        remoto.errorCancelacion = null
+        assertEquals(2, p8.sincronizarCancelacionesPendientes())
+        assertTrue(cola.encoladas.isEmpty())
+        assertEquals(listOf("alr-1", "alr-2"), remoto.cancelaciones.map { it.alertaId })
+        assertTrue(remoto.cancelaciones.all { it.exitoso })
+    }
+
+    @Test
+    fun unaCancelacionQueElServidorNoAceptaSeQuitaDeLaCola() = runBlocking<Unit> {
+        iniciarSesion()
+        p1.crearPinCancelacion("1234", "1234").ok()
+        remoto.sinConexion = true
+        p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "1234").ok()
+        remoto.sinConexion = false
+        remoto.errorCancelacion = ErrorIdentidad.Validacion(mapOf("motivo" to "Motivo desconocido"))
+        assertEquals(0, p8.sincronizarCancelacionesPendientes())
+        assertTrue(cola.encoladas.isEmpty())
+    }
+
+    @Test
+    fun elPinDeCoaccionDebeSerDistintoDelDeCancelacion() = runBlocking<Unit> {
+        iniciarSesion()
+        assertTrue("Primero el PIN de cancelación", p1.crearPinCoaccion("9876", "9876").err() is ErrorIdentidad.PinNoConfigurado)
+        p1.crearPinCancelacion("1234", "1234").ok()
+        assertTrue(p1.crearPinCoaccion("1234", "1234").err() is ErrorIdentidad.Validacion)
+        assertTrue(p1.crearPinCoaccion("98", "98").err() is ErrorIdentidad.Validacion)
+        assertFalse(p1.tienePinCoaccion())
+        p1.crearPinCoaccion("9876", "9876").ok()
+        assertTrue(p1.tienePinCoaccion())
+        assertTrue("El PIN de cancelación nuevo tampoco puede ser el de coacción", p1.cambiarPin("1234", "9876", "9876").err() is ErrorIdentidad.Validacion)
+    }
+
+    @Test
+    fun conElPinDeCoaccionSeVeCanceladaPeroSigueActiva() = runBlocking<Unit> {
+        iniciarSesion()
+        p1.crearPinCancelacion("1234", "1234").ok()
+        p1.crearPinCoaccion("9876", "9876").ok()
+        val eventos = async(start = CoroutineStart.UNDISPATCHED) { p8.eventos.take(1).toList() }
+        val r = p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "9876").ok()
+        // La pantalla recibe lo mismo que en una cancelación real.
+        assertEquals(ResultadoCancelacion.Cancelada("alr-1", sincronizada = true), r)
+        // Al servidor va como intento no exitoso: la alerta sigue y se marca la coacción.
+        assertFalse(remoto.cancelaciones.single().exitoso)
+        assertEquals(listOf(EventoCancelacion.CoaccionSilenciosa("alr-1")), eventos.await())
+        assertTrue("No se encola una cancelación", cola.encoladas.isEmpty())
+
+        // Un PIN que no es ninguno de los dos sigue siendo un intento fallido con mensaje neutro.
+        assertTrue(p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "5555").ok() is ResultadoCancelacion.NoCancelada)
+        p1.quitarPinCoaccion()
+        assertTrue(p8.cancelarConPin("alr-1", CancelacionMotivo.YA_ESTOY_A_SALVO, "9876").ok() is ResultadoCancelacion.NoCancelada)
+    }
+
+    @Test
+    fun laCoaccionSinSenalSeGuardaYSeMandaDespues() = runBlocking<Unit> {
+        iniciarSesion()
+        p1.crearPinCancelacion("1234", "1234").ok()
+        p1.crearPinCoaccion("9876", "9876").ok()
+        remoto.sinConexion = true
+        val r = p8.cancelarConPin("alr-1", CancelacionMotivo.FALSA_ALARMA, "9876").ok()
+        assertTrue(r is ResultadoCancelacion.Cancelada)
+        remoto.sinConexion = false
+        assertEquals(1, p8.sincronizarIntentosFallidosPendientes())
+        assertFalse(remoto.cancelaciones.single().exitoso)
+    }
 }

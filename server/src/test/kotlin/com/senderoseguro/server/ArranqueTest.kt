@@ -9,7 +9,8 @@ import kotlin.test.assertTrue
 /** Revisión de las llaves al arrancar: en la nube no se aceptan las del repo. */
 class ArranqueTest {
 
-    private fun config(jwt: String, enlace: String) = MapApplicationConfig("jwt.secreto" to jwt, "enlace.secreto" to enlace)
+    private fun config(jwt: String, enlace: String, autor: String = "y".repeat(40)) =
+        MapApplicationConfig("jwt.secreto" to jwt, "enlace.secreto" to enlace, "reportes.llaveAutor" to autor)
     private val propia = "x".repeat(40)
 
     @Test
@@ -25,5 +26,6 @@ class ArranqueTest {
         assertTrue(repo[0].contains("JWT_SECRETO") && repo[1].contains("ENLACE_SECRETO"))
         assertTrue(problemasDeArranque(config(propia, "corta"), false).single().contains("ENLACE_SECRETO"))
         assertTrue(problemasDeArranque(config(propia, propia), false).isEmpty())
+        assertTrue(problemasDeArranque(config(propia, propia, "solo-para-desarrollo-autor-reportes"), false).single().contains("REPORTES_LLAVE_AUTOR"))
     }
 }

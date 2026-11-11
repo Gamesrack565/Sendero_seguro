@@ -26,4 +26,18 @@ object AlertasRecibidas {
                    ORDER BY registrada_en LIMIT 1""",
                 usuarioId, idCorto, activadaEn, activadaEn,
             ) { it.uuid("id") }
+
+    /**
+     * La alerta de la persona a la que el teléfono llama [id]. Si llegó antes por SMS o por la malla, en el servidor
+     * tiene otro UUID con el mismo id corto (primeros 8 hex); se toma la más reciente de las últimas 72 h.
+     */
+    fun delTelefono(conn: Connection, usuarioId: UUID, id: UUID): UUID? =
+        conn.consultarUno("SELECT id FROM alerta WHERE id = ? AND usuario_id = ?", id, usuarioId) { it.uuid("id") }
+            ?: conn.consultarUno(
+                """SELECT id FROM alerta
+                   WHERE usuario_id = ? AND id::text LIKE ? || '%' AND canal_recepcion IN ('SMS', 'MALLA')
+                     AND registrada_en > now() - interval '72 hours'
+                   ORDER BY registrada_en DESC LIMIT 1""",
+                usuarioId, id.toString().take(8),
+            ) { it.uuid("id") }
 }
