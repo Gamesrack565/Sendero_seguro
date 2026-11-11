@@ -13,6 +13,12 @@ import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import com.senderoseguro.server.sincronizacion.ManejadorSync
+import com.senderoseguro.server.sincronizacion.ResultadoManejo
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import java.sql.Connection
 import java.time.Instant
 import java.time.format.DateTimeParseException
 import java.util.UUID
@@ -40,17 +46,52 @@ data class CancelacionEntrada(
  */
 class CancelacionServicio(private val dataSource: DataSource, private val dispersion: Dispersion) {
 
+    private val json = Json { ignoreUnknownKeys = true }
+
     fun registrar(usuarioId: UUID, alertaRuta: String, entrada: CancelacionEntrada, ip: String?) {
         val idTelefono = runCatching { UUID.fromString(alertaRuta) }.getOrNull() ?: throw noEncontrada()
-        val errores = buildMap {
-            if (entrada.metodo !in METODOS) put("metodo", "Debe ser PIN o BIOMETRIA")
-            if (entrada.motivo != null && entrada.motivo !in MOTIVOS) put("motivo", "Motivo desconocido")
-        }
+        val errores = validar(entrada)
         if (errores.isNotEmpty()) throw errorValidacion(errores)
         val intentadoEn = hora(entrada.intentadoEn)
 
-        var alertaId = idTelefono
-        val cancelada = dataSource.transaccion { conn ->
+        val (alertaId, cancelada) = dataSource.transaccion { conn -> registrarEn(conn, usuarioId, idTelefono, entrada, intentadoEn, ip) }
+        // Avisos, unidades y enlace, después del commit (como pide Dispersion).
+        if (cancelada) dispersion.cancelada(alertaId)
+    }
+
+    /**
+     * Cancelaciones de la cola sin señal (`/sync/lote`, tipo CANCELACION). `datos` es el mismo cuerpo de
+     * `POST /alertas/{id}/cancelaciones` más `alertaId` (el id que el teléfono le dio a la alerta).
+     */
+    val manejadorSync = ManejadorSync { conn, contexto, e ->
+        val idTelefono = e.datos["alertaId"]?.jsonPrimitive?.contentOrNull?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            ?: return@ManejadorSync ResultadoManejo.Rechazado("VALIDACION", "Falta alertaId")
+        val entrada = runCatching { json.decodeFromJsonElement(CancelacionEntrada.serializer(), e.datos) }.getOrNull()
+            ?: return@ManejadorSync ResultadoManejo.Rechazado("VALIDACION", "Faltan metodo o exitoso")
+        val errores = validar(entrada)
+        if (errores.isNotEmpty()) return@ManejadorSync ResultadoManejo.Rechazado("VALIDACION", errores.values.joinToString())
+        val intentadoEn = hora(entrada.intentadoEn ?: e.creadoEn.toString())
+        val (alertaId, cancelada) = try {
+            registrarEn(conn, contexto.usuarioId, idTelefono, entrada.copy(dispositivoId = entrada.dispositivoId ?: contexto.dispositivoId.toString()), intentadoEn, null)
+        } catch (ex: ApiException) {
+            // La alerta de la cancelación todavía no llega (viene por la malla o por SMS): se reintenta.
+            if (ex.codigo == "NO_ENCONTRADO") return@ManejadorSync ResultadoManejo.Rechazado("NO_ENCONTRADO", "La alerta todavía no llega al servidor", temporal = true)
+            throw ex
+        }
+        ResultadoManejo.Aceptado(despues = if (cancelada) ({ dispersion.cancelada(alertaId) }) else null)
+    }
+
+    private fun validar(entrada: CancelacionEntrada): Map<String, String> = buildMap {
+        if (entrada.metodo !in METODOS) put("metodo", "Debe ser PIN o BIOMETRIA")
+        if (entrada.motivo != null && entrada.motivo !in MOTIVOS) put("motivo", "Motivo desconocido")
+    }
+
+    /** Guarda el intento en la transacción [conn]. Regresa el id de la alerta en el servidor y si quedó cancelada. */
+    private fun registrarEn(
+        conn: Connection, usuarioId: UUID, idTelefono: UUID, entrada: CancelacionEntrada, intentadoEn: Instant, ip: String?,
+    ): Pair<UUID, Boolean> {
+        var alertaId: UUID
+        val cancelada = run {
             // Si la alerta llegó antes por la malla o por SMS, en el servidor tiene otro UUID con el mismo id corto.
             alertaId = AlertasRecibidas.delTelefono(conn, usuarioId, idTelefono) ?: throw noEncontrada()
             val (dueno, estado) = conn.consultarUno(
@@ -62,7 +103,7 @@ class CancelacionServicio(private val dataSource: DataSource, private val disper
                 "SELECT 1 FROM intento_cancelacion WHERE alerta_id = ? AND intentado_en = ? AND exitoso = ?",
                 alertaId, intentadoEn, entrada.exitoso,
             ) { true } ?: false
-            if (repetido) return@transaccion false
+            if (repetido) return@run false
 
             // Solo se acepta un teléfono de la misma persona.
             val dispositivo = entrada.dispositivoId?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.takeIf { d ->
@@ -109,8 +150,7 @@ class CancelacionServicio(private val dataSource: DataSource, private val disper
                 }
             }
         }
-        // Avisos, unidades y enlace, después del commit (como pide Dispersion).
-        if (cancelada) dispersion.cancelada(alertaId)
+        return alertaId to cancelada
     }
 
     /** La hora del teléfono; si no llega, es inválida o es del futuro, ahora. Se guarda al milisegundo. */

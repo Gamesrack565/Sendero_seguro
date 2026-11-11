@@ -25,7 +25,14 @@ Cada ruta del YAML trae `x-proceso`, que indica el proceso al que pertenece seg�
 | `/enlace/{token}`, `/dispositivos/{id}/push`, `/pasarela/smsgate`, `/pasarela/sms/*` | P5 y P16 |
 | `/historial`, `/usuarios/{id}/historial`, `/alertas/{id}/timeline`, `/bitacora*`, `/estadisticas*` | P13 |
 | `POST /alertas`, `POST /malla/relevos` | P4 (registro de la alerta, también la que llega por la malla) |
-| `POST /alertas/{id}/ubicaciones` | P6 (ubicación en vivo de la alerta activa; también por el lote, tipo `UBICACION`) |
+| `POST /alertas/{id}/ubicaciones` | P6. Viene como propuesta, para que la consola y la app tengan una forma de referencia. |
+| `/usuarios`, `/usuarios/{id}/perfil`, `/usuarios/{id}/estado` | Administración de cuentas (W-09, CU-07) |
+| `/corporaciones*`, `/unidades*` (y `/unidades/mia` del operador) | Corporaciones, unidades, operadores y turno (W-08, CU-10) |
+| `/catalogo`, `/catalogo/versiones*` | P3 (catálogo para la app y edición, W-06, W-07) |
+| `/trayectos*` | P11 |
+| `/reportes*`, `/moderacion/reportes*` | P9 |
+| `/feed`, `/mapa-calor*` | P10 |
+| `/rutas/segura`, `/grafo`, `/mapas/*`, `/puntos-interes`, `/zonas` | P12 |
 
 **Dispersión.** La plataforma ofrece esta interfaz de Kotlin, que se llama después de guardar una alerta nueva:
 
@@ -49,12 +56,13 @@ fun interface RegistroAlertasSms {
 }
 ```
 
-**Sincronización.** `/sync/lote` recibe la cola del teléfono y la ordena por prioridad: `ALERTA`, `ACUSE`, `UBICACION`, `CANCELACION`, `REPORTE`, `TRAYECTO` y `CHECKIN`. Cada tipo se entrega, en su propia transacción, al manejador que se registre en la plataforma para ese tipo. El manejador tiene que ser idempotente, porque el teléfono puede reenviar. Una `ALERTA` que ya existe (por internet, SMS o un lote anterior) sale `DUPLICADO` sin llegar al manejador, y una nueva que se acepta la despacha la plataforma.
+**Sincronización.** `/sync/lote` recibe la cola del teléfono y la ordena por prioridad: `ALERTA`, `ACUSE`, `UBICACION`, `CANCELACION`, `REPORTE`, `TRAYECTO` y `CHECKIN`. Cada tipo se entrega, en su propia transacción, al manejador que se registre en la plataforma para ese tipo. El manejador tiene que ser idempotente, porque el teléfono puede reenviar. Una `ALERTA` que ya existe (por internet, SMS o un lote anterior) sale `DUPLICADO` sin llegar al manejador, y una nueva que se acepta la despacha la plataforma. Si una `ALERTA` del lote trae `trayectoId`, ese `TRAYECTO` del mismo lote se procesa antes que ella.
 
 ```kotlin
 fun interface ManejadorSync {
     fun procesar(conn: Connection, contexto: ContextoSync, elemento: ElementoSync): ResultadoManejo
-    // ResultadoManejo: Aceptado(referencia, despachar), Duplicado(referencia) o Rechazado(codigo, mensaje, temporal)
+    // ResultadoManejo: Aceptado(referencia, despachar, despues), Duplicado(referencia) o Rechazado(codigo, mensaje, temporal)
+    // `despues` corre al confirmar la transacción, por ejemplo para avisar a la unidad de una cancelación.
 }
 ```
 

@@ -178,17 +178,22 @@ class CuentasTest : PruebaConBaseDatos() {
     }
 
     @Test
-    fun `operadores y administradores no entran por la app pero si por la consola`() = testApplication {
+    fun `el administrador no entra por la app pero si por la consola, y el operador por las dos`() = testApplication {
         montar()
-        val app = client.login("5510000011", "sendero123")
+        val app = client.login("5510000003", "sendero123")
         assertEquals(HttpStatusCode.Forbidden, app.status)
         val cuerpo = app.cuerpo()
         assertEquals("PERFIL_NO_PERMITIDO", cuerpo.texto("codigo"))
-        assertEquals("OPERADOR", cuerpo["detalle"]!!.jsonObject.texto("rol"))
+        assertEquals("ADMINISTRADOR", cuerpo["detalle"]!!.jsonObject.texto("rol"))
 
-        val consola = client.login("5510000011", "sendero123", dispositivo = null)
+        val consola = client.login("5510000003", "sendero123", dispositivo = null)
         assertEquals(HttpStatusCode.OK, consola.status)
-        assertEquals("OPERADOR", consola.cuerpo()["usuario"]!!.jsonObject.texto("rol"))
+        assertEquals("ADMINISTRADOR", consola.cuerpo()["usuario"]!!.jsonObject.texto("rol"))
+
+        // Modo operador (A-14): el operador en campo usa la app para recibir alertas por la malla.
+        val operadorApp = client.login("5510000011", "sendero123")
+        assertEquals(HttpStatusCode.OK, operadorApp.status, operadorApp.bodyAsText())
+        assertEquals(HttpStatusCode.OK, client.login("5510000011", "sendero123", dispositivo = null).status)
     }
 
     @Test

@@ -1,6 +1,6 @@
 # Sendero Seguro · Backend en la nube
 
-Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas. También tiene las rutas de la nube del Módulo 1: cuentas (P1), red de apoyo (P2) y cancelación de alertas (P8).
+Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas. También tiene las rutas de la nube del Módulo 1: cuentas (P1), red de apoyo (P2) y cancelación de alertas (P8); la administración de cuentas, corporaciones, unidades y operadores; el catálogo de incidentes (P3); los trayectos (P11), y el lado del servidor del Módulo 3: reportes y moderación (P9), feed y mapa de calor (P10) y ruta segura con mapas offline (P12).
 
 Con esto ya puedes:
 - usar el servidor que ya está en la nube (Azure);
@@ -8,6 +8,8 @@ Con esto ya puedes:
 - ver qué rutas tiene la API y qué JSON reciben y devuelven;
 - ver qué ofrece la plataforma (dispersión, avisos, bitácora, SMS) y cómo se usa;
 - crear las tablas locales del teléfono en Room.
+
+El estado de todo el proyecto y la documentación de la app (Módulos 1 y 2) están en el [README de la raíz](../../README.md).
 
 ## Empieza aquí
 
@@ -18,6 +20,10 @@ Con esto ya puedes:
 | Correr el servidor en tu compu | [Correr el servidor en local](#correr-el-servidor-en-local) y [Datos y rutas de prueba](#datos-y-rutas-de-prueba) |
 | Conectar la app de identidad (registro, login, contactos, círculo, cancelación) | [Cuentas, red de apoyo y cancelación](#cuentas-red-de-apoyo-y-cancelación) |
 | Mandar una alerta desde la app | [Registro de alertas](#registro-de-alertas) |
+| Dar de alta Administradores, unidades y operadores | [Administración](#administración) |
+| Editar los tipos de incidente y sus reglas | [Catálogo](#catálogo) |
+| Guardar una caminata segura en el servidor | [Trayectos](#trayectos) |
+| Reportes, moderación, feed, mapa de calor o ruta segura | [Comunidad: reportes, mapa de calor y ruta segura](#comunidad-reportes-mapa-de-calor-y-ruta-segura) |
 | Usar algo de la plataforma desde otra parte | [Puntos de conexión de la plataforma](#puntos-de-conexión-de-la-plataforma) |
 | Saber qué JSON manda y recibe cada ruta | [Ver el contrato de la API](#ver-el-contrato-de-la-api) y `docs/api/README.md` |
 | Arreglar un error al correr o al probar | [Errores comunes](#errores-comunes) |
@@ -31,7 +37,7 @@ Lo que hace el servidor con una alerta, paso por paso. Todo esto ya está implem
 2. **Se despacha.** El servidor busca la regla del tipo de incidente, elige la unidad disponible más cercana de la corporación que toca, se la asigna y arranca el plazo de acuse.
 3. **Se avisa.** El operador de esa unidad recibe un push prioritario y los demás operadores de la corporación uno informativo. Al mismo tiempo, la red de apoyo de la persona (contactos de confianza y círculo) recibe un push o un SMS con el enlace de ubicación.
 4. **La consola lo ve en vivo.** Por WebSocket llegan la alerta nueva, su ubicación y cada cambio. La red de apoyo sigue la ubicación con su enlace, sin cuenta.
-5. **Acuse o escalamiento.** Si el operador acusa a tiempo, se detiene el plazo. Si no, cada 5 segundos el servidor revisa los plazos vencidos y manda la alerta al siguiente nivel de su regla (otra corporación, otro operador o el coordinador del círculo), y avisa a los Administradores.
+5. **Acuse o escalamiento.** Si el operador acusa a tiempo, se detiene el plazo. Sin señal, el teléfono del operador guarda el acuse y lo manda en `/sync/lote` al volver internet, con la hora en que lo dio. Si no, cada 5 segundos el servidor revisa los plazos vencidos y manda la alerta al siguiente nivel de su regla (otra corporación, otro operador o el coordinador del círculo), y avisa a los Administradores.
 6. **Atención y cierre.** El operador la pasa a `EN_ATENCION`, `ATENDIDA` y `CERRADA`. La persona recibe un aviso en cada paso; al cerrar se liberan las unidades, se apaga el enlace y la red de apoyo recibe el aviso de cierre. Si la persona cancela, pasa lo mismo, salvo con el PIN de coacción, donde la alerta sigue activa en silencio.
 7. **Queda el registro.** Cada paso queda en la historia de la alerta y en la bitácora encadenada. De ahí salen la línea de tiempo, el historial de cada persona y las estadísticas del tablero.
 
@@ -54,16 +60,22 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/archivos/        Fotos y audios de reportes y mapas offline: subida, descarga y almacén (P15)
   src/main/kotlin/…/pasarela/        Webhooks de Twilio y del celular pasarela: SMS de contingencia SS1 y estado de los SMS (P16)
   src/main/kotlin/…/sincronizacion/  Recepción del lote offline del teléfono, /sync/lote (P14)
+  src/main/kotlin/…/administracion/  Cuentas y perfiles, corporaciones, unidades, operadores y turno (W-08, W-09)
+  src/main/kotlin/…/catalogo/        Catálogo vigente y edición, validación y publicación de versiones (P3)
+  src/main/kotlin/…/trayectos/       Trayectos y check-ins de la caminata segura (P11)
+  src/main/kotlin/…/comunidad/       Reportes, moderación, feed, mapa de calor, ruta segura y mapas offline (P9, P10, P12)
   src/main/kotlin/…/desarrollo/      Rutas de prueba (solo en local)
   src/main/resources/
     application.conf                 Configuración (puerto, base de datos, JWT)
     db/migration/V1__esquema_inicial.sql   Base de datos del servidor (PostgreSQL 16): 53 tablas, vistas, triggers y datos iniciales
     db/migration/V2__indices_avisos.sql    Índices para el envío de avisos
+    db/migration/V3__comunidad_y_mapas.sql Parámetros del mapa de calor e índices de reportes y del grafo
     db/datos-prueba/R__datos_prueba.sql    Usuarios, unidades y operadores de prueba (solo en local)
 db/
   sendero_seguro_local_sqlite.sql    Base de datos local del teléfono (SQLite): 16 tablas
 docs/
-  README.md                          Esta guía
+  modulo4/README.md                  Esta guía
+  modulo1/, modulo2/                 Documentación de la app (Módulos 1 y 2)
   api/openapi.yaml                   Contrato de la API (rutas, cuerpos y respuestas)
   api/README.md                      WebSocket, formato del SMS de contingencia y conexión con la plataforma
 docker-compose.yml                   PostgreSQL, Redis y almacén S3 (RustFS) para desarrollo
@@ -125,7 +137,9 @@ https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v
 - **Es igual que en local, con estas diferencias:** no hay rutas `/dev` ni cuentas de prueba (no hay `POST /dev/token`; las cuentas se crean con `POST /auth/registro`); los avisos salen de verdad (push por Firebase y SMS por el celular pasarela); y el WebSocket va con `wss://` en vez de `ws://`.
 - **Las pruebas del día a día se hacen en local**, no en la nube: en la nube cada alerta manda SMS y push reales.
 - **Prueba completa en la nube:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1`. Crea cuentas de prueba y recorre cuentas, alertas por internet, ubicación en vivo, cancelación, PIN de coacción, relevo de la malla, cola sin señal, historial, archivos y, si se le da la contraseña de la base, la consola (lista, detalle, línea de tiempo, estadísticas, bitácora y tiempo real). Al final cancela las alertas y da de baja las cuentas. Si se le da un número, ese número recibe los SMS de la red de apoyo de la primera alerta. `pruebas-nube\probar-cuentas.ps1` prueba solo las cuentas.
-- **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, Firebase, SMS y el token SAS del almacén de archivos). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
+- **Prueba de la administración y la comunidad:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-unidades-y-comunidad.ps1`. Pide la contraseña de la base. Crea una unidad de prueba y un operador, y recorre usuarios, turno, acuse y atención de punta a punta, el acuse y la cancelación por la cola sin señal, el catálogo (con un borrador que descarta), trayectos, reportes, moderación, identidad protegida, feed, mapa de calor, ruta segura y mapas. Al final da de baja la unidad y las cuentas y retira los reportes.
+- **Primer Administrador:** `pruebas-nube\crear-administrador.ps1` (ver [Administración](#administración)).
+- **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, autor de los reportes anónimos, Firebase, SMS y el token SAS del almacén de archivos). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
 - **La base de la nube es solo del servidor en la nube.** Para probar en local se usa la base de Docker.
 - **Respaldos.** Azure Database for PostgreSQL hace respaldos automáticos de la base de la nube (7 días por defecto) y permite restaurarla a un momento anterior desde el portal de Azure.
 
@@ -338,9 +352,72 @@ Necesitan `Authorization: Bearer <JWT>`. En local el token sale de `POST /api/v1
 
 Al emisor se le avisa del acuse, de cada cambio de estado y del cierre, salvo que haya cancelado con el PIN de coacción.
 
+## Administración
+
+Rutas de la consola para cuentas, corporaciones y unidades (W-08, W-09, CU-07 y CU-10). Todas necesitan un token de Administrador, salvo `/unidades/mia`, que es del Operador. Cada cambio queda en la bitácora.
+
+**Primer Administrador.** En la nube no hay ninguno al principio. Se registra una cuenta desde la app (que sea solo para la consola) y se corre `pruebas-nube\crear-administrador.ps1`, que pide su matrícula y la contraseña de la base. Desde ese momento esa cuenta entra solo por la consola (`POST /auth/login` sin `dispositivo`). Los siguientes Administradores ya se dan de alta con `PATCH /usuarios/{id}/perfil`.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /usuarios?buscar=&rol=` | Busca por nombre, matrícula o teléfono (3 caracteres o más) o por rol. |
+| `PATCH /usuarios/{id}/perfil` | Cambia el perfil (`INTEGRANTE`, `COORDINADOR`, `OPERADOR`, `ADMINISTRADOR`) con un `motivo` de 10 caracteres o más. `OPERADOR` necesita `unidadId`. Cierra las sesiones de esa cuenta. Sobre la propia cuenta responde `409 PROPIA_CUENTA`. |
+| `PATCH /usuarios/{id}/estado` | `ACTIVA` (desbloquea) o `SUSPENDIDA` (cierra sus sesiones), con `motivo`. |
+| `GET`, `POST /corporaciones`, `PATCH /corporaciones/{id}` | Alta, edición y desactivación. `tipo`: `SEGURIDAD_ESCOLAR`, `POLICIA`, `BOMBEROS`, `ERUM` u `OTRA`. `canalCodigo` en mayúsculas y único (`SEG_ESCOLAR`, `SSC_C5`…). |
+| `GET`, `POST /unidades`, `GET`, `PATCH /unidades/{id}` | Alta y edición. `tipos` son códigos activos del catálogo publicado. `activa: false` es la baja: la unidad queda `FUERA_DE_SERVICIO`, sus operadores se desactivan y, si está ocupada, responde `409 UNIDAD_OCUPADA`. |
+| `PUT /unidades/{id}/operadores` | Reemplaza la lista de operadores de la unidad. |
+| `GET`, `PATCH /unidades/mia` | El Operador ve su unidad, abre turno (`DISPONIBLE`) o lo cierra (`FUERA_DE_SERVICIO`) y manda la ubicación de la unidad. Con una alerta asignada no se cambia el estado (`409 UNIDAD_OCUPADA`). |
+
+El Operador entra por la app (modo operador sin señal, A-14) y por la consola. El Administrador solo por la consola.
+
+## Catálogo
+
+El catálogo de tipos de incidente, sus reglas de canalización y la cadena de escalamiento se editan por versiones (CU-08, CU-09). La app lee la vigente y la consola la edita.
+
+- `GET /catalogo` no pide sesión. Con `?version=N` igual a la vigente responde `304`, así la app solo descarga cuando cambia. `?aplicaA=REPORTE` filtra.
+- `POST /catalogo/versiones` abre un borrador con la copia de la versión publicada. Solo hay uno en edición a la vez (`409 EDICION_ABIERTA`).
+- `PUT /catalogo/versiones/{n}/tipos/{codigo}` crea o edita un tipo. Un código nuevo es un tipo nuevo. La genérica no lleva categoría, solo aplica a alertas y no se desactiva.
+- `PUT /catalogo/versiones/{n}/reglas/{codigo}` define la corporación destino, el tiempo de acuse (30 a 600 s) y de 1 a 10 pasos de escalamiento sin destinos repetidos.
+- `POST /catalogo/versiones/{n}/validar` revisa la versión (A-08). Errores: sin genérica, tipo de alerta sin regla, regla sin escalamiento, corporación inactiva. Advertencia: corporación sin unidades. Sin errores pasa a `EN_VALIDACION`.
+- `POST /catalogo/versiones/{n}/publicar` la publica y la anterior queda `REEMPLAZADA`. Con errores responde `409 CATALOGO_INVALIDO`. `DELETE /catalogo/versiones/{n}` descarta el borrador.
+- Cada alerta guarda la versión con la que se despachó, así que publicar no cambia las alertas que ya van en curso.
+
+## Trayectos
+
+La caminata segura (P7) se calcula y se vigila en el teléfono; el servidor guarda el trayecto (P11) para el historial y para la red de apoyo.
+
+- `POST /trayectos` guarda el inicio, con el `id` del teléfono (un reenvío responde `200`). Con `compartir: true` la red de apoyo con cuenta recibe un push `TRAYECTO_COMPARTIDO`.
+- `PATCH /trayectos/{id}` manda la última ubicación (solo avanza) o lo termina (`FINALIZADO` o `CANCELADO`). Un trayecto terminado no cambia (`409`).
+- `POST /trayectos/{id}/checkins` guarda cada check-in con `esperadoEn` y, si ya se confirmó, `confirmadoEn`.
+- `GET /trayectos/{id}` lo ve su dueño y su red de apoyo con cuenta.
+- Sin señal van como `TRAYECTO` y `CHECKIN` en `/sync/lote`. Si una alerta de la caminata trae `trayectoId`, el trayecto del mismo lote se guarda antes que ella.
+
+## Comunidad: reportes, mapa de calor y ruta segura
+
+El lado del servidor del Módulo 3 (P9, P10 y P12).
+
+**Reportes (P9).** `POST /reportes` recibe el reporte con el `id` del teléfono. El tipo tiene que aplicar a reportes, la descripción va de 10 a 2000 caracteres y las evidencias (hasta 3) se suben antes con `POST /archivos/evidencia`. Sin señal va como `REPORTE` en `/sync/lote`. Todo reporte queda `PENDIENTE` hasta que se modera. `GET /reportes/mios` muestra los propios con nombre.
+
+**Reporte anónimo.** El autor se guarda cifrado con AES-256-GCM y la llave `REPORTES_LLAVE_AUTOR`, y la bitácora no guarda ni la cuenta ni la IP. En la consola sale como «Anónimo». Para verlo, `POST /reportes/{id}/identidad` pide una justificación de 20 caracteres o más, que queda en la bitácora (`CONSULTAR_IDENTIDAD_PROTEGIDA`). Si la llave cambia, los autores de los anónimos que ya existen ya no se pueden leer, así que se guarda con cuidado.
+
+**Moderación.** `GET /moderacion/reportes` es la cola (los `PENDIENTE` primero, del más viejo). `POST /reportes/{id}/decision`:
+- `PUBLICAR`: el reporte sale en el feed con la ubicación del centro de su celda (geohash de 7 caracteres, unos 150 m), nunca la exacta. Con `ocultaDatosPersonales` se quitan teléfonos y correos de la descripción. `unidoAId` lo une a otro reporte publicado.
+- `RECHAZAR` (con motivo): se avisa al autor, también si es anónimo.
+- `RETIRAR` (con motivo): un publicado deja de salir.
+
+**Feed (P10).** `GET /feed` trae los publicados, del más nuevo al más viejo. Filtros: tipo, categoría, días, zona y radio alrededor de una ubicación (`latitud`, `longitud`, `radioM`). Se pagina con `siguiente`.
+
+**Mapa de calor (P10).** El servidor agrupa los reportes publicados de los últimos 7 y 30 días con DBSCAN (`dbscan_eps_m` = 100 m, `dbscan_min_puntos` = 3), en general y por tipo. El nivel de cada zona sale de sumar el peso de riesgo de sus reportes (del catálogo): `MEDIO` desde `riesgo_umbral_medio` (4) y `ALTO` desde `riesgo_umbral_alto` (8). La capa se genera cada `MAPA_CALOR_REVISION_HORAS` (6), unos segundos después de cada publicación o retiro, y a mano con `POST /mapa-calor/generar`. `GET /mapa-calor?periodo=30` la entrega (con `?version=N` responde `304` si no cambió) y `GET /mapa-calor/zonas/{id}` dice qué tipos la forman. Es información orientativa con los reportes publicados.
+
+**Ruta segura (P12).** `POST /rutas/segura` calcula con A* la ruta más corta y la segura sobre el grafo peatonal. En la segura cada tramo pesa su largo × (1 + α·riesgo), con α = `riesgo_alfa` (0.35), y el riesgo del tramo sale de las zonas de 30 días (ALTO 1, MEDIO 0.6, BAJO 0.3). La respuesta trae las dos rutas, su distancia, su tiempo a pie, las zonas de riesgo por las que pasa la más corta y una explicación. Si el origen o el destino están a más de 400 m del grafo responde `422 FUERA_DE_AREA`.
+
+**Grafo peatonal.** Se carga con `POST /grafo` (Administrador): nodos y tramos de OpenStreetMap ya recortados a la zona, por partes. Si un nodo o tramo ya existe se actualiza. `GET /grafo?minLatitud=&minLongitud=&maxLatitud=&maxLongitud=` entrega el grafo de una caja (lados menores a 0.2°) con el riesgo de cada tramo, para que el teléfono calcule la ruta sin señal.
+
+**Mapas offline, puntos de interés y zonas.** `GET /mapas/version` da las versiones vigentes de la capa de riesgo, del catálogo y de cada paquete, para que la app sepa qué descargar. `POST /mapas/paquetes` publica un paquete subido con `POST /archivos/mapa`, y la versión anterior de esa región deja de ser vigente. `GET`, `POST /puntos-interes` (casetas, botones de emergencia, luminarias) y `GET`, `POST /zonas` (las zonas que usan el feed y las estadísticas). Las altas son del Administrador.
+
 ## Tiempo real
 
-Hay dos WebSocket. Sus mensajes tienen la forma `{ "tipo", "ts", "datos" }` y están en `api/README.md`.
+Hay dos WebSocket. Sus mensajes tienen la forma `{ "tipo", "ts", "datos" }` y están en `docs/api/README.md`.
 
 | Ruta | Quién | Qué recibe |
 |---|---|---|
@@ -426,7 +503,17 @@ manejadoresSync[TipoSync.REPORTE] = ManejadorSync { conn, contexto, elemento ->
 }
 ```
 
-Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. Las `ALERTA` las guarda `RegistroAlertas.manejadorSync`, con el mismo cuerpo que `POST /alertas`. Las `UBICACION` las guarda `UbicacionesAlerta.manejadorSync`, con `datos = { alertaId, lecturas }`; si la alerta todavía no está registrada sale `RECHAZADO` con `temporal: true`, y si ya terminó, con `temporal: false`.
+Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. `Aceptado` también puede traer `despues`, que corre cuando la transacción ya se confirmó (por ejemplo, avisar a la unidad de una cancelación). Lo que guarda cada tipo:
+
+| Tipo | `datos` | Manejador |
+|---|---|---|
+| `ALERTA` | El mismo cuerpo que `POST /alertas` | `RegistroAlertas.manejadorSync` |
+| `UBICACION` | `{ alertaId, lecturas }`. Si la alerta todavía no llega sale `temporal: true`; si ya terminó, `temporal: false` | `UbicacionesAlerta.manejadorSync` |
+| `ACUSE` | `{ idCortoAlerta, idCortoUsuario, activadaEn, acusadaEn, alertaId? }`, solo de un Operador con unidad activa. Si su unidad está asignada es el acuse normal; si la alerta no tiene acuse y la unidad está libre, la unidad la toma; si no, queda como apoyo. La hora del acuse se ajusta entre la activación y la del servidor | `AcusesSinSenal.manejadorSync` |
+| `CANCELACION` | El cuerpo de `POST /alertas/{id}/cancelaciones` más `alertaId` | `CancelacionServicio.manejadorSync` |
+| `REPORTE` | El cuerpo de `POST /reportes` | `ReportesServicio.manejadorSync` |
+| `TRAYECTO` | El cuerpo de `POST /trayectos`; puede traer `estado`, `finalizadoEn` y la última ubicación si terminó sin señal | `TrayectosServicio.manejadorTrayecto` |
+| `CHECKIN` | `{ trayectoId, esperadoEn, confirmadoEn? }`. Si el trayecto todavía no llega sale `temporal: true` | `TrayectosServicio.manejadorCheckin` |
 
 ## SMS de contingencia
 
@@ -567,10 +654,12 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `ALMACEN_AZURE_SAS` | Con `azure`: token SAS del contenedor, con permisos de leer, crear y escribir. Es secreto. | vacío |
 | `ALMACEN_MAX_EVIDENCIA_MB` / `ALMACEN_MAX_MAPA_MB` | Tamaño máximo de una foto o audio y de un paquete de mapas | `10` / `200` |
 | `RETENCION_TRAYECTO_DIAS` / `RETENCION_REVISION_HORAS` | Días que se guarda un trayecto terminado sin alerta, y cada cuántas horas se revisa | `30` / `6` |
+| `REPORTES_LLAVE_AUTOR` | Llave para cifrar al autor de los reportes anónimos. Si cambia, los autores ya guardados no se pueden leer. | Valor de desarrollo. En la nube es obligatorio cambiarla. |
+| `MAPA_CALOR_REVISION_HORAS` | Cada cuántas horas se genera la capa del mapa de calor | `6` |
 
 Para la nube se arma un solo archivo con `.\gradlew.bat :server:buildFatJar` (en Linux o Mac, `./gradlew`). Queda en `server/build/libs/sendero-seguro-server.jar` y se corre con `java -jar`.
 
-Con `DB_DATOS_PRUEBA=false`, el servidor no arranca si `JWT_SECRETO` o `ENLACE_SECRETO` tienen el valor de desarrollo o menos de 32 caracteres, y el log dice cuál falta. Se puede generar una llave con `openssl rand -hex 32`. Con `DB_DATOS_PRUEBA=true`, el log avisa al arrancar que las rutas `/dev` están activas.
+Con `DB_DATOS_PRUEBA=false`, el servidor no arranca si `JWT_SECRETO`, `ENLACE_SECRETO` o `REPORTES_LLAVE_AUTOR` tienen el valor de desarrollo o menos de 32 caracteres, y el log dice cuál falta. Se puede generar una llave con `openssl rand -hex 32`. Con `DB_DATOS_PRUEBA=true`, el log avisa al arrancar que las rutas `/dev` están activas.
 
 ## Cambios a la base de datos
 
@@ -689,3 +778,10 @@ El detalle de cada punto está en `docs/api/README.md`.
 | PIN de coacción | PIN que parece cancelar la alerta pero la deja activa en silencio. |
 | Bitácora | Registro de auditoría encadenado con hash; no se puede cambiar ni borrar. |
 | Lote offline | Lo que el teléfono guardó sin internet y manda junto a `/sync/lote`. |
+| Catálogo | Los tipos de incidente con sus reglas y su escalamiento. Se edita por versiones; la app usa la publicada. |
+| Moderación | Revisar un reporte antes de que salga en el feed: publicarlo, rechazarlo o retirarlo. |
+| Identidad protegida | El autor de un reporte anónimo, guardado cifrado. Solo se ve con una justificación que queda en la bitácora. |
+| Celda (geohash) | Cuadro de unos 150 m que se usa como ubicación pública de un reporte. |
+| Capa de riesgo | Las zonas del mapa de calor de un momento, con su versión. |
+| Grafo peatonal | Las calles como nodos y tramos, para calcular rutas a pie. |
+| Turno | Cuando la unidad está `DISPONIBLE` para recibir alertas. |

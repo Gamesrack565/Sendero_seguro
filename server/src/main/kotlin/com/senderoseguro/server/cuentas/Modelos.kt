@@ -2,7 +2,7 @@ package com.senderoseguro.server.cuentas
 
 import kotlinx.serialization.Serializable
 
-// Contrato del Módulo 1 (P1): docs/modulo1_contrato_api.md, con los nombres en camelCase como el resto del servidor.
+// Contrato del Módulo 1 (P1): docs/modulo1/modulo1_contrato_api.md, con los nombres en camelCase como el resto del servidor.
 
 @Serializable
 data class AvisoPrivacidad(val id: Int, val version: String, val contenidoHash: String)

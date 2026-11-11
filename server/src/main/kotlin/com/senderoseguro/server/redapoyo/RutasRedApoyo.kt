@@ -17,7 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * P2 del Módulo 1 (`docs/modulo1_contrato_api.md`), todo con token:
+ * P2 del Módulo 1 (`docs/modulo1/modulo1_contrato_api.md`), todo con token:
  * - `GET contactos`, `PUT contactos/{id}`, `DELETE contactos/{id}`, `PUT contactos/orden`.
  * - `GET circulos/mio`, `POST circulos`, `POST circulos/unirse`, `POST circulos/{id}/codigo`,
  *   `GET circulos/{id}/miembros`, `DELETE circulos/{id}/miembros/{usuarioId}`, `POST circulos/{id}/retirarme`.

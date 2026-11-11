@@ -10,8 +10,12 @@ info:
     **Qué contiene:**
     - Las rutas de P5 Dispersión, P13 Auditoría, P14 Plataforma y P16 Pasarelas.
     - Las del Módulo 1 que guardan en la nube: P1 Cuentas, P2 Red de apoyo y P8 Cancelación.
-    - `POST /alertas`, `POST /malla/relevos` y `POST /alertas/{id}/ubicaciones` (P4 y P6
-      escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después del registro.
+    - Administración de cuentas, corporaciones, unidades y operadores (W-08, W-09) y el catálogo (P3, W-06, W-07).
+    - P11 Trayectos y el lado del servidor del Módulo 3: P9 Reportes y moderación, P10 Feed y mapa de calor,
+      P12 Ruta segura y mapas offline.
+    - `POST /alertas` y `POST /alertas/{id}/ubicaciones` como propuesta de referencia
+      (P4 y P6 escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después
+      del registro.
     - Los componentes comunes: errores, paginación y enumerados.
 
     Cada ruta lleva `x-proceso`.
@@ -27,8 +31,8 @@ info:
 servers:
   - url: http://localhost:8080/api/v1
     description: Local con docker-compose
-  - url: https://api.sendero-seguro.example/api/v1
-    description: Nube (dominio por definir)
+  - url: https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1
+    description: Nube (Azure App Service)
 
 tags:
   - name: Cuentas
@@ -47,6 +51,18 @@ tags:
     description: P13 · historial, timeline, bitácora, estadísticas y exportación
   - name: Archivos
     description: P15 · fotos y audios de los reportes y mapas offline, guardados en la nube
+  - name: Administración
+    description: W-08 y W-09 · cuentas y perfiles, corporaciones, unidades y operadores; turno del operador
+  - name: Catálogo
+    description: P3 · catálogo vigente para la app y edición, validación y publicación de versiones
+  - name: Trayectos
+    description: P11 · caminata segura y check-ins guardados en el servidor
+  - name: Reportes
+    description: P9 · reportes comunitarios, moderación, identidad protegida y feed
+  - name: Mapa de calor
+    description: P10 · zonas de riesgo con los reportes publicados
+  - name: Ruta segura
+    description: P12 · ruta segura, grafo peatonal, paquetes de mapa offline, puntos de interés y zonas
 
 security:
   - jwt: []
@@ -240,12 +256,8 @@ paths:
   /alertas/{id}/ubicaciones:
     post:
       tags: [Alertas]
-      summary: Agrega lecturas de ubicación de la alerta activa
-      description: |
-        Solo quien envió la alerta. Idempotente por (`capturadaEn`, `fuente`); sin `fuente`, GNSS. Si la alerta llegó
-        antes por SMS o por la malla, se encuentra por su id corto. Cada lectura nueva se reenvía por WebSocket a la
-        consola y al enlace. Lo juntado sin internet también entra por `/sync/lote` (tipo UBICACION,
-        `datos = { alertaId, lecturas }`).
+      summary: Agrega lecturas de ubicación (propuesta de referencia)
+      description: Idempotente por (`capturadaEn`, `fuente`). Cada lectura nueva se reenvía por WebSocket a la consola y al enlace.
       x-proceso: P6
       parameters:
         - $ref: '#/components/parameters/IdAlerta'
@@ -277,7 +289,7 @@ paths:
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '404': { $ref: '#/components/responses/NoEncontrado' }
         '409':
-          description: La alerta ya terminó (ATENDIDA, CERRADA, CANCELADA o EXPIRADA); código CONFLICTO
+          description: La alerta ya está cerrada o cancelada
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -612,7 +624,7 @@ paths:
                   mensajeId: { type: [integer, 'null'], format: int64 }
                   valido: { type: boolean }
                   alertaId: { type: [string, 'null'], format: uuid }
-        '204': { description: Estado actualizado, o evento ignorado }
+        '204': { description: 'Estado actualizado, o evento ignorado' }
         '400':
           description: El aviso no trae `event` y `payload`
           content:
@@ -884,8 +896,8 @@ paths:
       tags: [Cuentas]
       summary: Inicia sesión con teléfono (10 dígitos) o matrícula (CU-02)
       description: |
-        Sin `dispositivo` es la consola web; con `dispositivo` es la app, donde OPERADOR y ADMINISTRADOR no pueden
-        entrar (`403 PERFIL_NO_PERMITIDO`, con `detalle.rol`). Al 5.º intento fallido (`login_max_intentos`) la cuenta
+        Sin `dispositivo` es la consola web; con `dispositivo` es la app. El ADMINISTRADOR no entra por la app
+        (`403 PERFIL_NO_PERMITIDO`, con `detalle.rol`); el OPERADOR entra por las dos (modo operador sin señal, A-14). Al 5.º intento fallido (`login_max_intentos`) la cuenta
         queda bloqueada `login_bloqueo_minutos` (15).
       x-proceso: P1
       security: []
@@ -1224,6 +1236,702 @@ paths:
         '400': { $ref: '#/components/responses/Invalido' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ---------------------------------------------------------------- Administración (W-08, W-09)
+
+  /usuarios:
+    get:
+      tags: [Administración]
+      summary: Busca cuentas por nombre, matrícula o teléfono (W-09)
+      description: Solo Administrador. `buscar` necesita 3 caracteres o más, o bien el filtro `rol`.
+      x-proceso: P14
+      parameters:
+        - { name: buscar, in: query, schema: { type: string, minLength: 3 } }
+        - { name: rol, in: query, schema: { type: string, enum: [INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR] } }
+        - $ref: '#/components/parameters/Limite'
+      responses:
+        '200':
+          description: Cuentas encontradas
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/UsuarioAdmin' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /usuarios/{id}/perfil:
+    patch:
+      tags: [Administración]
+      summary: Cambia el perfil de una cuenta (CU-07)
+      description: |
+        Solo Administrador. `motivo` de 10 caracteres o más. OPERADOR necesita `unidadId`. Cierra las sesiones de la
+        cuenta y queda en la bitácora (`CAMBIAR_PERFIL`). Sobre la propia cuenta responde `409 PROPIA_CUENTA`.
+      x-proceso: P14
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CambioPerfil' } } }
+      responses:
+        '200': { description: Cuenta actualizada, content: { application/json: { schema: { $ref: '#/components/schemas/UsuarioAdmin' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { description: '`PROPIA_CUENTA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /usuarios/{id}/estado:
+    patch:
+      tags: [Administración]
+      summary: Desbloquea (ACTIVA) o suspende (SUSPENDIDA) una cuenta (W-09)
+      description: Solo Administrador. Suspender cierra sus sesiones.
+      x-proceso: P14
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CambioEstadoCuenta' } } }
+      responses:
+        '200': { description: Cuenta actualizada, content: { application/json: { schema: { $ref: '#/components/schemas/UsuarioAdmin' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /corporaciones:
+    get:
+      tags: [Administración]
+      summary: Corporaciones con su número de unidades (W-08)
+      description: Administrador u Operador.
+      x-proceso: P5
+      responses:
+        '200':
+          description: Corporaciones
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Corporacion' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+    post:
+      tags: [Administración]
+      summary: Da de alta una corporación (CU-10)
+      description: |
+        Solo Administrador. `tipo`: SEGURIDAD_ESCOLAR, POLICIA, BOMBEROS, ERUM u OTRA. `canalCodigo` en mayúsculas,
+        números o guion bajo (2 a 30), único.
+      x-proceso: P5
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CorporacionEntrada' } } }
+      responses:
+        '201': { description: Creada, content: { application/json: { schema: { $ref: '#/components/schemas/Corporacion' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /corporaciones/{id}:
+    patch:
+      tags: [Administración]
+      summary: Edita o desactiva una corporación (CU-10)
+      x-proceso: P5
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CorporacionCambio' } } }
+      responses:
+        '200': { description: Actualizada, content: { application/json: { schema: { $ref: '#/components/schemas/Corporacion' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /unidades:
+    get:
+      tags: [Administración]
+      summary: Unidades de atención (W-08)
+      x-proceso: P5
+      parameters:
+        - { name: corporacionId, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Unidades
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Unidad' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+    post:
+      tags: [Administración]
+      summary: Da de alta una unidad (CU-10)
+      description: Solo Administrador. `tipos` son códigos activos del catálogo publicado (al menos uno).
+      x-proceso: P5
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UnidadEntrada' } } }
+      responses:
+        '201': { description: Creada, content: { application/json: { schema: { $ref: '#/components/schemas/Unidad' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /unidades/{id}:
+    get:
+      tags: [Administración]
+      summary: Detalle de una unidad con sus operadores
+      x-proceso: P5
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Unidad, content: { application/json: { schema: { $ref: '#/components/schemas/Unidad' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    patch:
+      tags: [Administración]
+      summary: Edita una unidad o la da de baja (CU-10 2a)
+      description: |
+        `activa: false` es la baja: la unidad queda FUERA_DE_SERVICIO, sus operadores se desactivan y deja de
+        recibir asignaciones. Si está ASIGNADA o ATENDIENDO responde `409 UNIDAD_OCUPADA`.
+      x-proceso: P5
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UnidadCambio' } } }
+      responses:
+        '200': { description: Actualizada, content: { application/json: { schema: { $ref: '#/components/schemas/Unidad' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { description: '`UNIDAD_OCUPADA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /unidades/{id}/operadores:
+    put:
+      tags: [Administración]
+      summary: Reemplaza la lista de operadores de la unidad (CU-10)
+      description: Las cuentas de la lista quedan como OPERADOR de esta unidad; las que no vienen se desactivan.
+      x-proceso: P5
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operadores]
+              properties:
+                operadores: { type: array, items: { type: string, format: uuid } }
+      responses:
+        '200': { description: Unidad con sus operadores, content: { application/json: { schema: { $ref: '#/components/schemas/Unidad' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /unidades/mia:
+    get:
+      tags: [Administración]
+      summary: La unidad del operador (A-14)
+      description: Solo Operador. 404 si la cuenta no está vinculada a una unidad activa.
+      x-proceso: P5
+      responses:
+        '200': { description: Unidad, content: { application/json: { schema: { $ref: '#/components/schemas/Unidad' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    patch:
+      tags: [Administración]
+      summary: Abre o cierra el turno y manda la ubicación de la unidad
+      description: |
+        `estado`: DISPONIBLE (abre turno) o FUERA_DE_SERVICIO (cierra). Con una alerta ASIGNADA o ATENDIENDO no se
+        puede cambiar el estado (`409 UNIDAD_OCUPADA`), pero sí mandar la ubicación. Queda en la bitácora
+        (`CAMBIAR_TURNO_UNIDAD`).
+      x-proceso: P5
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TurnoCambio' } } }
+      responses:
+        '200': { description: Unidad, content: { application/json: { schema: { $ref: '#/components/schemas/Unidad' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { description: '`UNIDAD_OCUPADA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ---------------------------------------------------------------- Catálogo (W-06, W-07, A-08)
+
+  /catalogo:
+    get:
+      tags: [Catálogo]
+      summary: Catálogo vigente para la app
+      description: Sin token. Con `?version=N` igual a la vigente responde `304` sin cuerpo.
+      x-proceso: P3
+      security: []
+      parameters:
+        - { name: aplicaA, in: query, schema: { type: string, enum: [ALERTA, REPORTE, AMBOS] } }
+        - { name: version, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Catálogo vigente, content: { application/json: { schema: { $ref: '#/components/schemas/CatalogoVigente' } } } }
+        '304': { description: La app ya tiene la versión vigente }
+
+  /catalogo/versiones:
+    get:
+      tags: [Catálogo]
+      summary: Versiones del catálogo
+      description: Solo Administrador.
+      x-proceso: P3
+      responses:
+        '200':
+          description: Versiones
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/VersionCatalogo' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+    post:
+      tags: [Catálogo]
+      summary: Abre un borrador copiando la versión publicada (CU-08)
+      description: Solo hay una versión en edición a la vez (`409 EDICION_ABIERTA`).
+      x-proceso: P3
+      responses:
+        '201': { description: Borrador, content: { application/json: { schema: { $ref: '#/components/schemas/VersionCatalogoDetalle' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { description: '`EDICION_ABIERTA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /catalogo/versiones/{numero}:
+    parameters:
+      - { name: numero, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Catálogo]
+      summary: Tipos, reglas y problemas de una versión
+      x-proceso: P3
+      responses:
+        '200': { description: Versión, content: { application/json: { schema: { $ref: '#/components/schemas/VersionCatalogoDetalle' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    delete:
+      tags: [Catálogo]
+      summary: Descarta el borrador
+      x-proceso: P3
+      responses:
+        '204': { description: Descartado }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { description: '`VERSION_CERRADA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /catalogo/versiones/{numero}/tipos/{codigo}:
+    put:
+      tags: [Catálogo]
+      summary: Crea o edita un tipo en el borrador (W-06)
+      description: |
+        Si el código no existe se crea un tipo nuevo. La genérica no lleva categoría, solo aplica a ALERTA y no se
+        desactiva. Un tipo que solo aplica a REPORTE pierde su regla. Editar una versión EN_VALIDACION la regresa a
+        BORRADOR; una versión publicada o reemplazada responde `409 VERSION_CERRADA`.
+      x-proceso: P3
+      parameters:
+        - { name: numero, in: path, required: true, schema: { type: integer } }
+        - { name: codigo, in: path, required: true, schema: { type: string, pattern: '^[A-Z0-9_]{3,40}$' } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TipoEntrada' } } }
+      responses:
+        '200': { description: Versión actualizada, content: { application/json: { schema: { $ref: '#/components/schemas/VersionCatalogoDetalle' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { description: '`VERSION_CERRADA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /catalogo/versiones/{numero}/reglas/{codigo}:
+    put:
+      tags: [Catálogo]
+      summary: Define la regla de canalización y escalamiento de un tipo (W-07, CU-09)
+      description: |
+        `tiempoMaxAcuseSeg` entre 30 y 600. De 1 a 10 pasos, sin destinos repetidos (la corporación principal
+        cuenta). Un paso OPERADOR necesita una cuenta OPERADOR activa.
+      x-proceso: P3
+      parameters:
+        - { name: numero, in: path, required: true, schema: { type: integer } }
+        - { name: codigo, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReglaEntrada' } } }
+      responses:
+        '200': { description: Versión actualizada, content: { application/json: { schema: { $ref: '#/components/schemas/VersionCatalogoDetalle' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { description: '`VERSION_CERRADA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /catalogo/versiones/{numero}/validar:
+    post:
+      tags: [Catálogo]
+      summary: Valida la versión (A-08)
+      description: |
+        Errores: SIN_GENERICA, SIN_REGLA, SIN_ESCALAMIENTO, CANAL_INACTIVO, ESCALAMIENTO_INACTIVO. Advertencia:
+        CANAL_SIN_UNIDADES. Sin errores la versión pasa a EN_VALIDACION; con errores se queda en BORRADOR.
+      x-proceso: P3
+      parameters:
+        - { name: numero, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Resultado, content: { application/json: { schema: { $ref: '#/components/schemas/VersionCatalogoDetalle' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /catalogo/versiones/{numero}/publicar:
+    post:
+      tags: [Catálogo]
+      summary: Publica la versión; la anterior queda REEMPLAZADA (CU-08)
+      description: Con errores responde `409 CATALOGO_INVALIDO` con la lista en `detalle.errores`.
+      x-proceso: P3
+      parameters:
+        - { name: numero, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Publicada, content: { application/json: { schema: { $ref: '#/components/schemas/VersionCatalogoDetalle' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { description: '`CATALOGO_INVALIDO` o `VERSION_CERRADA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ---------------------------------------------------------------- Trayectos (P11)
+
+  /trayectos:
+    post:
+      tags: [Trayectos]
+      summary: Guarda el inicio de una caminata segura
+      description: |
+        El `id` lo genera el teléfono; un reenvío responde `200`. Con `compartir: true` se avisa por PUSH a la red de
+        apoyo que tiene cuenta (`TRAYECTO_COMPARTIDO`). Sin señal se manda como `TRAYECTO` en `/sync/lote`.
+      x-proceso: P11
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TrayectoEntrada' } } }
+      responses:
+        '201': { description: Creado, content: { application/json: { schema: { $ref: '#/components/schemas/Trayecto' } } } }
+        '200': { description: Ya existía, content: { application/json: { schema: { $ref: '#/components/schemas/Trayecto' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '409': { description: El id ya es de otra persona, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /trayectos/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Trayectos]
+      summary: Consulta un trayecto
+      description: Lo ve su dueño y quien está en su red de apoyo con cuenta.
+      x-proceso: P11
+      responses:
+        '200': { description: Trayecto, content: { application/json: { schema: { $ref: '#/components/schemas/Trayecto' } } } }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    patch:
+      tags: [Trayectos]
+      summary: Manda la última ubicación o termina el trayecto
+      description: |
+        La ubicación solo avanza (una más vieja se ignora). De EN_CURSO pasa a FINALIZADO o CANCELADO; un trayecto
+        terminado no cambia (`409 TRANSICION_INVALIDA`).
+      x-proceso: P11
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TrayectoCambio' } } }
+      responses:
+        '200': { description: Trayecto, content: { application/json: { schema: { $ref: '#/components/schemas/Trayecto' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /trayectos/{id}/checkins:
+    post:
+      tags: [Trayectos]
+      summary: Guarda un check-in (esperado y, si ya se confirmó, cuándo)
+      description: El mismo `esperadoEn` actualiza el check-in. Sin señal se manda como `CHECKIN` con `trayectoId`.
+      x-proceso: P11
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CheckinEntrada' } } }
+      responses:
+        '200': { description: Trayecto con sus check-ins, content: { application/json: { schema: { $ref: '#/components/schemas/Trayecto' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ---------------------------------------------------------------- Reportes y moderación (P9)
+
+  /reportes:
+    post:
+      tags: [Reportes]
+      summary: Levanta un reporte comunitario (CU-28, A-15)
+      description: |
+        El tipo tiene que aplicar a REPORTE o AMBOS. Descripción de 10 a 2000 caracteres; `creadoEn` de no más de
+        7 días. Evidencias: hasta `reporte_max_evidencias` (3), con la clave, el tamaño y el hash que regresó
+        `POST /archivos/evidencia`. Un reporte anónimo guarda al autor cifrado (AES-256-GCM con
+        `REPORTES_LLAVE_AUTOR`) y no guarda la IP. Queda PENDIENTE de moderación. Un reenvío responde `200`.
+        Sin señal se manda como `REPORTE` en `/sync/lote`.
+      x-proceso: P9
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReporteEntrada' } } }
+      responses:
+        '201': { description: Recibido, content: { application/json: { schema: { $ref: '#/components/schemas/ReporteRecibido' } } } }
+        '200': { description: Ya existía, content: { application/json: { schema: { $ref: '#/components/schemas/ReporteRecibido' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+
+  /reportes/mios:
+    get:
+      tags: [Reportes]
+      summary: Mis reportes con nombre y su estado (los anónimos no salen)
+      x-proceso: P9
+      responses:
+        '200':
+          description: Reportes
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ReportePropio' } } } }
+
+  /moderacion/reportes:
+    get:
+      tags: [Reportes]
+      summary: Cola de moderación (W-05)
+      description: Solo Administrador. Por defecto los PENDIENTE, del más viejo al más nuevo.
+      x-proceso: P9
+      parameters:
+        - { name: estado, in: query, schema: { type: string, enum: [PENDIENTE, PUBLICADO, RECHAZADO, RETIRADO] } }
+        - $ref: '#/components/parameters/Limite'
+      responses:
+        '200':
+          description: Reportes
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ReporteModeracion' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /moderacion/reportes/{id}:
+    get:
+      tags: [Reportes]
+      summary: Un reporte con su evidencia, su ubicación exacta y la pública
+      description: El autor de un anónimo sale como «Anónimo».
+      x-proceso: P9
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Reporte, content: { application/json: { schema: { $ref: '#/components/schemas/ReporteModeracion' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /reportes/{id}/decision:
+    post:
+      tags: [Reportes]
+      summary: Publica, rechaza o retira un reporte (CU-30)
+      description: |
+        PUBLICAR o RECHAZAR desde PENDIENTE; RETIRAR desde PUBLICADO. RECHAZAR y RETIRAR piden `motivo`.
+        Al publicar, la ubicación pública es el centro de la celda geohash de 7 caracteres (unos 150 m) y, con
+        `ocultaDatosPersonales`, se quitan teléfonos y correos de la descripción. `unidoAId` tiene que ser un
+        reporte publicado. Al rechazar se avisa al autor (también si es anónimo). Queda en la bitácora
+        (`MODERAR_REPORTE`) y el mapa de calor se recalcula.
+      x-proceso: P9
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DecisionEntrada' } } }
+      responses:
+        '200': { description: Reporte, content: { application/json: { schema: { $ref: '#/components/schemas/ReporteModeracion' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /reportes/{id}/identidad:
+    post:
+      tags: [Reportes]
+      summary: Consulta la identidad protegida del autor de un anónimo (CU-31)
+      description: |
+        Solo Administrador. `justificacion` de 20 a 1000 caracteres; queda en la bitácora
+        (`CONSULTAR_IDENTIDAD_PROTEGIDA`). Un reporte con nombre responde `409 NO_ES_ANONIMO`.
+      x-proceso: P9
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [justificacion], properties: { justificacion: { type: string, minLength: 20, maxLength: 1000 } } }
+      responses:
+        '200': { description: Autor, content: { application/json: { schema: { $ref: '#/components/schemas/IdentidadAutor' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { description: '`NO_ES_ANONIMO`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /feed:
+    get:
+      tags: [Reportes]
+      summary: Reportes publicados (A-16)
+      description: |
+        Del más nuevo al más viejo. Con `latitud` y `longitud` filtra por radio (`radioM`, 2000 por defecto) y trae la
+        distancia. Nunca trae al autor anónimo ni la ubicación exacta. `siguiente` es el cursor de la página que sigue.
+      x-proceso: P10
+      parameters:
+        - $ref: '#/components/parameters/FiltroTipo'
+        - { name: categoria, in: query, schema: { type: string, enum: [FISICO, SOCIAL, DIGITAL] } }
+        - { name: dias, in: query, schema: { type: integer, minimum: 1, maximum: 365 } }
+        - { name: latitud, in: query, schema: { type: number } }
+        - { name: longitud, in: query, schema: { type: number } }
+        - { name: radioM, in: query, schema: { type: number, minimum: 50, maximum: 50000 } }
+        - $ref: '#/components/parameters/FiltroZona'
+        - { name: siguiente, in: query, schema: { type: string } }
+        - { name: limite, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+      responses:
+        '200': { description: Página, content: { application/json: { schema: { $ref: '#/components/schemas/PaginaFeed' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+
+  # ---------------------------------------------------------------- Mapa de calor (P10, A-06)
+
+  /mapa-calor:
+    get:
+      tags: [Mapa de calor]
+      summary: Capa de zonas de riesgo vigente (A-17)
+      description: |
+        Zonas de reportes publicados agrupados con DBSCAN (`dbscan_eps_m`, `dbscan_min_puntos`). El nivel sale de la
+        suma de los pesos de riesgo del catálogo comparada con `riesgo_umbral_medio` y `riesgo_umbral_alto`. Con
+        `?version=N` igual a la vigente responde `304`. Sin ninguna capa generada responde `404 SIN_CAPA`.
+      x-proceso: P10
+      parameters:
+        - { name: periodo, in: query, schema: { type: integer, enum: [7, 30], default: 30 } }
+        - $ref: '#/components/parameters/FiltroTipo'
+        - { name: version, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Capa, content: { application/json: { schema: { $ref: '#/components/schemas/CapaRiesgo' } } } }
+        '304': { description: La app ya tiene la capa vigente }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /mapa-calor/zonas/{id}:
+    get:
+      tags: [Mapa de calor]
+      summary: Detalle de una zona con sus motivos
+      x-proceso: P10
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Zona, content: { application/json: { schema: { $ref: '#/components/schemas/ZonaDetalle' } } } }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /mapa-calor/generar:
+    post:
+      tags: [Mapa de calor]
+      summary: Genera una capa nueva en ese momento
+      description: |
+        Solo Administrador. El servidor también la genera cada `MAPA_CALOR_REVISION_HORAS` (6) y unos segundos
+        después de cada publicación o retiro. Recalcula el riesgo de los tramos del grafo.
+      x-proceso: P10
+      responses:
+        '200': { description: Capa generada, content: { application/json: { schema: { $ref: '#/components/schemas/GeneracionCapa' } } } }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  # ---------------------------------------------------------------- Ruta segura y mapas offline (P12)
+
+  /rutas/segura:
+    post:
+      tags: [Ruta segura]
+      summary: Calcula la ruta más corta y la ruta segura (A-07)
+      description: |
+        A* sobre el grafo peatonal. Peso de la ruta segura = largo × (1 + α·riesgo), con α = `riesgo_alfa`. El
+        origen y el destino tienen que estar a menos de 400 m de un nodo (`422 FUERA_DE_AREA`); sin camino responde
+        `422 SIN_RUTA`. Hasta 20 km.
+      x-proceso: P12
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SolicitudRuta' } } }
+      responses:
+        '200': { description: Rutas, content: { application/json: { schema: { $ref: '#/components/schemas/RutasSugeridas' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '422': { description: '`FUERA_DE_AREA` o `SIN_RUTA`', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /grafo:
+    get:
+      tags: [Ruta segura]
+      summary: Grafo de una caja para calcular rutas sin señal (CU-36)
+      description: Cada lado de la caja menor a 0.2°. Cada tramo trae su riesgo en la capa vigente.
+      x-proceso: P12
+      parameters:
+        - { name: minLatitud, in: query, required: true, schema: { type: number } }
+        - { name: minLongitud, in: query, required: true, schema: { type: number } }
+        - { name: maxLatitud, in: query, required: true, schema: { type: number } }
+        - { name: maxLongitud, in: query, required: true, schema: { type: number } }
+      responses:
+        '200': { description: Grafo, content: { application/json: { schema: { $ref: '#/components/schemas/Grafo' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+    post:
+      tags: [Ruta segura]
+      summary: Carga o actualiza nodos y tramos del grafo peatonal
+      description: |
+        Solo Administrador. Datos de OpenStreetMap ya recortados a la zona; se carga por partes. Si un nodo o tramo
+        ya existe se actualiza. Recalcula el riesgo de los tramos. Queda en la bitácora (`CARGAR_GRAFO_PEATONAL`).
+      x-proceso: P12
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/GrafoEntrada' } } }
+      responses:
+        '200': { description: Cargado, content: { application/json: { schema: { $ref: '#/components/schemas/GrafoCargado' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /mapas/version:
+    get:
+      tags: [Ruta segura]
+      summary: Versiones vigentes de la capa, el catálogo y los paquetes (CU-36 1a)
+      description: La app las compara con su caché para saber qué descargar.
+      x-proceso: P12
+      responses:
+        '200': { description: Versiones, content: { application/json: { schema: { $ref: '#/components/schemas/VersionesMapas' } } } }
+
+  /mapas/paquetes:
+    get:
+      tags: [Ruta segura]
+      summary: Paquetes de mapa offline vigentes
+      x-proceso: P12
+      responses:
+        '200':
+          description: Paquetes
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PaqueteMapa' } } } }
+    post:
+      tags: [Ruta segura]
+      summary: Publica un paquete de mapa; la versión anterior de la región deja de ser vigente
+      description: Solo Administrador. Primero se sube el archivo con `POST /archivos/mapa`.
+      x-proceso: P12
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PaqueteEntrada' } } }
+      responses:
+        '201': { description: Publicado, content: { application/json: { schema: { $ref: '#/components/schemas/PaqueteMapa' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /puntos-interes:
+    get:
+      tags: [Ruta segura]
+      summary: Puntos de interés (casetas, botones de emergencia, luminarias)
+      description: Con la caja completa filtra; sin caja trae todos.
+      x-proceso: P12
+      parameters:
+        - { name: minLatitud, in: query, schema: { type: number } }
+        - { name: minLongitud, in: query, schema: { type: number } }
+        - { name: maxLatitud, in: query, schema: { type: number } }
+        - { name: maxLongitud, in: query, schema: { type: number } }
+      responses:
+        '200':
+          description: Puntos
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PuntoInteres' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+    post:
+      tags: [Ruta segura]
+      summary: Da de alta un punto de interés
+      description: Solo Administrador.
+      x-proceso: P12
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PuntoInteresEntrada' } } }
+      responses:
+        '201': { description: Creado, content: { application/json: { schema: { $ref: '#/components/schemas/PuntoInteres' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+
+  /zonas:
+    get:
+      tags: [Ruta segura]
+      summary: Zonas geográficas (para filtros del feed y las estadísticas)
+      x-proceso: P12
+      responses:
+        '200':
+          description: Zonas
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ZonaGeografica' } } } }
+    post:
+      tags: [Ruta segura]
+      summary: Da de alta una zona geográfica
+      description: Solo Administrador.
+      x-proceso: P12
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ZonaGeograficaEntrada' } } }
+      responses:
+        '201': { description: Creada, content: { application/json: { schema: { $ref: '#/components/schemas/ZonaGeografica' } } } }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
+        '409': { $ref: '#/components/responses/Duplicado' }
 
 components:
   securitySchemes:
@@ -1614,8 +2322,19 @@ components:
         datos:
           type: object
           description: |
-            El mismo cuerpo que la ruta normal de ese tipo. Por ejemplo, para ALERTA es `AlertaNueva`;
-            para UBICACION es `{ alertaId, lecturas[] }`. Cada módulo documenta el suyo.
+            El mismo cuerpo que la ruta normal de ese tipo:
+            - ALERTA: `AlertaNueva`.
+            - UBICACION: `{ alertaId, lecturas[] }`.
+            - ACUSE (solo un OPERADOR con unidad activa, A-14): `{ idCortoAlerta, idCortoUsuario, activadaEn, acusadaEn,
+              alertaId? }`. `idCortoAlerta` son los primeros 8 hex del id de la alerta e `idCortoUsuario` los últimos 8
+              hex del id de la persona. Si la unidad está asignada es el acuse normal; si la alerta no tiene acuse y la
+              unidad está libre, la unidad toma la alerta; si no, queda como apoyo. `acusadaEn` se ajusta entre la
+              activación y la hora del servidor.
+            - CANCELACION: `Cancelacion` más `alertaId` (el id que el teléfono le dio a la alerta).
+            - REPORTE: `ReporteEntrada`.
+            - TRAYECTO: `TrayectoEntrada` (puede llegar ya terminado, con `estado` y `finalizadoEn`).
+            - CHECKIN: `CheckinEntrada` más `trayectoId`.
+            Si la alerta o el trayecto todavía no llegan, el elemento se rechaza con `temporal: true`.
           additionalProperties: true
 
     ResultadoLoteSync:
@@ -1846,3 +2565,641 @@ components:
         metodo: { type: string, enum: [PIN, BIOMETRIA] }
         exitoso: { type: boolean, description: false = el PIN no coincidió (posible coacción) }
         intentadoEn: { type: string, format: date-time, description: Hora del teléfono; si falta o es del futuro, la del servidor }
+
+    # ---------------------------------------------------------------- Administración
+
+    UsuarioAdmin:
+      type: object
+      required: [id, nombre, identificador, telefono, escuela, rol, estado]
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string }
+        identificador: { type: string, description: Matrícula o número de empleado }
+        telefono: { type: string }
+        escuela: { type: string }
+        rol: { type: string, enum: [INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR] }
+        estado: { type: string, enum: [ACTIVA, BLOQUEADA_TEMPORAL, SUSPENDIDA, BAJA_SOLICITADA, ELIMINADA] }
+        unidadId: { type: string, format: uuid }
+        unidad: { type: string }
+
+    CambioPerfil:
+      type: object
+      required: [rol, motivo]
+      properties:
+        rol: { type: string, enum: [INTEGRANTE, COORDINADOR, OPERADOR, ADMINISTRADOR] }
+        unidadId: { type: string, format: uuid, description: Obligatoria si el rol es OPERADOR }
+        motivo: { type: string, minLength: 10, description: Se guardan hasta 500 caracteres }
+
+    CambioEstadoCuenta:
+      type: object
+      required: [estado, motivo]
+      properties:
+        estado: { type: string, enum: [ACTIVA, SUSPENDIDA] }
+        motivo: { type: string, minLength: 10, description: Se guardan hasta 500 caracteres }
+
+    Corporacion:
+      type: object
+      required: [id, nombre, tipo, canalCodigo, activa, unidades]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        tipo: { type: string, enum: [SEGURIDAD_ESCOLAR, POLICIA, BOMBEROS, ERUM, OTRA] }
+        canalCodigo: { type: string }
+        activa: { type: boolean }
+        unidades: { type: integer }
+
+    CorporacionEntrada:
+      type: object
+      required: [nombre, tipo, canalCodigo]
+      properties:
+        nombre: { type: string }
+        tipo: { type: string, enum: [SEGURIDAD_ESCOLAR, POLICIA, BOMBEROS, ERUM, OTRA] }
+        canalCodigo: { type: string, pattern: '^[A-Z0-9_]{2,30}$' }
+
+    CorporacionCambio:
+      type: object
+      properties:
+        nombre: { type: string }
+        tipo: { type: string, enum: [SEGURIDAD_ESCOLAR, POLICIA, BOMBEROS, ERUM, OTRA] }
+        activa: { type: boolean }
+
+    Unidad:
+      type: object
+      required: [id, corporacionId, corporacion, nombre, estado, activa, tipos, operadores]
+      properties:
+        id: { type: string, format: uuid }
+        corporacionId: { type: integer }
+        corporacion: { type: string }
+        nombre: { type: string }
+        estado: { type: string, enum: [DISPONIBLE, ASIGNADA, ATENDIENDO, FUERA_DE_SERVICIO] }
+        activa: { type: boolean }
+        tipos: { type: array, items: { type: string }, description: Códigos del catálogo que atiende }
+        latitud: { type: number }
+        longitud: { type: number }
+        ubicacionEn: { type: string, format: date-time }
+        operadores:
+          type: array
+          items:
+            type: object
+            required: [usuarioId, nombre, activo]
+            properties:
+              usuarioId: { type: string, format: uuid }
+              nombre: { type: string }
+              activo: { type: boolean }
+
+    UnidadEntrada:
+      type: object
+      required: [corporacionId, nombre, tipos]
+      properties:
+        corporacionId: { type: integer }
+        nombre: { type: string }
+        tipos: { type: array, minItems: 1, items: { type: string } }
+
+    UnidadCambio:
+      type: object
+      properties:
+        nombre: { type: string }
+        tipos: { type: array, minItems: 1, items: { type: string } }
+        activa: { type: boolean, description: false = baja de la unidad }
+
+    TurnoCambio:
+      type: object
+      properties:
+        estado: { type: string, enum: [DISPONIBLE, FUERA_DE_SERVICIO] }
+        latitud: { type: number }
+        longitud: { type: number }
+
+    # ---------------------------------------------------------------- Catálogo
+
+    TipoCatalogo:
+      type: object
+      required: [id, codigo, nombre, prioridad, aplicaA, datosMinimos, esGenerica, activo, pesoRiesgo]
+      properties:
+        id: { type: integer }
+        codigo: { type: string }
+        nombre: { type: string }
+        categoria: { type: string, enum: [FISICO, SOCIAL, DIGITAL], description: null solo en la genérica }
+        prioridad: { type: integer, minimum: 1, maximum: 5, description: 1 = máxima }
+        aplicaA: { type: string, enum: [ALERTA, REPORTE, AMBOS] }
+        datosMinimos: { type: array, items: { type: string } }
+        esGenerica: { type: boolean }
+        activo: { type: boolean }
+        pesoRiesgo: { type: number, description: Peso en el mapa de calor }
+
+    CatalogoVigente:
+      type: object
+      required: [versionCatalogoId, numero, publicadaEn, tipos]
+      properties:
+        versionCatalogoId: { type: integer }
+        numero: { type: integer }
+        publicadaEn: { type: string, format: date-time }
+        tipos: { type: array, items: { $ref: '#/components/schemas/TipoCatalogo' } }
+
+    VersionCatalogo:
+      type: object
+      required: [id, numero, estado, creadaEn]
+      properties:
+        id: { type: integer }
+        numero: { type: integer }
+        estado: { type: string, enum: [BORRADOR, EN_VALIDACION, PUBLICADA, REEMPLAZADA] }
+        creadaEn: { type: string, format: date-time }
+        publicadaEn: { type: string, format: date-time }
+
+    PasoEscalamiento:
+      type: object
+      required: [orden, destinoTipo]
+      properties:
+        orden: { type: integer }
+        destinoTipo: { type: string, enum: [CORPORACION, OPERADOR, COORDINADOR_CIRCULO] }
+        corporacionId: { type: integer }
+        corporacion: { type: string }
+        operadorId: { type: string, format: uuid }
+
+    Problema:
+      type: object
+      required: [codigo, mensaje]
+      properties:
+        codigo: { type: string }
+        mensaje: { type: string }
+        tipo: { type: string, description: Código del tipo, si el problema es de uno }
+
+    VersionCatalogoDetalle:
+      type: object
+      required: [version, tipos, errores, advertencias]
+      properties:
+        version: { $ref: '#/components/schemas/VersionCatalogo' }
+        tipos:
+          type: array
+          items:
+            type: object
+            required: [tipo]
+            properties:
+              tipo: { $ref: '#/components/schemas/TipoCatalogo' }
+              regla:
+                type: object
+                required: [corporacionId, corporacion, tiempoMaxAcuseSeg, pasos]
+                properties:
+                  corporacionId: { type: integer }
+                  corporacion: { type: string }
+                  tiempoMaxAcuseSeg: { type: integer }
+                  pasos: { type: array, items: { $ref: '#/components/schemas/PasoEscalamiento' } }
+        errores: { type: array, items: { $ref: '#/components/schemas/Problema' } }
+        advertencias: { type: array, items: { $ref: '#/components/schemas/Problema' } }
+
+    TipoEntrada:
+      type: object
+      required: [nombre, prioridad, aplicaA]
+      properties:
+        nombre: { type: string, minLength: 3, maxLength: 60 }
+        categoria: { type: string, enum: [FISICO, SOCIAL, DIGITAL] }
+        prioridad: { type: integer, minimum: 1, maximum: 5 }
+        aplicaA: { type: string, enum: [ALERTA, REPORTE, AMBOS] }
+        datosMinimos: { type: array, items: { type: string } }
+        pesoRiesgo: { type: number, minimum: 0, maximum: 99 }
+        activo: { type: boolean, default: true }
+
+    ReglaEntrada:
+      type: object
+      required: [corporacionId, tiempoMaxAcuseSeg, pasos]
+      properties:
+        corporacionId: { type: integer }
+        tiempoMaxAcuseSeg: { type: integer, minimum: 30, maximum: 600 }
+        pasos:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: object
+            required: [destinoTipo]
+            properties:
+              destinoTipo: { type: string, enum: [CORPORACION, OPERADOR, COORDINADOR_CIRCULO] }
+              corporacionId: { type: integer }
+              operadorId: { type: string, format: uuid }
+
+    # ---------------------------------------------------------------- Trayectos
+
+    TrayectoEntrada:
+      type: object
+      required: [id, origenLatitud, origenLongitud, destinoLatitud, destinoLongitud, iniciadoEn]
+      properties:
+        id: { type: string, format: uuid }
+        tipoRuta: { type: string, enum: [SEGURA, MAS_CORTA], default: SEGURA }
+        origenLatitud: { type: number }
+        origenLongitud: { type: number }
+        destinoLatitud: { type: number }
+        destinoLongitud: { type: number }
+        distanciaM: { type: integer }
+        duracionEstMin: { type: integer }
+        toleranciaDesviacionM: { type: integer }
+        intervaloCheckinMin: { type: integer }
+        rutaPlanificada: { type: object, description: GeoJSON (LineString o Feature) de la ruta elegida }
+        iniciadoEn: { type: string, format: date-time }
+        compartir: { type: boolean, default: false }
+        estado: { type: string, enum: [EN_CURSO, FINALIZADO, CANCELADO], description: Solo en la cola sin señal }
+        finalizadoEn: { type: string, format: date-time, description: Solo en la cola sin señal }
+        ultimaLatitud: { type: number, description: Solo en la cola sin señal }
+        ultimaLongitud: { type: number, description: Solo en la cola sin señal }
+        ultimaUbicacionEn: { type: string, format: date-time, description: Solo en la cola sin señal }
+
+    TrayectoCambio:
+      type: object
+      properties:
+        estado: { type: string, enum: [EN_CURSO, FINALIZADO, CANCELADO] }
+        latitud: { type: number }
+        longitud: { type: number }
+        ubicacionEn: { type: string, format: date-time }
+        finalizadoEn: { type: string, format: date-time }
+
+    CheckinEntrada:
+      type: object
+      required: [esperadoEn]
+      properties:
+        esperadoEn: { type: string, format: date-time }
+        confirmadoEn: { type: string, format: date-time }
+
+    Trayecto:
+      type: object
+      required: [id, usuarioId, tipoRuta, estado, origenLatitud, origenLongitud, destinoLatitud, destinoLongitud, iniciadoEn, checkins]
+      properties:
+        id: { type: string, format: uuid }
+        usuarioId: { type: string, format: uuid }
+        tipoRuta: { type: string, enum: [SEGURA, MAS_CORTA] }
+        estado: { type: string, enum: [EN_CURSO, FINALIZADO, CANCELADO] }
+        origenLatitud: { type: number }
+        origenLongitud: { type: number }
+        destinoLatitud: { type: number }
+        destinoLongitud: { type: number }
+        distanciaM: { type: integer }
+        duracionEstMin: { type: integer }
+        toleranciaDesviacionM: { type: integer }
+        intervaloCheckinMin: { type: integer }
+        rutaPlanificada: { type: object }
+        ultimaLatitud: { type: number }
+        ultimaLongitud: { type: number }
+        ultimaUbicacionEn: { type: string, format: date-time }
+        iniciadoEn: { type: string, format: date-time }
+        finalizadoEn: { type: string, format: date-time }
+        checkins: { type: array, items: { $ref: '#/components/schemas/CheckinEntrada' } }
+
+    # ---------------------------------------------------------------- Reportes
+
+    ReporteEntrada:
+      type: object
+      required: [id, tipoIncidenteId, descripcion, latitud, longitud, creadoEn]
+      properties:
+        id: { type: string, format: uuid }
+        tipoIncidenteId: { type: integer }
+        versionCatalogoId: { type: integer }
+        descripcion: { type: string, minLength: 10, maxLength: 2000 }
+        latitud: { type: number }
+        longitud: { type: number }
+        precisionM: { type: number }
+        esAnonimo: { type: boolean, default: false }
+        creadoEn: { type: string, format: date-time }
+        evidencias:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [clave, mime, tamanoBytes, hashSha256]
+            properties:
+              clave: { type: string, example: evidencia/5f0c3c7e-1d2b-4c6a-9a51-3f2e8b7d6c10.jpg }
+              mime: { type: string }
+              tamanoBytes: { type: integer }
+              hashSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        tipoSugeridoId: { type: integer, description: Sugerencia de clasificación del teléfono, si la hubo }
+        confianzaSugerencia: { type: number, minimum: 0, maximum: 1 }
+
+    ReporteRecibido:
+      type: object
+      required: [id, folio, estado, celda]
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string, example: REP-2026-000001 }
+        estado: { type: string }
+        celda: { type: string, description: Geohash de 7 caracteres }
+
+    ReportePropio:
+      type: object
+      required: [id, folio, tipo, descripcion, estado, creadoEn]
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string }
+        tipo: { type: string }
+        descripcion: { type: string }
+        estado: { type: string, enum: [PENDIENTE, PUBLICADO, RECHAZADO, RETIRADO] }
+        creadoEn: { type: string, format: date-time }
+        moderadoEn: { type: string, format: date-time }
+
+    ReporteModeracion:
+      type: object
+      required: [id, folio, tipoIncidenteId, tipo, descripcion, latitud, longitud, celda, latitudPublica, longitudPublica, autor, esAnonimo, estado, creadoEn, recibidoEn, evidencias, decisiones]
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string }
+        tipoIncidenteId: { type: integer }
+        tipo: { type: string }
+        categoria: { type: string }
+        descripcion: { type: string }
+        latitud: { type: number }
+        longitud: { type: number }
+        precisionM: { type: number }
+        celda: { type: string }
+        latitudPublica: { type: number, description: Centro de la celda }
+        longitudPublica: { type: number }
+        autor: { type: string, description: Nombre del autor, o «Anónimo» }
+        esAnonimo: { type: boolean }
+        estado: { type: string }
+        creadoEn: { type: string, format: date-time }
+        recibidoEn: { type: string, format: date-time }
+        evidencias:
+          type: array
+          items:
+            type: object
+            required: [clave, url, mime, tamanoBytes]
+            properties:
+              clave: { type: string }
+              url: { type: string }
+              mime: { type: string }
+              tamanoBytes: { type: integer }
+        tipoSugeridoId: { type: integer }
+        confianzaSugerencia: { type: number }
+        decisiones:
+          type: array
+          items:
+            type: object
+            required: [decision, decididoEn]
+            properties:
+              decision: { type: string, enum: [PUBLICAR, RECHAZAR, RETIRAR] }
+              motivo: { type: string }
+              decididoEn: { type: string, format: date-time }
+              unidoAFolio: { type: string }
+
+    DecisionEntrada:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [PUBLICAR, RECHAZAR, RETIRAR] }
+        motivo: { type: string, minLength: 5, maxLength: 500, description: Obligatorio al rechazar o retirar }
+        unidoAId: { type: string, format: uuid, description: Reporte publicado que ya cuenta lo mismo }
+        ocultaDatosPersonales: { type: boolean, default: false }
+        referencia: { type: string, maxLength: 160, description: Referencia del lugar que se muestra en el feed }
+
+    IdentidadAutor:
+      type: object
+      required: [usuarioId, nombre, identificador, telefono, escuela]
+      properties:
+        usuarioId: { type: string, format: uuid }
+        nombre: { type: string }
+        identificador: { type: string }
+        telefono: { type: string }
+        escuela: { type: string }
+
+    PaginaFeed:
+      type: object
+      required: [reportes]
+      properties:
+        reportes:
+          type: array
+          items:
+            type: object
+            required: [id, tipoIncidenteId, tipo, descripcion, celda, latitud, longitud, autor, publicadoEn]
+            properties:
+              id: { type: string, format: uuid }
+              tipoIncidenteId: { type: integer }
+              tipo: { type: string }
+              categoria: { type: string }
+              descripcion: { type: string }
+              celda: { type: string }
+              latitud: { type: number, description: Centro de la celda, no la ubicación exacta }
+              longitud: { type: number }
+              referencia: { type: string }
+              autor: { type: string, description: Nombre o «Anónimo» }
+              publicadoEn: { type: string, format: date-time }
+              distanciaM: { type: number }
+        siguiente: { type: string, description: Cursor de la página que sigue }
+
+    # ---------------------------------------------------------------- Mapa de calor
+
+    Zona:
+      type: object
+      required: [id, nivel, periodoDias, densidadPonderada, numReportes, centroLatitud, centroLongitud, geometria]
+      properties:
+        id: { type: integer }
+        nivel: { type: string, enum: [BAJO, MEDIO, ALTO] }
+        tipoIncidenteId: { type: integer, description: null en las zonas generales }
+        periodoDias: { type: integer }
+        densidadPonderada: { type: number }
+        numReportes: { type: integer }
+        centroLatitud: { type: number }
+        centroLongitud: { type: number }
+        geometria: { type: object, description: 'GeoJSON Polygon en [longitud, latitud]' }
+
+    CapaRiesgo:
+      type: object
+      required: [version, generadaEn, periodoDias, zonas, leyenda]
+      properties:
+        version: { type: integer }
+        generadaEn: { type: string, format: date-time }
+        periodoDias: { type: integer }
+        zonas: { type: array, items: { $ref: '#/components/schemas/Zona' } }
+        leyenda: { type: string }
+
+    ZonaDetalle:
+      type: object
+      required: [zona, motivos]
+      properties:
+        zona: { $ref: '#/components/schemas/Zona' }
+        motivos:
+          type: array
+          items: { type: object, required: [tipo, reportes], properties: { tipo: { type: string }, reportes: { type: integer } } }
+        ultimoReporteEn: { type: string, format: date-time }
+
+    GeneracionCapa:
+      type: object
+      required: [version, zonas, reportes, tramos]
+      properties:
+        version: { type: integer }
+        zonas: { type: integer }
+        reportes: { type: integer }
+        tramos: { type: integer, description: Tramos del grafo con riesgo }
+
+    # ---------------------------------------------------------------- Ruta segura y mapas
+
+    Coordenada:
+      type: object
+      required: [latitud, longitud]
+      properties:
+        latitud: { type: number }
+        longitud: { type: number }
+
+    SolicitudRuta:
+      type: object
+      required: [origen, destino]
+      properties:
+        origen: { $ref: '#/components/schemas/Coordenada' }
+        destino: { $ref: '#/components/schemas/Coordenada' }
+
+    Ruta:
+      type: object
+      required: [tipo, puntos, distanciaM, duracionMin, riesgoMedio]
+      properties:
+        tipo: { type: string, enum: [SEGURA, MAS_CORTA] }
+        puntos: { type: array, items: { $ref: '#/components/schemas/Coordenada' } }
+        distanciaM: { type: number }
+        duracionMin: { type: integer }
+        riesgoMedio: { type: number, description: Promedio del riesgo de los tramos, ponderado por su largo (0 a 1) }
+
+    RutasSugeridas:
+      type: object
+      required: [segura, masCorta, advertencias, calculadaEn, explicacion]
+      properties:
+        segura: { $ref: '#/components/schemas/Ruta' }
+        masCorta: { $ref: '#/components/schemas/Ruta' }
+        advertencias:
+          type: array
+          items:
+            type: object
+            required: [zonaId, nivel, mensaje]
+            properties:
+              zonaId: { type: integer }
+              nivel: { type: string, enum: [MEDIO, ALTO] }
+              mensaje: { type: string }
+        capaVersion: { type: integer }
+        calculadaEn: { type: string, enum: [SERVIDOR] }
+        explicacion: { type: string }
+
+    GrafoEntrada:
+      type: object
+      required: [nodos, aristas]
+      properties:
+        nodos:
+          type: array
+          items:
+            type: object
+            required: [id, latitud, longitud]
+            properties:
+              id: { type: integer, description: Id del nodo en OpenStreetMap }
+              latitud: { type: number }
+              longitud: { type: number }
+        aristas:
+          type: array
+          items:
+            type: object
+            required: [origen, destino]
+            properties:
+              origen: { type: integer }
+              destino: { type: integer }
+              nombreVia: { type: string }
+              tipoVia: { type: string }
+              bidireccional: { type: boolean, default: true }
+              osmWayId: { type: integer }
+
+    GrafoCargado:
+      type: object
+      required: [nodos, aristas, tramosConRiesgo]
+      properties:
+        nodos: { type: integer }
+        aristas: { type: integer }
+        tramosConRiesgo: { type: integer }
+
+    Grafo:
+      type: object
+      required: [nodos, aristas]
+      properties:
+        capaVersion: { type: integer }
+        nodos:
+          type: array
+          items: { type: object, required: [id, latitud, longitud], properties: { id: { type: integer }, latitud: { type: number }, longitud: { type: number } } }
+        aristas:
+          type: array
+          items:
+            type: object
+            required: [id, origen, destino, longitudM, bidireccional, riesgo]
+            properties:
+              id: { type: integer }
+              origen: { type: integer }
+              destino: { type: integer }
+              longitudM: { type: number }
+              bidireccional: { type: boolean }
+              riesgo: { type: number, description: '0 sin riesgo; 0.3 BAJO, 0.6 MEDIO, 1 ALTO' }
+
+    PaqueteMapa:
+      type: object
+      required: [id, region, version, minLatitud, minLongitud, maxLatitud, maxLongitud, tamanoBytes, hashSha256, url, publicadoEn]
+      properties:
+        id: { type: integer }
+        region: { type: string }
+        version: { type: string }
+        minLatitud: { type: number }
+        minLongitud: { type: number }
+        maxLatitud: { type: number }
+        maxLongitud: { type: number }
+        tamanoBytes: { type: integer }
+        hashSha256: { type: string }
+        url: { type: string }
+        publicadoEn: { type: string, format: date-time }
+
+    PaqueteEntrada:
+      type: object
+      required: [region, version, minLatitud, minLongitud, maxLatitud, maxLongitud, clave, tamanoBytes, hashSha256]
+      properties:
+        region: { type: string, minLength: 3, maxLength: 100 }
+        version: { type: string, minLength: 1, maxLength: 20 }
+        minLatitud: { type: number }
+        minLongitud: { type: number }
+        maxLatitud: { type: number }
+        maxLongitud: { type: number }
+        clave: { type: string, description: 'Lo que respondió POST /archivos/mapa (mapa/<uuid>.zip o .bin)' }
+        tamanoBytes: { type: integer }
+        hashSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+
+    VersionesMapas:
+      type: object
+      required: [paquetes]
+      properties:
+        capaRiesgo: { type: integer }
+        catalogo: { type: integer }
+        paquetes:
+          type: array
+          items: { type: object, required: [region, version], properties: { region: { type: string }, version: { type: string } } }
+
+    PuntoInteres:
+      type: object
+      required: [id, nombre, tipo, latitud, longitud]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        tipo: { type: string, example: CASETA }
+        latitud: { type: number }
+        longitud: { type: number }
+
+    PuntoInteresEntrada:
+      type: object
+      required: [nombre, tipo, latitud, longitud]
+      properties:
+        nombre: { type: string, minLength: 3, maxLength: 150 }
+        tipo: { type: string, minLength: 3, maxLength: 40 }
+        latitud: { type: number }
+        longitud: { type: number }
+
+    ZonaGeografica:
+      type: object
+      required: [id, nombre, minLatitud, minLongitud, maxLatitud, maxLongitud]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        minLatitud: { type: number }
+        minLongitud: { type: number }
+        maxLatitud: { type: number }
+        maxLongitud: { type: number }
+
+    ZonaGeograficaEntrada:
+      type: object
+      required: [nombre, minLatitud, minLongitud, maxLatitud, maxLongitud]
+      properties:
+        nombre: { type: string, minLength: 3, maxLength: 100 }
+        minLatitud: { type: number }
+        minLongitud: { type: number }
+        maxLatitud: { type: number }
+        maxLongitud: { type: number }

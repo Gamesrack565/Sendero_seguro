@@ -2,7 +2,7 @@ package com.senderoseguro.server.redapoyo
 
 import kotlinx.serialization.Serializable
 
-// Contrato del Módulo 1 (P2): docs/modulo1_contrato_api.md, con los nombres en camelCase como el resto del servidor.
+// Contrato del Módulo 1 (P2): docs/modulo1/modulo1_contrato_api.md, con los nombres en camelCase como el resto del servidor.
 
 /** Contacto de confianza, como lo responde el servidor. */
 @Serializable

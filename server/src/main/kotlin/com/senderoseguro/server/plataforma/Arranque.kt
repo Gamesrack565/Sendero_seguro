@@ -6,6 +6,7 @@ import io.ktor.server.config.ApplicationConfig
 private val LLAVES_DE_DESARROLLO = mapOf(
     "jwt.secreto" to ("JWT_SECRETO" to "solo-para-desarrollo-cambiar-en-la-nube"),
     "enlace.secreto" to ("ENLACE_SECRETO" to "solo-para-desarrollo-enlaces"),
+    "reportes.llaveAutor" to ("REPORTES_LLAVE_AUTOR" to "solo-para-desarrollo-autor-reportes"),
 )
 
 /** Largo mínimo de una llave propia, para que no se pueda adivinar. */
@@ -13,7 +14,7 @@ const val LARGO_MINIMO_LLAVE = 32
 
 /**
  * Fuera del modo de prueba (`DB_DATOS_PRUEBA=false`), revisa que las llaves no sean las del repo: con ellas cualquiera
- * podría firmar un JWT de Administrador o un enlace de ubicación. Regresa los problemas encontrados, vacío si todo está
+ * podría firmar un JWT de Administrador o un enlace de ubicación, o descifrar al autor de un reporte anónimo. Regresa los problemas encontrados, vacío si todo está
  * bien. En modo de prueba no exige nada.
  */
 fun problemasDeArranque(config: ApplicationConfig, modoDesarrollo: Boolean): List<String> {

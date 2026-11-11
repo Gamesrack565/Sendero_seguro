@@ -195,8 +195,9 @@ class CuentasServicio(
             return ResultadoLogin.Error(credencialesInvalidas(maximo - intentos))
         }
 
-        // La app es para la comunidad; Operadores y Administradores usan la consola web (login sin dispositivo).
-        if (dispositivo != null && u.rol in setOf(Rol.OPERADOR, Rol.ADMINISTRADOR)) {
+        // La app es para la comunidad y para el Operador en campo (modo operador sin señal, A-14);
+        // el Administrador usa la consola web (login sin dispositivo).
+        if (dispositivo != null && u.rol == Rol.ADMINISTRADOR) {
             return ResultadoLogin.Error(
                 ApiException(HttpStatusCode.Forbidden, "PERFIL_NO_PERMITIDO", "Tu perfil usa la consola web, no la app",
                     buildJsonObject { put("rol", u.rol.name) }),

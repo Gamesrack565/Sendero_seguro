@@ -16,7 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * P1 del Módulo 1 (`docs/modulo1_contrato_api.md`):
+ * P1 del Módulo 1 (`docs/modulo1/modulo1_contrato_api.md`):
  * - Sin token: `GET avisos-privacidad/vigente`, `GET instituciones`, `GET instituciones/{id}/escuelas`,
  *   `POST auth/registro` y `POST auth/login`.
  * - Con token: `POST auth/logout`, `GET` y `PATCH usuarios/me`, `POST usuarios/me/baja`.

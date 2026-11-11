@@ -1,6 +1,20 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.administracion.AdministracionServicio
+import com.senderoseguro.server.administracion.rutasAdministracion
 import com.senderoseguro.server.alertas.RegistroAlertas
+import com.senderoseguro.server.catalogo.CatalogoServicio
+import com.senderoseguro.server.comunidad.AutorProtegido
+import com.senderoseguro.server.comunidad.Comunidad
+import com.senderoseguro.server.comunidad.MapaCalorServicio
+import com.senderoseguro.server.comunidad.MapasServicio
+import com.senderoseguro.server.comunidad.ReportesServicio
+import com.senderoseguro.server.comunidad.RutaSeguraServicio
+import com.senderoseguro.server.comunidad.rutasComunidad
+import com.senderoseguro.server.catalogo.rutasCatalogo
+import com.senderoseguro.server.dispersion.AcusesSinSenal
+import com.senderoseguro.server.trayectos.TrayectosServicio
+import com.senderoseguro.server.trayectos.rutasTrayectos
 import com.senderoseguro.server.alertas.UbicacionesAlerta
 import com.senderoseguro.server.alertas.rutasRegistroAlertas
 import com.senderoseguro.server.archivos.Almacen
@@ -130,11 +144,29 @@ fun Application.module() {
     val registroAlertas = RegistroAlertas(baseDatos.dataSource, dispersion)
     val ubicacionesAlerta = UbicacionesAlerta(baseDatos.dataSource)
     val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroAlertas.registroSms)
-    // Manejadores de /sync/lote: cada módulo registra el de su tipo, por ejemplo manejadoresSync[TipoSync.REPORTE] = ...
-    // Un tipo sin manejador sale RECHAZADO temporal.
+    // Manejadores de /sync/lote: cada módulo registra el de su tipo. Un tipo sin manejador saldría RECHAZADO temporal.
     val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
     manejadoresSync[TipoSync.ALERTA] = registroAlertas.manejadorSync
     manejadoresSync[TipoSync.UBICACION] = ubicacionesAlerta.manejadorSync
+    manejadoresSync[TipoSync.ACUSE] = AcusesSinSenal().manejadorSync
+    manejadoresSync[TipoSync.CANCELACION] = cancelacion.manejadorSync
+    val trayectos = TrayectosServicio(baseDatos.dataSource)
+    manejadoresSync[TipoSync.TRAYECTO] = trayectos.manejadorTrayecto
+    manejadoresSync[TipoSync.CHECKIN] = trayectos.manejadorCheckin
+    // Módulo 3 en el servidor: reportes, moderación, feed, mapa de calor, ruta segura y mapas offline.
+    val catalogo = CatalogoServicio(baseDatos.dataSource)
+    val mapaCalor = MapaCalorServicio(baseDatos.dataSource)
+    mapaCalor.iniciar(scope = this, cada = config.property("mapaCalor.revisionHoras").getString().toInt().hours)
+    val reportes = ReportesServicio(
+        baseDatos.dataSource,
+        AutorProtegido(config.property("reportes.llaveAutor").getString()),
+        alCambiarPublicados = { mapaCalor.pedirRecalculo(this) },
+    )
+    manejadoresSync[TipoSync.REPORTE] = reportes.manejadorSync
+    val comunidad = Comunidad(
+        reportes, mapaCalor, RutaSeguraServicio(baseDatos.dataSource, mapaCalor), MapasServicio(baseDatos.dataSource),
+        versionCatalogo = catalogo::numeroVigente,
+    )
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
     RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
         .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
@@ -169,6 +201,10 @@ fun Application.module() {
             rutasSalud(revisarBaseDatos = baseDatos::estaViva)
             rutasCuentas(cuentas)
             rutasRedApoyo(redApoyo)
+            rutasAdministracion(AdministracionServicio(baseDatos.dataSource))
+            rutasCatalogo(catalogo)
+            rutasComunidad(comunidad)
+            rutasTrayectos(trayectos)
             rutasCancelacion(cancelacion)
             rutasRegistroAlertas(registroAlertas, ubicacionesAlerta)
             rutasAlertas(consulta, atencion)
