@@ -47,13 +47,16 @@ class ServicioEmergencias : Service() {
         val notificacion = construirNotificacion()
 
         try {
+            // Dentro de ServicioEmergencias.kt -> onStartCommand:
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notificacion,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                )
+                var tiposServicio = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    tiposServicio = tiposServicio or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
+                startForeground(NOTIFICATION_ID, notificacion, tiposServicio)
             } else {
                 startForeground(NOTIFICATION_ID, notificacion)
             }

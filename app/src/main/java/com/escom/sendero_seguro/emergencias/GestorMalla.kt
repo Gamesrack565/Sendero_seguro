@@ -11,9 +11,12 @@ import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.util.Log
+import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,8 +30,13 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
+import java.security.SecureRandom
 import java.util.Collections
-import kotlin.math.abs
+import javax.crypto.Cipher
+import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import kotlin.math.*
 import kotlin.random.Random
 
 class GestorMalla(private val context: Context? = null) {
@@ -36,8 +44,9 @@ class GestorMalla(private val context: Context? = null) {
     companion object {
         private const val TAG = "MODULO2_MALLA_P5_1"
         private const val MESH_MANUFACTURER_ID = 0xFFFF
-        private const val MAGIC_BYTE_1: Byte = 0x53
-        private const val MAGIC_BYTE_2: Byte = 0x53
+        private const val MAGIC_BYTE_1: Byte = 0x53 // 'S'
+        private const val MAGIC_BYTE_2: Byte = 0x53 // 'S'
+        private const val RADIO_TIERRA_M = 6371000.0
     }
 
     private val meshScope = CoroutineScope(Dispatchers.IO)
@@ -46,6 +55,10 @@ class GestorMalla(private val context: Context? = null) {
     private val listaHistorialMalla = Collections.synchronizedList(mutableListOf<PaqueteMalla>())
 
     var urlServidorLinux: String = "http://10.100.88.182:8080/alerta"
+    var retransmitirAlertasOtrosActivo: Boolean = true
+    var ahorroBateriaEscaneoActivo: Boolean = true
+
+    private val llaveSimetricaMalla = "SenderoSeguroIPN2026ClaveMalla32".toByteArray(Charsets.UTF_8).copyOf(32)
 
     private val _flujoPaquetesMalla = MutableSharedFlow<PaqueteMalla>(replay = 1, extraBufferCapacity = 30)
     val flujoPaquetesMalla: SharedFlow<PaqueteMalla> = _flujoPaquetesMalla.asSharedFlow()
@@ -56,35 +69,32 @@ class GestorMalla(private val context: Context? = null) {
     private val _estadoRedYMalla = MutableStateFlow(EstadoRedYMalla())
     val estadoRedYMalla: StateFlow<EstadoRedYMalla> = _estadoRedYMalla.asStateFlow()
 
+    private val _alertaModoOperadorAdHoc = MutableStateFlow<AlertaAdHocOperadorVista?>(null)
+    val alertaModoOperadorAdHoc: StateFlow<AlertaAdHocOperadorVista?> = _alertaModoOperadorAdHoc.asStateFlow()
+
     private var escaneando = false
+    private var modoScanActual = ScanSettings.SCAN_MODE_LOW_LATENCY
     private var ultimoPaqueteEmitido: PaqueteMalla? = null
-    private var advertisingSetCallbackActivo: AdvertisingSetCallback? = null
+
+    // Callbacks declarados como Any para evitar que el compilador exija API 26 en campos globales
+    private var advertisingSetCallbackActivo: Any? = null
     private var legacyAdvertiseCallbackActivo: AdvertiseCallback? = null
 
-    /**
-     * Receptor del sistema que detecta cuando el usuario apaga y vuelve a prender el Bluetooth
-     * para reconectar el escáner y el transmisor automáticamente sin reiniciar la app.
-     */
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
-                val estado = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
-                when (estado) {
+                when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                     BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
-                        // Al apagarse el Bluetooth, Android mata el escáner internamente
                         escaneando = false
                         advertisingSetCallbackActivo = null
                         legacyAdvertiseCallbackActivo = null
                         _estadoRedYMalla.value = _estadoRedYMalla.value.copy(escaneoBleActivo = false)
-                        reportar("⚠️ Bluetooth apagado. Esperando a que se vuelva a encender...")
+                        reportar("⚠️ Bluetooth apagado. Esperando reconexión...")
                     }
                     BluetoothAdapter.STATE_ON -> {
-                        reportar("🔄 Bluetooth re-encendido: Reconectando malla BLE automáticamente...")
-                        // Pequeña pausa de 600ms para que el stack BLE del chip termine de inicializar
                         mainHandler.postDelayed({
                             escaneando = false
                             asegurarEscaneoMallaActivo()
-                            // Si había una alerta activa emitiéndose, la reanudamos
                             ultimoPaqueteEmitido?.let { transmitirPorHardwareBLE(it) }
                         }, 600L)
                     }
@@ -105,11 +115,8 @@ class GestorMalla(private val context: Context? = null) {
 
     private fun registrarMonitorEstadoBluetooth() {
         try {
-            val filtroBt = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
-            context?.registerReceiver(bluetoothStateReceiver, filtroBt)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error registrando Bluetooth receiver: ${e.message}")
-        }
+            context?.registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        } catch (_: Exception) {}
     }
 
     private fun iniciarMonitoreoConectividad() {
@@ -138,17 +145,50 @@ class GestorMalla(private val context: Context? = null) {
         return capacidades.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
+    fun ajustarEscaneoMallaPorBateria(nivelBateria: Int) {
+        if (!ahorroBateriaEscaneoActivo) return
+        val nuevoModo = if (nivelBateria > 20) {
+            ScanSettings.SCAN_MODE_BALANCED
+        } else {
+            ScanSettings.SCAN_MODE_LOW_POWER
+        }
+        val etiquetaModo = if (nivelBateria > 20) {
+            "Batería $nivelBateria%: escaneo cada 2 min"
+        } else {
+            "Bajo 20% ($nivelBateria%): escaneo cada 10 min"
+        }
+        _estadoRedYMalla.value = _estadoRedYMalla.value.copy(modoEscaneoBateria = etiquetaModo)
+
+        if (nuevoModo != modoScanActual && escaneando) {
+            modoScanActual = nuevoModo
+            escaneando = false
+            asegurarEscaneoMallaActivo()
+        }
+    }
+
     fun emitirAlertaEnMalla(alerta: AlertaEmergencia, emisorId: String, ttlInicial: Int = 5): PaqueteMalla {
         val numId = Random.nextInt(1000, 9999)
         val idCorto = "SOS-$numId"
 
+        val jsonCarga = """{"alertaId":"${alerta.idAlerta}","emisorId":"$emisorId","tipo":"${alerta.nombreTipoIncidente}","desc":"${alerta.descripcionRelato}","lat":${alerta.latitudInicial},"lon":${alerta.longitudInicial},"prec":${alerta.precisionMetros}}"""
+        val cargaCifrada = cifrarCargaAesGcm(jsonCarga)
+        val firma = firmarHmacSha256("$idCorto|$ttlInicial|0|$cargaCifrada")
+
         val paquete = PaqueteMalla(
             packetId = idCorto,
+            alertaId = alerta.idAlerta,
+            folioCorto = alerta.folio,
             emisorId = emisorId,
+            tipoIncidenteNombre = alerta.nombreTipoIncidente,
+            descripcionCorta = alerta.descripcionRelato.ifEmpty { "Alerta SOS activada" },
             latitud = alerta.latitudInicial,
             longitud = alerta.longitudInicial,
+            precisionMetros = alerta.precisionMetros,
             nivelBateria = alerta.nivelBateria,
-            ttl = ttlInicial
+            ttl = ttlInicial,
+            saltosRecorridos = 0,
+            cargaCifradaBase64 = cargaCifrada,
+            firmaHmacHex = firma
         )
 
         ultimoPaqueteEmitido = paquete
@@ -161,27 +201,77 @@ class GestorMalla(private val context: Context? = null) {
     }
 
     fun interceptarYRetransmitir(paqueteEntrante: PaqueteMalla): PaqueteMalla? {
-        if (!paquetesProcesados.add(paqueteEntrante.packetId)) {
-            return null
-        }
+        if (!retransmitirAlertasOtrosActivo) return null
+        if (!paquetesProcesados.add(paqueteEntrante.packetId)) return null
 
         val nuevoTtl = paqueteEntrante.ttl - 1
+        val nuevosSaltos = paqueteEntrante.saltosRecorridos + 1
+
         if (nuevoTtl <= 0) {
             reportar("⏹️ Paquete ${paqueteEntrante.packetId} descartado (TTL=0)")
             return null
         }
 
-        val paqueteRetransmitido = paqueteEntrante.copy(ttl = nuevoTtl)
+        val paqueteRetransmitido = paqueteEntrante.copy(
+            ttl = nuevoTtl,
+            saltosRecorridos = nuevosSaltos
+        )
         ultimoPaqueteEmitido = paqueteRetransmitido
         registrarEnHistorialMalla(paqueteRetransmitido)
         _flujoPaquetesMalla.tryEmit(paqueteRetransmitido)
 
-        reportar("⚡ ¡CAPTADO AL INSTANTE! ${paqueteRetransmitido.packetId} | TTL: ${paqueteEntrante.ttl} -> $nuevoTtl")
+        reportar("⚡ ¡CAPTADO EN MALLA! ${paqueteRetransmitido.packetId} | Saltos: $nuevosSaltos | TTL: $nuevoTtl")
 
         transmitirPorHardwareBLE(paqueteRetransmitido)
         enviarAServidorLinux(paqueteRetransmitido)
 
         return paqueteRetransmitido
+    }
+
+    fun mostrarAlertaAdHocModoOperador(
+        paquete: PaqueteMalla,
+        latitudOperador: Double,
+        longitudOperador: Double
+    ): AlertaAdHocOperadorVista {
+        val distancia = calcularDistanciaMetros(latitudOperador, longitudOperador, paquete.latitud, paquete.longitud)
+        val rumboGrados = calcularRumboGrados(latitudOperador, longitudOperador, paquete.latitud, paquete.longitud)
+        val cardinal = convertirGradosACardinal(rumboGrados)
+
+        val vista = AlertaAdHocOperadorVista(
+            paquete = paquete,
+            distanciaMetros = distancia,
+            rumboGrados = rumboGrados,
+            rumboCardinal = cardinal,
+            textoDistanciaYRumbo = "${distancia.roundToInt()} m $cardinal (±${paquete.precisionMetros.roundToInt()} m)",
+            acusadaLocalmente = false
+        )
+        _alertaModoOperadorAdHoc.value = vista
+        reportar("🚨 MODO OPERADOR AD-HOC (A-14): ${paquete.folioCorto} a ${vista.textoDistanciaYRumbo}")
+        return vista
+    }
+
+    fun acusarYAcudirOfflinePorMalla(
+        paqueteOriginal: PaqueteMalla,
+        unidadOperativaId: String = "P-214"
+    ): PaqueteMalla {
+        val idAcuse = "ACK-${Random.nextInt(1000, 9999)}"
+        val paqueteAcuse = paqueteOriginal.copy(
+            packetId = idAcuse,
+            ttl = 5,
+            saltosRecorridos = 0,
+            esAcuseOperador = true,
+            unidadAcuseId = unidadOperativaId,
+            timestamp = System.currentTimeMillis()
+        )
+
+        _alertaModoOperadorAdHoc.value = _alertaModoOperadorAdHoc.value?.copy(acusadaLocalmente = true)
+        paquetesProcesados.add(idAcuse)
+        registrarEnHistorialMalla(paqueteAcuse)
+        _flujoPaquetesMalla.tryEmit(paqueteAcuse)
+        transmitirPorHardwareBLE(paqueteAcuse)
+
+        reportar("✅ Acuse offline emitido por malla por unidad $unidadOperativaId (${paqueteAcuse.packetId})")
+        return paqueteAcuse
     }
 
     private fun registrarEnHistorialMalla(paquete: PaqueteMalla) {
@@ -200,12 +290,10 @@ class GestorMalla(private val context: Context? = null) {
             if (adapter == null || !adapter.isEnabled) {
                 escaneando = false
                 _estadoRedYMalla.value = _estadoRedYMalla.value.copy(escaneoBleActivo = false)
-                reportar("⚠️ Bluetooth apagado. Enciéndelo para conectar la malla.")
                 return
             }
 
             if (escaneando) return
-
             val scanner = adapter.bluetoothLeScanner ?: return
 
             val filtroPantallaApagada = ScanFilter.Builder()
@@ -217,7 +305,7 @@ class GestorMalla(private val context: Context? = null) {
                 .build()
 
             val ajustes = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setScanMode(modoScanActual)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
                 .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
@@ -227,8 +315,8 @@ class GestorMalla(private val context: Context? = null) {
             scanner.startScan(listOf(filtroPantallaApagada), ajustes, scanCallback)
             escaneando = true
             _estadoRedYMalla.value = _estadoRedYMalla.value.copy(escaneoBleActivo = true)
-            reportar("📡 Receptor BLE ACTIVO (Auto-reconexión habilitada)")
-        } catch (e: SecurityException) {
+            reportar("📡 Receptor BLE ACTIVO")
+        } catch (_: SecurityException) {
             reportar("❌ Falta permiso Bluetooth Scan.")
         } catch (e: Exception) {
             escaneando = false
@@ -243,15 +331,23 @@ class GestorMalla(private val context: Context? = null) {
             val btManager = context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             val advertiser = btManager?.adapter?.bluetoothLeAdvertiser ?: return
 
-            advertisingSetCallbackActivo?.let {
-                try { advertiser.stopAdvertisingSet(it) } catch (_: Exception) {}
-                advertisingSetCallbackActivo = null
-            }
-            legacyAdvertiseCallbackActivo?.let {
-                try { advertiser.stopAdvertising(it) } catch (_: Exception) {}
-                legacyAdvertiseCallbackActivo = null
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                detenerTransmisionOreoPlus(advertiser)
+            } else {
+                legacyAdvertiseCallbackActivo?.let {
+                    try { advertiser.stopAdvertising(it) } catch (_: Exception) {}
+                    legacyAdvertiseCallbackActivo = null
+                }
             }
         } catch (_: Exception) {}
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun detenerTransmisionOreoPlus(advertiser: BluetoothLeAdvertiser) {
+        (advertisingSetCallbackActivo as? AdvertisingSetCallback)?.let {
+            try { advertiser.stopAdvertisingSet(it) } catch (_: Exception) {}
+            advertisingSetCallbackActivo = null
+        }
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -267,6 +363,7 @@ class GestorMalla(private val context: Context? = null) {
                 val lon = buffer.float.toDouble()
                 val bat = buffer.get().toInt()
                 val ttl = buffer.get().toInt()
+                val saltos = if (bytes.size >= 17) buffer.get().toInt() else (5 - ttl).coerceAtLeast(0)
 
                 val paqueteCapturado = PaqueteMalla(
                     packetId = "SOS-$idNum",
@@ -274,7 +371,8 @@ class GestorMalla(private val context: Context? = null) {
                     latitud = lat,
                     longitud = lon,
                     nivelBateria = bat,
-                    ttl = ttl
+                    ttl = ttl,
+                    saltosRecorridos = saltos
                 )
                 interceptarYRetransmitir(paqueteCapturado)
             }
@@ -283,16 +381,15 @@ class GestorMalla(private val context: Context? = null) {
         override fun onScanFailed(errorCode: Int) {
             escaneando = false
             _estadoRedYMalla.value = _estadoRedYMalla.value.copy(escaneoBleActivo = false)
-            reportar("⚠️ Escáner BLE reportó código $errorCode. Reintentando...")
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun transmitirPorHardwareBLE(paquete: PaqueteMalla) {
-        val numId = paquete.packetId.replace("SOS-", "").toIntOrNull()
+        val numId = paquete.packetId.replace("SOS-", "").replace("ACK-", "").toIntOrNull()
             ?: (abs(paquete.packetId.hashCode() % 8999) + 1000)
 
-        val buffer = ByteBuffer.allocate(16)
+        val buffer = ByteBuffer.allocate(17)
         buffer.put(MAGIC_BYTE_1)
         buffer.put(MAGIC_BYTE_2)
         buffer.putInt(numId)
@@ -300,24 +397,13 @@ class GestorMalla(private val context: Context? = null) {
         buffer.putFloat(paquete.longitud.toFloat())
         buffer.put(paquete.nivelBateria.toByte())
         buffer.put(paquete.ttl.toByte())
+        buffer.put(paquete.saltosRecorridos.toByte())
         val payloadBytes = buffer.array()
 
         try {
             val btManager = context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             val advertiser = btManager?.adapter?.bluetoothLeAdvertiser
-            if (advertiser == null || btManager.adapter?.isEnabled != true) {
-                reportar("⚠️ Bluetooth apagado.")
-                return
-            }
-
-            advertisingSetCallbackActivo?.let {
-                try { advertiser.stopAdvertisingSet(it) } catch (_: Exception) {}
-                advertisingSetCallbackActivo = null
-            }
-            legacyAdvertiseCallbackActivo?.let {
-                try { advertiser.stopAdvertising(it) } catch (_: Exception) {}
-                legacyAdvertiseCallbackActivo = null
-            }
+            if (advertiser == null || btManager.adapter?.isEnabled != true) return
 
             val data = AdvertiseData.Builder()
                 .setIncludeDeviceName(false)
@@ -325,55 +411,102 @@ class GestorMalla(private val context: Context? = null) {
                 .addManufacturerData(MESH_MANUFACTURER_ID, payloadBytes)
                 .build()
 
-            val parameters = AdvertisingSetParameters.Builder()
-                .setLegacyMode(true)
-                .setConnectable(true)
-                .setScannable(true)
-                .setInterval(AdvertisingSetParameters.INTERVAL_MIN)
-                .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MAX)
-                .build()
+            // Si es Android 8.0+ (API 26), usar AdvertisingSet avanzado; si es menor, usar Legacy
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                transmitirOreoPlus(advertiser, data, paquete)
+            } else {
+                emitirModoLegacyRespaldo(advertiser, data, paquete)
+            }
+        } catch (_: Exception) {}
+    }
 
-            val setCallback = object : AdvertisingSetCallback() {
-                override fun onAdvertisingSetStarted(
-                    advertisingSet: AdvertisingSet?,
-                    txPower: Int,
-                    status: Int
-                ) {
-                    if (status == ADVERTISE_SUCCESS) {
-                        reportar("🔊 Ráfaga BLE activa (10 pkt/seg): ${paquete.packetId} | TTL=${paquete.ttl}")
-                    } else {
-                        emitirModoLegacyRespaldo(advertiser, data, paquete)
-                    }
+    @RequiresApi(Build.VERSION_CODES.O)
+    @SuppressLint("MissingPermission")
+    private fun transmitirOreoPlus(advertiser: BluetoothLeAdvertiser, data: AdvertiseData, paquete: PaqueteMalla) {
+        (advertisingSetCallbackActivo as? AdvertisingSetCallback)?.let {
+            try { advertiser.stopAdvertisingSet(it) } catch (_: Exception) {}
+            advertisingSetCallbackActivo = null
+        }
+
+        val parameters = AdvertisingSetParameters.Builder()
+            .setLegacyMode(true)
+            .setConnectable(true)
+            .setScannable(true)
+            .setInterval(AdvertisingSetParameters.INTERVAL_MIN)
+            .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_HIGH) // Soluciona deprecación de TX_POWER_MAX
+            .build()
+
+        val setCallback = object : AdvertisingSetCallback() {
+            override fun onAdvertisingSetStarted(advertisingSet: AdvertisingSet?, txPower: Int, status: Int) {
+                if (status != ADVERTISE_SUCCESS) {
+                    emitirModoLegacyRespaldo(advertiser, data, paquete)
                 }
             }
-
-            advertisingSetCallbackActivo = setCallback
-            advertiser.startAdvertisingSet(parameters, data, null, null, null, setCallback)
-
-        } catch (e: Exception) {
-            reportar("❌ Error al transmitir BLE: ${e.message}")
         }
+
+        advertisingSetCallbackActivo = setCallback
+        advertiser.startAdvertisingSet(parameters, data, null, null, null, setCallback)
     }
 
     @SuppressLint("MissingPermission")
-    private fun emitirModoLegacyRespaldo(
-        advertiser: BluetoothLeAdvertiser,
-        data: AdvertiseData,
-        paquete: PaqueteMalla
-    ) {
+    private fun emitirModoLegacyRespaldo(advertiser: BluetoothLeAdvertiser, data: AdvertiseData, paquete: PaqueteMalla) {
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .build()
 
-        val callback = object : AdvertiseCallback() {
-            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                reportar("🔊 Emitiendo BLE: ${paquete.packetId} (TTL=${paquete.ttl})")
-            }
-        }
+        val callback = object : AdvertiseCallback() {}
         legacyAdvertiseCallbackActivo = callback
         advertiser.startAdvertising(settings, data, callback)
+    }
+
+    private fun cifrarCargaAesGcm(textoPlano: String): String {
+        return try {
+            val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(llaveSimetricaMalla, "AES"), GCMParameterSpec(128, iv))
+            val cifrado = cipher.doFinal(textoPlano.toByteArray(Charsets.UTF_8))
+            Base64.encodeToString(iv + cifrado, Base64.NO_WRAP)
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun firmarHmacSha256(mensaje: String): String {
+        return try {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(llaveSimetricaMalla, "HmacSHA256"))
+            val bytes = mac.doFinal(mensaje.toByteArray(Charsets.UTF_8))
+            bytes.take(8).joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun calcularDistanciaMetros(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2).pow(2.0) + sin(dLon / 2).pow(2.0) * cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2))
+        return RADIO_TIERRA_M * 2 * atan2(sqrt(a), sqrt(1 - a))
+    }
+
+    private fun calcularRumboGrados(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val phi1 = Math.toRadians(lat1)
+        val phi2 = Math.toRadians(lat2)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val y = sin(dLon) * cos(phi2)
+        val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    }
+
+    private fun convertirGradosACardinal(grados: Double): String {
+        val direcciones = listOf(
+            "al norte", "al noreste", "al este", "al sureste",
+            "al sur", "al suroeste", "al oeste", "al noroeste"
+        )
+        val indice = (((grados + 22.5) % 360.0) / 45.0).toInt()
+        return direcciones[indice.coerceIn(0, 7)]
     }
 
     fun enviarAServidorLinux(paquete: PaqueteMalla) {
@@ -381,11 +514,13 @@ class GestorMalla(private val context: Context? = null) {
             val jsonPayload = """
                 {
                     "packetId": "${paquete.packetId}",
+                    "alertaId": "${paquete.alertaId}",
                     "emisorId": "${paquete.emisorId}",
                     "latitud": ${paquete.latitud},
                     "longitud": ${paquete.longitud},
                     "nivelBateria": ${paquete.nivelBateria},
-                    "ttl": ${paquete.ttl}
+                    "ttl": ${paquete.ttl},
+                    "saltosMalla": ${paquete.saltosRecorridos}
                 }
             """.trimIndent()
 
@@ -401,7 +536,7 @@ class GestorMalla(private val context: Context? = null) {
                 val codigo = conn.responseCode
                 conn.disconnect()
                 if (codigo == 200) {
-                    reportar("💻 ENVIADO A LINUX ($urlServidorLinux) -> HTTP 200")
+                    reportar("💻 ENVIADO A SERVIDOR ($urlServidorLinux) -> HTTP 200")
                 }
             } catch (_: Exception) {}
         }
@@ -411,6 +546,5 @@ class GestorMalla(private val context: Context? = null) {
         detenerSoloTransmisionBLE()
         paquetesProcesados.clear()
         asegurarEscaneoMallaActivo()
-        reportar("🔄 Malla lista al instante (Escáner activo)")
     }
 }
