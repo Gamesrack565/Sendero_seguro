@@ -48,6 +48,11 @@ android {
         compose = true
         buildConfig = true
     }
+    // Pruebas unitarias en la PC: las clases de Android (Log, Looper, Handler) responden vacío en vez de tronar.
+    // Lo necesitan las pruebas del Módulo 2, que crean GestorMalla y GestorCaminataSegura fuera del teléfono.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
