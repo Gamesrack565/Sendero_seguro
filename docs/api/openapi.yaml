@@ -107,6 +107,42 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /malla/relevos:
+    post:
+      tags: [Alertas]
+      summary: Entrega una alerta que llegó por la malla (cualquier cuenta con sesión)
+      description: |
+        RF-14 y A-01. El teléfono que recibió el paquete por Bluetooth y tiene internet lo entrega con su propia sesión.
+        El paquete solo trae ids cortos: el servidor reconoce a la persona por los últimos 8 hex del UUID de su cuenta
+        (activa) y la alerta por los primeros 8 hex de su UUID y la hora (±60 s), como con el SMS.
+        Si la alerta ya llegó por otro camino responde `200` con ella; si no, la registra con `canalRecepcion = MALLA`
+        a nombre de la persona, responde `201` y la despacha. Quien la entregó queda en la bitácora.
+        Un paquete con más de 24 horas se rechaza.
+      x-proceso: P4
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RelevoMalla' }
+      responses:
+        '201':
+          description: Alerta registrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaRegistrada' }
+        '200':
+          description: La alerta ya existía
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertaRegistrada' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '404':
+          description: No hay una cuenta activa con ese id corto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /alertas:
     post:
       tags: [Alertas]
@@ -1384,6 +1420,19 @@ components:
         activadaEn: { type: string, format: date-time, description: Reloj del teléfono }
         enviadaEn: { type: string, format: date-time }
         ubicacion: { allOf: [{ $ref: '#/components/schemas/Ubicacion' }], description: 'Aquí fuente y capturadaEn son opcionales: sin ellas, GNSS y activadaEn' }
+
+    RelevoMalla:
+      type: object
+      required: [idCortoAlerta, idCortoUsuario, latitud, longitud, activadaEn]
+      properties:
+        idCortoAlerta: { type: string, pattern: '^[0-9a-f]{8}$', description: Primeros 8 hex del UUID de la alerta }
+        idCortoUsuario: { type: string, pattern: '^[0-9a-f]{8}$', description: Últimos 8 hex del UUID de la cuenta, sin guiones }
+        latitud: { type: number, minimum: -90, maximum: 90 }
+        longitud: { type: number, minimum: -180, maximum: 180 }
+        nivelBateria: { type: integer, minimum: 0, maximum: 100 }
+        ttl: { type: integer }
+        saltosMalla: { type: integer, minimum: 0 }
+        activadaEn: { type: string, format: date-time, description: Hora de activación que trae el paquete }
 
     AlertaRegistrada:
       type: object

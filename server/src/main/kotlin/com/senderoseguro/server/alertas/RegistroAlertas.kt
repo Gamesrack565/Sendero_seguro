@@ -6,6 +6,7 @@ import com.senderoseguro.server.dispersion.Dispersion
 import com.senderoseguro.server.pasarela.RegistroAlertasSms
 import com.senderoseguro.server.plataforma.ApiException
 import com.senderoseguro.server.plataforma.Bitacora
+import com.senderoseguro.server.plataforma.consultar
 import com.senderoseguro.server.plataforma.consultarUno
 import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.instante
@@ -85,6 +86,51 @@ class RegistroAlertas(private val dataSource: DataSource, private val dispersion
         guardar(conn, sms.usuarioId, dispositivo, datos, null).id
     }
 
+    /**
+     * Relevo de la malla (RF-14, A-01): un teléfono con internet entrega el paquete que recibió por Bluetooth.
+     * El paquete solo trae ids cortos: el de la alerta (primeros 8 hex de su UUID, como el SMS) y el de la persona
+     * (últimos 8 hex de su UUID). Si la alerta ya llegó por otro camino se regresa esa; si no, se registra con
+     * `canal_recepcion = MALLA` a nombre de la persona y se despacha. [relevadorId] queda en la bitácora.
+     */
+    fun registrarRelevo(relevadorId: UUID, r: RelevoMalla, ip: String?): Resultado {
+        val errores = mutableMapOf<String, String>()
+        val idCorto = r.idCortoAlerta.lowercase()
+        val persona = r.idCortoUsuario.lowercase()
+        if (!HEX8.matches(idCorto)) errores["idCortoAlerta"] = "Deben ser 8 caracteres hexadecimales"
+        if (!HEX8.matches(persona)) errores["idCortoUsuario"] = "Deben ser 8 caracteres hexadecimales"
+        if (r.latitud !in -90.0..90.0) errores["latitud"] = "Debe estar entre -90 y 90"
+        if (r.longitud !in -180.0..180.0) errores["longitud"] = "Debe estar entre -180 y 180"
+        if (r.nivelBateria != null && r.nivelBateria !in 0..100) errores["nivelBateria"] = "Debe estar entre 0 y 100"
+        if (r.saltosMalla != null && r.saltosMalla !in 0..255) errores["saltosMalla"] = "Fuera de rango"
+        val ahora = Instant.now()
+        val activadaEn = hora(r.activadaEn)?.let { minOf(it, ahora) }
+        if (activadaEn == null) errores["activadaEn"] = "Debe ser una fecha ISO 8601"
+        else if (activadaEn.isBefore(ahora.minus(java.time.Duration.ofHours(24)))) errores["activadaEn"] = "El paquete tiene más de 24 horas"
+        if (errores.isNotEmpty()) throw errorValidacion(errores)
+
+        val resultado = dataSource.transaccion { conn ->
+            val usuarios = conn.consultar(
+                "SELECT id FROM usuario WHERE estado = 'ACTIVA' AND right(replace(id::text, '-', ''), 8) = ? LIMIT 2", persona,
+            ) { it.uuid("id") }
+            val usuarioId = usuarios.singleOrNull()
+                ?: throw ApiException(HttpStatusCode.NotFound, "NO_ENCONTRADO", "No se reconoce a la persona del paquete")
+            val datos = Validada(
+                id = UUID.fromString(idCorto + UUID.randomUUID().toString().substring(8)), tipoIncidenteId = null,
+                versionCatalogoId = null, tipoSugeridoId = null, confianzaSugerencia = null, descripcion = null,
+                canal = "MALLA", saltosMalla = r.saltosMalla, detonador = "BOTON", nivelBateria = r.nivelBateria,
+                trayectoId = null, activadaEn = activadaEn!!, enviadaEn = activadaEn, latitud = r.latitud,
+                longitud = r.longitud, precisionM = null, velocidadMs = null, rumboGrados = null, bateria = r.nivelBateria,
+                fuente = "GNSS", capturadaEn = activadaEn,
+            )
+            val dispositivo = conn.consultarUno(
+                "SELECT id FROM dispositivo WHERE usuario_id = ? ORDER BY ultimo_visto_en DESC NULLS LAST LIMIT 1", usuarioId,
+            ) { it.uuid("id") }
+            guardar(conn, usuarioId, dispositivo, datos, ip, retransmitidaPor = relevadorId)
+        }
+        if (resultado.nueva) dispersion.despachar(resultado.id)
+        return resultado
+    }
+
     private data class Validada(
         val id: UUID, val tipoIncidenteId: Int?, val versionCatalogoId: Int?, val tipoSugeridoId: Int?,
         val confianzaSugerencia: Double?, val descripcion: String?, val canal: String, val saltosMalla: Int?,
@@ -134,7 +180,9 @@ class RegistroAlertas(private val dataSource: DataSource, private val dispersion
         )
     }
 
-    private fun guardar(conn: Connection, usuarioId: UUID, dispositivoToken: UUID?, d: Validada, ip: String?): Resultado {
+    private fun guardar(
+        conn: Connection, usuarioId: UUID, dispositivoToken: UUID?, d: Validada, ip: String?, retransmitidaPor: UUID? = null,
+    ): Resultado {
         AlertasRecibidas.bloquear(conn, usuarioId)
         val dueno = conn.consultarUno("SELECT usuario_id FROM alerta WHERE id = ?", d.id) { it.uuid("usuario_id") }
         if (dueno != null && dueno != usuarioId) {
@@ -188,7 +236,10 @@ class RegistroAlertas(private val dataSource: DataSource, private val dispersion
             d.id, usuarioId, buildJsonObject { put("canal", d.canal); put("detonador", d.detonador) }.toString(),
         )
         Bitacora.registrar(conn, "ENVIAR_ALERTA", usuarioId, "alerta", d.id.toString(),
-            buildJsonObject { put("canal", d.canal); put("detonador", d.detonador) }, ip)
+            buildJsonObject {
+                put("canal", d.canal); put("detonador", d.detonador)
+                retransmitidaPor?.let { put("retransmitidaPor", it.toString()) }
+            }, ip)
         return leer(conn, d.id).copy(nueva = true)
     }
 
@@ -211,5 +262,6 @@ class RegistroAlertas(private val dataSource: DataSource, private val dispersion
         val DETONADORES = setOf("BOTON", "ATAJO_FISICO", "WIDGET", "VOZ", "CAIDA", "TEMPORIZADOR")
         val FUENTES = setOf("GNSS", "WIFI", "CELULAR", "ULTIMA_CONOCIDA")
         private val json = Json { ignoreUnknownKeys = true }
+        private val HEX8 = Regex("^[0-9a-f]{8}$")
     }
 }

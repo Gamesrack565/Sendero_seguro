@@ -17,12 +17,13 @@ class SenderoApp : Application() {
     val identidad: ModuloIdentidad by lazy { ModuloIdentidad(this) }
 
     /**
-     * Módulo 2 (P4, P6, P7). Uno solo para toda la app. Manda las alertas al servidor con la sesión del Módulo 1
-     * y usa el id de la cuenta que inició sesión.
+     * Módulo 2 (P4, P5.1, P6, P7). Uno solo para toda la app. Manda las alertas, y las que recibe por la malla, al
+     * servidor con la sesión del Módulo 1, y usa el id de la cuenta que inició sesión.
      */
     val emergencias: ModuloEmergencias by lazy {
         val servidor = ServidorAlertasRetrofit.crear(BuildConfig.API_BASE_URL) { identidad.almacen.leerToken()?.token }
         ModuloEmergencias(this, servidor = servidor).also { m ->
+            m.gestorMalla.tokenServidor = { identidad.almacen.leerToken()?.token }
             scope.launch {
                 identidad.config.observarTodo().collect { config ->
                     config[ClavesConfig.USUARIO_ID]?.let { m.usuarioIdActual = it }

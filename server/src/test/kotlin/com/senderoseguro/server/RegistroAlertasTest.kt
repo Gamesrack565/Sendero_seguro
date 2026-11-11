@@ -155,4 +155,57 @@ class RegistroAlertasTest : PruebaConBaseDatos() {
         assertEquals(HttpStatusCode.Conflict, client.enviar(cuerpo(id), token = tokenBeto).status)
         assertEquals(AlertasPrueba.ANA.toString(), texto("SELECT usuario_id::text FROM alerta WHERE id = ?", id))
     }
+
+    private suspend fun HttpClient.relevar(cuerpo: String, token: String? = tokenBeto): HttpResponse = post("/api/v1/malla/relevos") {
+        token?.let { header("Authorization", "Bearer $it") }
+        contentType(ContentType.Application.Json)
+        setBody(cuerpo)
+    }
+
+    /** Lo que manda el teléfono que recibió el paquete por Bluetooth: ids cortos de la alerta y de Ana ("00000001"). */
+    private fun relevo(idCorto: String, activadaEn: Instant, persona: String = "00000001") =
+        """{"idCortoAlerta":"$idCorto","idCortoUsuario":"$persona","latitud":19.504507,"longitud":-99.146911,
+            "nivelBateria":40,"ttl":3,"saltosMalla":2,"activadaEn":"$activadaEn"}"""
+
+    @Test
+    fun `el relevo de la malla registra la alerta a nombre de quien la activo y no se duplica`() = testApplication {
+        montar()
+        val idTelefono = UUID.randomUUID()
+        val idCorto = idTelefono.toString().take(8)
+        val activadaEn = Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+
+        val r = client.relevar(relevo(idCorto, activadaEn))
+        assertEquals(HttpStatusCode.Created, r.status)
+        val json = respuesta(r.bodyAsText())
+        val folio = json.getValue("folio").jsonPrimitive.content
+        val id = UUID.fromString(json.getValue("id").jsonPrimitive.content)
+        assertTrue(id.toString().startsWith(idCorto))
+        assertEquals(AlertasPrueba.ANA.toString(), texto("SELECT usuario_id::text FROM alerta WHERE id = ?", id))
+        assertEquals("MALLA 2 40", texto("SELECT canal_recepcion || ' ' || saltos_malla || ' ' || nivel_bateria FROM alerta WHERE id = ?", id))
+        assertEquals(
+            "00000000-0000-4000-8000-000000000002",
+            texto("SELECT detalle->>'retransmitidaPor' FROM bitacora WHERE entidad_id = ? AND accion = 'ENVIAR_ALERTA'", id.toString()),
+        )
+        esperarDespacho(id)
+
+        // Otro teléfono entrega el mismo paquete, y después llega la alerta de Ana por internet: es la misma.
+        assertEquals(HttpStatusCode.OK, client.relevar(relevo(idCorto, activadaEn), token = tokenOperador).status)
+        val internet = client.enviar(cuerpo(idTelefono, activadaEn = activadaEn.plusMillis(400)))
+        assertEquals(HttpStatusCode.OK, internet.status)
+        assertEquals(folio, respuesta(internet.bodyAsText()).getValue("folio").jsonPrimitive.content)
+        assertEquals(1, numero("SELECT count(*) FROM alerta WHERE id::text LIKE ? || '%'", idCorto))
+    }
+
+    @Test
+    fun `un relevo con datos invalidos, viejo, de alguien que no existe o sin token no registra nada`() = testApplication {
+        montar()
+        val idCorto = UUID.randomUUID().toString().take(8)
+        val ahora = Instant.now()
+        assertEquals(HttpStatusCode.BadRequest, client.relevar(relevo("SOS-1234", ahora)).status)
+        assertEquals(HttpStatusCode.BadRequest, client.relevar(relevo(idCorto, ahora, persona = "ana")).status)
+        assertEquals(HttpStatusCode.BadRequest, client.relevar(relevo(idCorto, ahora.minusSeconds(25 * 3600))).status)
+        assertEquals(HttpStatusCode.NotFound, client.relevar(relevo(idCorto, ahora, persona = "abcdef99")).status)
+        assertEquals(HttpStatusCode.Unauthorized, client.relevar(relevo(idCorto, ahora), token = null).status)
+        assertEquals(0, numero("SELECT count(*) FROM alerta WHERE id::text LIKE ? || '%'", idCorto))
+    }
 }

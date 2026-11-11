@@ -49,3 +49,20 @@ data class AlertaRegistrada(
     val registradaEn: String,
     val enlaceSeguimiento: String?,
 )
+
+/**
+ * Lo que manda el teléfono que retransmite un paquete de la malla (`POST /malla/relevos`). Los ids cortos van en
+ * hexadecimal: `idCortoAlerta` son los primeros 8 caracteres del UUID de la alerta y `idCortoUsuario` los últimos 8
+ * del UUID de la persona que la activó, sin guiones.
+ */
+@Serializable
+data class RelevoMalla(
+    val idCortoAlerta: String,
+    val idCortoUsuario: String,
+    val latitud: Double,
+    val longitud: Double,
+    val nivelBateria: Int? = null,
+    val ttl: Int? = null,
+    val saltosMalla: Int? = null,
+    val activadaEn: String,
+)

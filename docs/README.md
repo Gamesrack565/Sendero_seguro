@@ -267,6 +267,13 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - Hay un solo `ModuloEmergencias` para toda la app, en `SenderoApp.emergencias`, y usa el id de la cuenta con sesión.
 - `app/src/test/.../emergencias/ServidorAlertasTest.kt` lo prueba contra el servidor local, igual que `ConexionServidorTest`.
 
+**Relevo de la malla (`POST /malla/relevos`)**
+- Cuando un teléfono recibe por Bluetooth la alerta de otra persona y tiene internet, la entrega al servidor con su propia sesión (RF-14, A-01).
+- El paquete Bluetooth mide 24 bytes (`emergencias/FormatoPaqueteMalla.kt`): id corto de la alerta (primeros 8 hex de su UUID, el mismo del SMS), latitud, longitud, batería, TTL, id corto de la persona (últimos 8 hex del UUID de su cuenta) y hora de activación. Los saltos son 5 − TTL. El bit alto del TTL marca un acuse del operador, que no se entrega al servidor.
+- El servidor reconoce a la persona por su id corto (cuenta activa) y la alerta por id corto y hora ±60 s. Si ya llegó por internet, por SMS o por otro teléfono, responde `200` con la misma; si no, la registra con `canalRecepcion = MALLA`, responde `201` y la despacha. Quien la entregó queda en la bitácora (`retransmitidaPor`).
+- Un paquete con más de 24 horas se rechaza (`400`); un id corto que no es de ninguna cuenta activa responde `404`.
+- `app/src/test/.../emergencias/RelevoMallaTest.kt` prueba el paquete y la entrega contra el servidor local.
+
 ## Dispersión
 
 Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo después de guardarla. La llamada regresa de inmediato y la dispersión corre aparte:

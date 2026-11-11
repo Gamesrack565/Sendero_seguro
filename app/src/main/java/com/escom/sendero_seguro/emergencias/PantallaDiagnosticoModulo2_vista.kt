@@ -89,7 +89,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
     }
 
     LaunchedEffect(Unit) {
-        modulo.gestorMalla.urlServidorLinux = "http://$ipLinux:8080/alerta"
+        // La URL del relevo ya viene de API_BASE_URL (app/build.gradle.kts); el campo de IP solo la cambia para pruebas.
         colaSqlite.refrescarFlujoPendientes()
     }
 
@@ -367,7 +367,7 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
                 value = ipLinux,
                 onValueChange = {
                     ipLinux = it
-                    modulo.gestorMalla.urlServidorLinux = "http://$it:8080/alerta"
+                    modulo.gestorMalla.urlServidorLinux = "http://$it:8080/api/v1/malla/relevos"
                 },
                 label = { Text("IP Consola Linux (WiFi)", fontSize = 10.sp) },
                 modifier = Modifier.weight(1f),

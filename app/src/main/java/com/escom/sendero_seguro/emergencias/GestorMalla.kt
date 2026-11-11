@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import com.escom.sendero_seguro.BuildConfig
 import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +30,6 @@ import kotlinx.coroutines.launch
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.Collections
 import javax.crypto.Cipher
@@ -54,7 +54,10 @@ class GestorMalla(private val context: Context? = null) {
     private val paquetesProcesados = Collections.synchronizedSet(LinkedHashSet<String>())
     private val listaHistorialMalla = Collections.synchronizedList(mutableListOf<PaqueteMalla>())
 
-    var urlServidorLinux: String = "http://10.100.88.182:8080/alerta"
+    // RF-14 y A-01: a dónde entrega este teléfono, si tiene internet, las alertas que recibe por la malla (Módulo 4).
+    var urlServidorLinux: String = "${BuildConfig.API_BASE_URL}malla/relevos"
+    // JWT de la sesión del Módulo 1; lo pone SenderoApp. Sin sesión no se entrega nada al servidor.
+    var tokenServidor: () -> String? = { null }
     var retransmitirAlertasOtrosActivo: Boolean = true
     var ahorroBateriaEscaneoActivo: Boolean = true
 
@@ -167,8 +170,8 @@ class GestorMalla(private val context: Context? = null) {
     }
 
     fun emitirAlertaEnMalla(alerta: AlertaEmergencia, emisorId: String, ttlInicial: Int = 5): PaqueteMalla {
-        val numId = Random.nextInt(1000, 9999)
-        val idCorto = "SOS-$numId"
+        // El id del paquete es el id corto de la alerta (primeros 8 hex de su UUID), el mismo que lleva el SMS.
+        val idCorto = "SOS-" + (FormatoPaqueteMalla.idCortoAlerta(alerta.idAlerta) ?: Random.nextInt(1000, 9999).toString())
 
         val jsonCarga = """{"alertaId":"${alerta.idAlerta}","emisorId":"$emisorId","tipo":"${alerta.nombreTipoIncidente}","desc":"${alerta.descripcionRelato}","lat":${alerta.latitudInicial},"lon":${alerta.longitudInicial},"prec":${alerta.precisionMetros}}"""
         val cargaCifrada = cifrarCargaAesGcm(jsonCarga)
@@ -188,7 +191,8 @@ class GestorMalla(private val context: Context? = null) {
             ttl = ttlInicial,
             saltosRecorridos = 0,
             cargaCifradaBase64 = cargaCifrada,
-            firmaHmacHex = firma
+            firmaHmacHex = firma,
+            timestamp = alerta.timestampInicio
         )
 
         ultimoPaqueteEmitido = paquete
@@ -254,7 +258,7 @@ class GestorMalla(private val context: Context? = null) {
         paqueteOriginal: PaqueteMalla,
         unidadOperativaId: String = "P-214"
     ): PaqueteMalla {
-        val idAcuse = "ACK-${Random.nextInt(1000, 9999)}"
+        val idAcuse = "ACK-" + (FormatoPaqueteMalla.idCortoAlerta(paqueteOriginal.alertaId) ?: Random.nextInt(1000, 9999).toString())
         val paqueteAcuse = paqueteOriginal.copy(
             packetId = idAcuse,
             ttl = 5,
@@ -354,28 +358,8 @@ class GestorMalla(private val context: Context? = null) {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val bytes = result?.scanRecord?.getManufacturerSpecificData(MESH_MANUFACTURER_ID) ?: return
 
-            if (bytes.size >= 16 && bytes[0] == MAGIC_BYTE_1 && bytes[1] == MAGIC_BYTE_2) {
-                val buffer = ByteBuffer.wrap(bytes)
-                buffer.get()
-                buffer.get()
-                val idNum = buffer.int
-                val lat = buffer.float.toDouble()
-                val lon = buffer.float.toDouble()
-                val bat = buffer.get().toInt()
-                val ttl = buffer.get().toInt()
-                val saltos = if (bytes.size >= 17) buffer.get().toInt() else (5 - ttl).coerceAtLeast(0)
-
-                val paqueteCapturado = PaqueteMalla(
-                    packetId = "SOS-$idNum",
-                    emisorId = "NODO_CERCANO",
-                    latitud = lat,
-                    longitud = lon,
-                    nivelBateria = bat,
-                    ttl = ttl,
-                    saltosRecorridos = saltos
-                )
-                interceptarYRetransmitir(paqueteCapturado)
-            }
+            val paqueteCapturado = FormatoPaqueteMalla.decodificar(bytes) ?: return
+            interceptarYRetransmitir(paqueteCapturado)
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -386,19 +370,8 @@ class GestorMalla(private val context: Context? = null) {
 
     @SuppressLint("MissingPermission")
     private fun transmitirPorHardwareBLE(paquete: PaqueteMalla) {
-        val numId = paquete.packetId.replace("SOS-", "").replace("ACK-", "").toIntOrNull()
-            ?: (abs(paquete.packetId.hashCode() % 8999) + 1000)
-
-        val buffer = ByteBuffer.allocate(17)
-        buffer.put(MAGIC_BYTE_1)
-        buffer.put(MAGIC_BYTE_2)
-        buffer.putInt(numId)
-        buffer.putFloat(paquete.latitud.toFloat())
-        buffer.putFloat(paquete.longitud.toFloat())
-        buffer.put(paquete.nivelBateria.toByte())
-        buffer.put(paquete.ttl.toByte())
-        buffer.put(paquete.saltosRecorridos.toByte())
-        val payloadBytes = buffer.array()
+        // 24 bytes: ids cortos de la alerta y de la persona, ubicación, batería, TTL y hora (FormatoPaqueteMalla).
+        val payloadBytes = FormatoPaqueteMalla.codificar(paquete)
 
         try {
             val btManager = context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -509,34 +482,28 @@ class GestorMalla(private val context: Context? = null) {
         return direcciones[indice.coerceIn(0, 7)]
     }
 
+    /**
+     * RF-14 y A-01: si este teléfono tiene internet, entrega al servidor la alerta que recibió por la malla, con su
+     * propia sesión. El servidor reconoce a la persona por el id corto y no duplica la alerta.
+     */
     fun enviarAServidorLinux(paquete: PaqueteMalla) {
+        val cuerpo = FormatoPaqueteMalla.relevoJson(paquete) ?: return
+        val token = tokenServidor() ?: return
         meshScope.launch {
-            val jsonPayload = """
-                {
-                    "packetId": "${paquete.packetId}",
-                    "alertaId": "${paquete.alertaId}",
-                    "emisorId": "${paquete.emisorId}",
-                    "latitud": ${paquete.latitud},
-                    "longitud": ${paquete.longitud},
-                    "nivelBateria": ${paquete.nivelBateria},
-                    "ttl": ${paquete.ttl},
-                    "saltosMalla": ${paquete.saltosRecorridos}
-                }
-            """.trimIndent()
-
             try {
                 val conn = (URL(urlServidorLinux).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    setRequestProperty("Authorization", "Bearer $token")
                     connectTimeout = 2500
                     readTimeout = 2500
                     doOutput = true
                 }
-                OutputStreamWriter(conn.outputStream).use { it.write(jsonPayload) }
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(cuerpo) }
                 val codigo = conn.responseCode
                 conn.disconnect()
-                if (codigo == 200) {
-                    reportar("💻 ENVIADO A SERVIDOR ($urlServidorLinux) -> HTTP 200")
+                if (codigo == 200 || codigo == 201) {
+                    reportar("💻 ENTREGADA AL SERVIDOR ($urlServidorLinux) -> HTTP $codigo")
                 }
             } catch (_: Exception) {}
         }

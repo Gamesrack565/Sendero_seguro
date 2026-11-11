@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * P4: `POST /alertas` con el token de quien la envía (integrante o coordinador). Responde 201 la primera vez y
- * 200 en un reenvío, con el folio. La dispersión corre después sin que la app espere.
+ * 200 en un reenvío, con el folio. La dispersión corre después sin que la app espere. También `POST /malla/relevos`.
  */
 fun Route.rutasRegistroAlertas(registro: RegistroAlertas) {
     authenticate(AUTH_JWT) {
@@ -28,6 +28,15 @@ fun Route.rutasRegistroAlertas(registro: RegistroAlertas) {
             val entrada = call.receive<AlertaNueva>()
             val ip = call.ipCliente()
             val r = withContext(Dispatchers.IO) { registro.registrar(u.usuarioId, u.dispositivoId, entrada, ip) }
+            call.respond(if (r.nueva) HttpStatusCode.Created else HttpStatusCode.OK, r.respuesta())
+        }
+
+        // RF-14 y A-01: el teléfono con internet entrega lo que recibió por la malla. Cualquier cuenta con sesión.
+        post("/malla/relevos") {
+            val u = call.usuarioActual()
+            val relevo = call.receive<RelevoMalla>()
+            val ip = call.ipCliente()
+            val r = withContext(Dispatchers.IO) { registro.registrarRelevo(u.usuarioId, relevo, ip) }
             call.respond(if (r.nueva) HttpStatusCode.Created else HttpStatusCode.OK, r.respuesta())
         }
     }
