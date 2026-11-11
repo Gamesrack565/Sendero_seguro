@@ -66,3 +66,27 @@ data class RelevoMalla(
     val saltosMalla: Int? = null,
     val activadaEn: String,
 )
+
+/** Una lectura de `POST /alertas/{id}/ubicaciones`. Sin `fuente`, GNSS. */
+@Serializable
+data class LecturaUbicacion(
+    val latitud: Double,
+    val longitud: Double,
+    val precisionM: Double? = null,
+    val velocidadMs: Double? = null,
+    val rumboGrados: Int? = null,
+    val bateria: Int? = null,
+    val fuente: String? = null,
+    val capturadaEn: String,
+)
+
+@Serializable
+data class LoteUbicaciones(val lecturas: List<LecturaUbicacion>)
+
+/** Los `datos` de un elemento UBICACION de `/sync/lote`. */
+@Serializable
+data class UbicacionesSync(val alertaId: String, val lecturas: List<LecturaUbicacion>)
+
+/** Respuesta de `POST /alertas/{id}/ubicaciones`: cuántas lecturas entraron y cuántas ya estaban. */
+@Serializable
+data class UbicacionesAgregadas(val insertadas: Int, val duplicadas: Int)

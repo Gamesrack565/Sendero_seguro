@@ -1,9 +1,15 @@
 package com.senderoseguro.server
 
 import com.senderoseguro.server.alertas.RegistroAlertas
+import com.senderoseguro.server.alertas.UbicacionesAlerta
 import com.senderoseguro.server.alertas.rutasRegistroAlertas
 import com.senderoseguro.server.desarrollo.AlertasPrueba
+import com.senderoseguro.server.sincronizacion.TipoSync
+import com.senderoseguro.server.sincronizacion.Sincronizacion
+import com.senderoseguro.server.sincronizacion.ElementoSync
+import com.senderoseguro.server.sincronizacion.ContextoSync
 import com.senderoseguro.server.plataforma.EmisorTokens
+import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.Rol
 import com.senderoseguro.server.plataforma.UsuarioToken
 import com.senderoseguro.server.plataforma.configurarErrores
@@ -56,7 +62,7 @@ class RegistroAlertasTest : PruebaConBaseDatos() {
             configurarSerializacion()
             configurarErrores()
             configurarSeguridad()
-            routing { route("/api/v1") { rutasRegistroAlertas(RegistroAlertas(dataSource, dispersion)) } }
+            routing { route("/api/v1") { rutasRegistroAlertas(RegistroAlertas(dataSource, dispersion), UbicacionesAlerta(dataSource)) } }
         }
     }
 
@@ -207,5 +213,70 @@ class RegistroAlertasTest : PruebaConBaseDatos() {
         assertEquals(HttpStatusCode.NotFound, client.relevar(relevo(idCorto, ahora, persona = "abcdef99")).status)
         assertEquals(HttpStatusCode.Unauthorized, client.relevar(relevo(idCorto, ahora), token = null).status)
         assertEquals(0, numero("SELECT count(*) FROM alerta WHERE id::text LIKE ? || '%'", idCorto))
+    }
+
+    private suspend fun HttpClient.ubicaciones(alerta: Any, cuerpo: String, token: String? = tokenAna): HttpResponse =
+        post("/api/v1/alertas/$alerta/ubicaciones") {
+            token?.let { header("Authorization", "Bearer $it") }
+            contentType(ContentType.Application.Json)
+            setBody(cuerpo)
+        }
+
+    /** Lecturas como las manda la app cada 10 s mientras la alerta sigue activa. */
+    private fun lecturas(vararg horas: Instant, latitud: Double = 19.5051) = horas.joinToString(",", """{"lecturas":[""", "]}") {
+        """{"latitud":$latitud,"longitud":-99.1470,"precisionM":6.0,"velocidadMs":1.2,"rumboGrados":90,"bateria":63,"fuente":"GNSS","capturadaEn":"$it"}"""
+    }
+
+    @Test
+    fun `las ubicaciones de la alerta se guardan sin repetirse y solo mientras sigue activa`() = testApplication {
+        montar()
+        val id = UUID.randomUUID()
+        assertEquals(HttpStatusCode.Created, client.enviar(cuerpo(id)).status)
+        val t1 = Instant.now().minusSeconds(20).truncatedTo(java.time.temporal.ChronoUnit.MILLIS)
+        val t2 = t1.plusSeconds(10)
+
+        val r = client.ubicaciones(id, lecturas(t1, t2))
+        assertEquals(HttpStatusCode.OK, r.status)
+        assertEquals("2 0", respuesta(r.bodyAsText()).let { "${it.getValue("insertadas").jsonPrimitive.content} ${it.getValue("duplicadas").jsonPrimitive.content}" })
+        // La app reintenta con lo que no supo si llegó y una lectura nueva.
+        val r2 = respuesta(client.ubicaciones(id, lecturas(t1, t2, t2.plusSeconds(10))).bodyAsText())
+        assertEquals("1 2", "${r2.getValue("insertadas").jsonPrimitive.content} ${r2.getValue("duplicadas").jsonPrimitive.content}")
+        assertEquals(4, numero("SELECT count(*) FROM ubicacion_alerta WHERE alerta_id = ?", id), "La primera más tres")
+        assertEquals(1, numero("SELECT count(*) FROM ubicacion_alerta WHERE alerta_id = ? AND capturada_en = ? AND rumbo_grados = 90", id, t1))
+
+        assertEquals(HttpStatusCode.NotFound, client.ubicaciones(id, lecturas(t1), token = tokenBeto).status, "No es su alerta")
+        assertEquals(HttpStatusCode.NotFound, client.ubicaciones(UUID.randomUUID(), lecturas(t1)).status)
+        assertEquals(HttpStatusCode.BadRequest, client.ubicaciones(id, lecturas(t1, latitud = 120.0)).status)
+        assertEquals(HttpStatusCode.BadRequest, client.ubicaciones(id, """{"lecturas":[]}""").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.ubicaciones(id, lecturas(t1), token = null).status)
+
+        esperarDespacho(id)
+        dataSource.connection.use { it.ejecutar("UPDATE alerta SET estado = 'CANCELADA', cancelada_en = now() WHERE id = ?", id) }
+        assertEquals(HttpStatusCode.Conflict, client.ubicaciones(id, lecturas(Instant.now())).status)
+        assertEquals(4, numero("SELECT count(*) FROM ubicacion_alerta WHERE alerta_id = ?", id))
+    }
+
+    @Test
+    fun `las ubicaciones juntadas sin senal entran por el lote, tambien si la alerta llego por la malla`() = testApplication {
+        montar()
+        val idTelefono = UUID.randomUUID()
+        val activadaEn = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        // La alerta llegó por la malla: en el servidor tiene otro UUID con el mismo id corto.
+        val relevada = UUID.fromString(respuesta(client.relevar(relevo(idTelefono.toString().take(8), activadaEn)).bodyAsText()).getValue("id").jsonPrimitive.content)
+
+        val manejador = UbicacionesAlerta(dataSource).manejadorSync
+        val sync = Sincronizacion(dataSource, dispersion, mapOf(TipoSync.UBICACION to manejador))
+        val ana = ContextoSync(AlertasPrueba.ANA, dispositivoAna)
+        fun elemento(alerta: UUID, vararg horas: Instant) = ElementoSync(
+            TipoSync.UBICACION, UUID.randomUUID(), horas.last(),
+            Json.parseToJsonElement(lecturas(*horas).dropLast(1) + ""","alertaId":"$alerta"}""").jsonObject,
+        )
+        val t = activadaEn.plusSeconds(10)
+        val r = sync.procesar(ana, listOf(elemento(idTelefono, t, t.plusSeconds(10)), elemento(idTelefono, t, t.plusSeconds(10)), elemento(UUID.randomUUID(), t)))
+        assertEquals(listOf("ACEPTADO", "DUPLICADO", "RECHAZADO"), r.map { it.resultado })
+        assertEquals(relevada.toString(), r[0].referencia)
+        assertEquals(2, numero("SELECT count(*) FROM ubicacion_alerta WHERE alerta_id = ? AND capturada_en >= ?", relevada, t))
+        assertEquals("NO_ENCONTRADO" to "true", r[2].error!!.codigo to r[2].error!!.detalle!!.getValue("temporal").jsonPrimitive.content,
+            "La alerta puede llegar después: el teléfono lo reintenta")
     }
 }

@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import com.escom.sendero_seguro.emergencias.remoto.CanalServidorAlertas
+import com.escom.sendero_seguro.emergencias.remoto.CanalUbicaciones
+import com.escom.sendero_seguro.emergencias.remoto.EnvioUbicaciones
 import com.escom.sendero_seguro.emergencias.remoto.ResultadoServidor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +29,9 @@ class ModuloEmergencias(
     // Id de la cuenta (Módulo 1). MainActivity lo pone en cuanto lee la sesión.
     var usuarioIdActual: String = "USR_LOCAL_01",
     // P4: registro en el servidor (Módulo 4). Sin él, la alerta solo vive en el teléfono y en la malla.
-    private val servidor: CanalServidorAlertas? = null
+    private val servidor: CanalServidorAlertas? = null,
+    // P6: ubicaciones de la alerta activa hacia el servidor. Por omisión, el mismo servidor de P4.
+    ubicaciones: CanalUbicaciones? = servidor as? CanalUbicaciones
 ) {
 
     companion object {
@@ -39,6 +43,11 @@ class ModuloEmergencias(
     private var jobHiloTelemetria: Job? = null
     private var jobCuentaRegresivaPreEnvio: Job? = null
     private var ultimoDisparoCaidaMs: Long = 0L
+    private val envioUbicaciones = ubicaciones?.let { EnvioUbicaciones(it) }
+
+    // P4: id de la alerta que ya no hay que mandar (el servidor la confirmó o la rechazó), y el envío en curso.
+    @Volatile private var alertaResuelta: String? = null
+    @Volatile private var envioAlerta: Job? = null
 
     // Configurable desde P3 (A-12): 3, 5 o 10 segundos antes de enviar la alerta
     var segundosCuentaRegresivaConfig: Int = 5
@@ -258,10 +267,11 @@ class ModuloEmergencias(
      */
     private fun enviarAlServidor(alerta: AlertaEmergencia) {
         val canal = servidor ?: return
-        moduloScope.launch {
+        envioAlerta = moduloScope.launch {
             repeat(3) { intento ->
                 when (val r = canal.enviar(alerta)) {
                     is ResultadoServidor.Registrada -> {
+                        alertaResuelta = alerta.idAlerta
                         _alertaActiva.update { a -> if (a?.idAlerta == alerta.idAlerta) a.copy(folio = r.folio) else a }
                         actualizarHistorialEventoAlerta(
                             alertaId = alerta.idAlerta,
@@ -273,6 +283,7 @@ class ModuloEmergencias(
                     }
                     is ResultadoServidor.Fallo -> {
                         if (!r.reintentar || intento == 2) {
+                            if (!r.reintentar) alertaResuelta = alerta.idAlerta
                             Log.w(TAG, "El servidor no registró la alerta (HTTP ${r.codigoHttp})")
                             return@launch
                         }
@@ -355,12 +366,20 @@ class ModuloEmergencias(
     private fun iniciarHiloDeFondoTelemetria(intervaloMs: Long = 10_000L) {
         jobHiloTelemetria?.cancel()
         jobHiloTelemetria = moduloScope.launch {
+            envioUbicaciones?.reiniciar()
             while (isActive && _alertaActiva.value?.activa == true) {
                 val datos = gestorTelemetria.emitirUbicacionGNSSPeriodica()
                 gestorMalla.ajustarEscaneoMallaPorBateria(datos.nivelBateria)
+                val alerta = _alertaActiva.value
 
+                // P6: cada lectura va al servidor; sin señal se junta y sale cuando vuelve.
+                envioUbicaciones?.agregar(datos)
                 if (!gestorMalla.hayConexionAInternet()) {
                     _colaTelemetriaOfflineP11.tryEmit(datos)
+                } else if (alerta != null) {
+                    // Si se activó sin internet, la alerta sale al servidor en cuanto vuelve la señal.
+                    if (alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) enviarAlServidor(alerta)
+                    envioUbicaciones?.enviarPendientes(alerta.idAlerta)
                 }
 
                 if (gestorCaminataSegura.estadoCaminata.value.activa) {
@@ -386,6 +405,8 @@ class ModuloEmergencias(
         }
 
         jobHiloTelemetria?.cancel()
+        alertaResuelta = null
+        moduloScope.launch { envioUbicaciones?.reiniciar() }
         gestorTelemetria.detenerTelemetriaTiempoReal()
         gestorMalla.detenerSoloTransmisionBLE()
         _alertaActiva.value = null

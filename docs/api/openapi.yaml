@@ -10,9 +10,8 @@ info:
     **Qué contiene:**
     - Las rutas de P5 Dispersión, P13 Auditoría, P14 Plataforma y P16 Pasarelas.
     - Las del Módulo 1 que guardan en la nube: P1 Cuentas, P2 Red de apoyo y P8 Cancelación.
-    - `POST /alertas` y `POST /alertas/{id}/ubicaciones` como propuesta de referencia
-      (P4 y P6 escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después
-      del registro.
+    - `POST /alertas`, `POST /malla/relevos` y `POST /alertas/{id}/ubicaciones` (P4 y P6
+      escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después del registro.
     - Los componentes comunes: errores, paginación y enumerados.
 
     Cada ruta lleva `x-proceso`.
@@ -241,8 +240,12 @@ paths:
   /alertas/{id}/ubicaciones:
     post:
       tags: [Alertas]
-      summary: Agrega lecturas de ubicación (propuesta de referencia)
-      description: Idempotente por (`capturadaEn`, `fuente`). Cada lectura nueva se reenvía por WebSocket a la consola y al enlace.
+      summary: Agrega lecturas de ubicación de la alerta activa
+      description: |
+        Solo quien envió la alerta. Idempotente por (`capturadaEn`, `fuente`); sin `fuente`, GNSS. Si la alerta llegó
+        antes por SMS o por la malla, se encuentra por su id corto. Cada lectura nueva se reenvía por WebSocket a la
+        consola y al enlace. Lo juntado sin internet también entra por `/sync/lote` (tipo UBICACION,
+        `datos = { alertaId, lecturas }`).
       x-proceso: P6
       parameters:
         - $ref: '#/components/parameters/IdAlerta'
@@ -274,7 +277,7 @@ paths:
         '401': { $ref: '#/components/responses/NoAutenticado' }
         '404': { $ref: '#/components/responses/NoEncontrado' }
         '409':
-          description: La alerta ya está cerrada o cancelada
+          description: La alerta ya terminó (ATENDIDA, CERRADA, CANCELADA o EXPIRADA); código CONFLICTO
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

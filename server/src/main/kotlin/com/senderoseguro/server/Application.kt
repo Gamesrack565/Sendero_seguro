@@ -1,6 +1,7 @@
 package com.senderoseguro.server
 
 import com.senderoseguro.server.alertas.RegistroAlertas
+import com.senderoseguro.server.alertas.UbicacionesAlerta
 import com.senderoseguro.server.alertas.rutasRegistroAlertas
 import com.senderoseguro.server.archivos.Almacen
 import com.senderoseguro.server.archivos.AlmacenAzureBlob
@@ -127,11 +128,13 @@ fun Application.module() {
     envioAvisos.iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
     // P4: registro de alertas. El mismo registro atiende POST /alertas, las ALERTA de /sync/lote y los SMS de la pasarela.
     val registroAlertas = RegistroAlertas(baseDatos.dataSource, dispersion)
+    val ubicacionesAlerta = UbicacionesAlerta(baseDatos.dataSource)
     val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroAlertas.registroSms)
     // Manejadores de /sync/lote: cada módulo registra el de su tipo, por ejemplo manejadoresSync[TipoSync.REPORTE] = ...
     // Un tipo sin manejador sale RECHAZADO temporal.
     val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
     manejadoresSync[TipoSync.ALERTA] = registroAlertas.manejadorSync
+    manejadoresSync[TipoSync.UBICACION] = ubicacionesAlerta.manejadorSync
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
     RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
         .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
@@ -167,7 +170,7 @@ fun Application.module() {
             rutasCuentas(cuentas)
             rutasRedApoyo(redApoyo)
             rutasCancelacion(cancelacion)
-            rutasRegistroAlertas(registroAlertas)
+            rutasRegistroAlertas(registroAlertas, ubicacionesAlerta)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)

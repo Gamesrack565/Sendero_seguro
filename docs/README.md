@@ -274,6 +274,16 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - Un paquete con más de 24 horas se rechaza (`400`); un id corto que no es de ninguna cuenta activa responde `404`.
 - `app/src/test/.../emergencias/RelevoMallaTest.kt` prueba el paquete y la entrega contra el servidor local.
 
+**Ubicación en vivo (`POST /alertas/{id}/ubicaciones`, P6)**
+- Mientras la alerta sigue activa, la app manda la lectura del GPS cada 10 s: `{ lecturas: [{ latitud, longitud, precisionM, velocidadMs, rumboGrados, bateria, fuente, capturadaEn }] }`, de 1 a 100 lecturas. Sin `fuente`, `GNSS`.
+- Solo quien envió la alerta (otra persona recibe `404`). Responde `200` con `{ insertadas, duplicadas }`: una lectura con la misma hora y fuente no se guarda dos veces, así que reenviar es seguro.
+- Si la alerta llegó antes por SMS o por la malla (en el servidor tiene otro UUID con el mismo id corto), las lecturas se guardan en esa misma alerta.
+- Con la alerta `ATENDIDA`, `CERRADA`, `CANCELADA` o `EXPIRADA` responde `409` (`CONFLICTO`). Una lectura inválida responde `400` y no se guarda nada del grupo.
+- La consola y el enlace las reciben en tiempo real: [Tiempo real](#tiempo-real) lee `ubicacion_alerta`.
+- Lo juntado sin internet también puede llegar en el lote (tipo `UBICACION`, ver [Sincronización](#sincronización)).
+- En la app, `emergencias/remoto/EnvioUbicaciones.kt` guarda las lecturas pendientes (hasta 500, en memoria) y las manda en grupos de 100 cuando hay internet. Con `404` las conserva (la alerta puede venir en camino); con `409` deja de mandar. Si la alerta se activó sin internet, `ModuloEmergencias` la manda al servidor en cuanto vuelve la señal.
+- `app/src/test/.../emergencias/UbicacionesAlertaTest.kt` prueba los pendientes y el envío contra el servidor local.
+
 ## Dispersión
 
 Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo después de guardarla. La llamada regresa de inmediato y la dispersión corre aparte:
@@ -406,7 +416,7 @@ manejadoresSync[TipoSync.REPORTE] = ManejadorSync { conn, contexto, elemento ->
 }
 ```
 
-Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. Las `ALERTA` las guarda `RegistroAlertas.manejadorSync`, con el mismo cuerpo que `POST /alertas`.
+Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. Las `ALERTA` las guarda `RegistroAlertas.manejadorSync`, con el mismo cuerpo que `POST /alertas`. Las `UBICACION` las guarda `UbicacionesAlerta.manejadorSync`, con `datos = { alertaId, lecturas }`; si la alerta todavía no está registrada sale `RECHAZADO` con `temporal: true`, y si ya terminó, con `temporal: false`.
 
 ## SMS de contingencia
 

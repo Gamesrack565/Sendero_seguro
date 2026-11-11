@@ -2,6 +2,7 @@ package com.escom.sendero_seguro.emergencias.remoto
 
 import com.escom.sendero_seguro.emergencias.AlertaEmergencia
 import com.escom.sendero_seguro.emergencias.CanalRecepcion
+import com.escom.sendero_seguro.emergencias.DatosTelemetria
 import com.escom.sendero_seguro.emergencias.TipoDetonador
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -14,11 +15,13 @@ import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.POST
+import retrofit2.http.Path
 import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-// P4: registro de la alerta en el servidor (Módulo 4), contrato `POST /alertas` de docs/api/openapi.yaml.
+// P4 y P6: registro de la alerta en el servidor (Módulo 4) y sus ubicaciones mientras sigue activa, contrato
+// `POST /alertas` y `POST /alertas/{id}/ubicaciones` de docs/api/openapi.yaml.
 
 @Serializable
 data class UbicacionNuevaDto(
@@ -52,9 +55,31 @@ data class AlertaRegistradaDto(
     val enlaceSeguimiento: String? = null,
 )
 
+/** P6: una lectura de ubicación mientras la alerta sigue activa (`POST /alertas/{id}/ubicaciones`). */
+@Serializable
+data class LecturaUbicacionDto(
+    val latitud: Double,
+    val longitud: Double,
+    val precisionM: Double? = null,
+    val velocidadMs: Double? = null,
+    val rumboGrados: Int? = null,
+    val bateria: Int? = null,
+    val fuente: String = "GNSS",
+    val capturadaEn: String,
+)
+
+@Serializable
+data class LoteUbicacionesDto(val lecturas: List<LecturaUbicacionDto>)
+
+@Serializable
+data class UbicacionesAgregadasDto(val insertadas: Int, val duplicadas: Int)
+
 interface EmergenciasApi {
     @POST("alertas")
     suspend fun registrarAlerta(@Body body: AlertaNuevaDto): Response<AlertaRegistradaDto>
+
+    @POST("alertas/{id}/ubicaciones")
+    suspend fun agregarUbicaciones(@Path("id") alertaId: String, @Body body: LoteUbicacionesDto): Response<UbicacionesAgregadasDto>
 }
 
 /** Qué pasó al mandar la alerta al servidor. */
@@ -71,8 +96,41 @@ fun interface CanalServidorAlertas {
     suspend fun enviar(alerta: AlertaEmergencia): ResultadoServidor
 }
 
+/** Qué pasó al mandar un grupo de ubicaciones. */
+enum class ResultadoUbicaciones {
+    /** El servidor las guardó (o ya las tenía): se quitan de pendientes. */
+    ENTREGADAS,
+
+    /** Sin red, servidor caído, sesión vencida o la alerta todavía no está registrada: se quedan para después. */
+    REINTENTAR,
+
+    /** El servidor no las quiere (datos inválidos): se descartan. */
+    DESCARTAR,
+
+    /** La alerta ya terminó: no tiene caso mandar más. */
+    ALERTA_TERMINADA,
+}
+
+/** Por aquí [com.escom.sendero_seguro.emergencias.ModuloEmergencias] manda las ubicaciones de la alerta activa. */
+fun interface CanalUbicaciones {
+    suspend fun enviar(alertaId: String, lecturas: List<LecturaUbicacionDto>): ResultadoUbicaciones
+}
+
 /** Implementación con Retrofit. En [crear], `tokenActual` da el JWT de la sesión del Módulo 1 (null si no hay sesión). */
-class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAlertas {
+class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAlertas, CanalUbicaciones {
+
+    override suspend fun enviar(alertaId: String, lecturas: List<LecturaUbicacionDto>): ResultadoUbicaciones = try {
+        val r = api.agregarUbicaciones(alertaId, LoteUbicacionesDto(lecturas))
+        when {
+            r.isSuccessful -> ResultadoUbicaciones.ENTREGADAS
+            r.code() == 409 -> ResultadoUbicaciones.ALERTA_TERMINADA
+            // 404: la alerta va en camino (malla o SMS) y todavía no llega; 401: sesión vencida; 5xx: el servidor falló.
+            r.code() == 404 || r.code() == 401 || r.code() >= 500 -> ResultadoUbicaciones.REINTENTAR
+            else -> ResultadoUbicaciones.DESCARTAR
+        }
+    } catch (_: IOException) {
+        ResultadoUbicaciones.REINTENTAR
+    }
 
     override suspend fun enviar(alerta: AlertaEmergencia): ResultadoServidor = try {
         val r = api.registrarAlerta(aDto(alerta))
@@ -122,6 +180,18 @@ class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAl
             TipoDetonador.CAIDA_IMPACTO -> "CAIDA"
             TipoDetonador.VENCIMIENTO_CAMINATA_SEGURA -> "TEMPORIZADOR"
         }
+
+        /** Una lectura del GPS como la espera el servidor. */
+        fun aDto(d: DatosTelemetria) = LecturaUbicacionDto(
+            latitud = d.latitud,
+            longitud = d.longitud,
+            precisionM = d.precision.toDouble().takeIf { it >= 0 },
+            velocidadMs = d.velocidadMps.toDouble().takeIf { it >= 0 },
+            rumboGrados = d.rumboGrados.takeIf { it >= 0 }?.let { Math.round(it) % 360 },
+            bateria = d.nivelBateria.takeIf { it in 0..100 },
+            fuente = d.fuente.name,
+            capturadaEn = Instant.ofEpochMilli(d.timestamp).toString(),
+        )
 
         fun aDto(a: AlertaEmergencia): AlertaNuevaDto {
             val activadaEn = Instant.ofEpochMilli(a.timestampInicio).toString()
