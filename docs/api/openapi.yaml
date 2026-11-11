@@ -110,9 +110,11 @@ paths:
   /alertas:
     post:
       tags: [Alertas]
-      summary: Registra una alerta (propuesta de referencia)
+      summary: Registra una alerta (integrante o coordinador)
       description: |
-        Idempotente por `id`. La primera vez responde `201` con el folio que asigna el servidor;
+        Idempotente por `id`. También se reconoce si antes llegó por SMS (mismo id corto y hora ±60 s).
+        Sin `tipoIncidenteId`, o con uno que no está en el catálogo, se registra como genérica (RF-6).
+        Una hora del teléfono en el futuro se toma como la hora actual. La primera vez responde `201` con el folio que asigna el servidor;
         un reenvío responde `200` con la misma alerta y no consume folio.
 
         Después de insertar, el servidor llama a la dispersión (P5)
@@ -137,6 +139,7 @@ paths:
               schema: { $ref: '#/components/schemas/AlertaRegistrada' }
         '400': { $ref: '#/components/responses/Invalido' }
         '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/SinPermiso' }
         '409':
           description: El id ya existe pero pertenece a otra persona
           content:
@@ -1364,23 +1367,23 @@ components:
 
     AlertaNueva:
       type: object
-      required: [id, tipoIncidenteId, versionCatalogoId, canalRecepcion, detonador, activadaEn, ubicacion]
+      required: [id, activadaEn, ubicacion]
       properties:
         id: { type: string, format: uuid, description: UUID generado en el teléfono }
-        tipoIncidenteId: { type: integer, description: Usar el de la genérica si la persona no eligió tipo (RF-6) }
-        versionCatalogoId: { type: integer, description: Versión del catálogo que tenía el teléfono }
+        tipoIncidenteId: { type: integer, description: Sin él (o si no existe) se registra como genérica (RF-6) }
+        versionCatalogoId: { type: integer, description: Versión del catálogo que tenía el teléfono; sin ella se usa la publicada }
         tipoSugeridoId: { type: integer, description: Sugerencia de IA-1; va junto con confianzaSugerencia }
         confianzaSugerencia: { type: number, minimum: 0, maximum: 1 }
         descripcion: { type: string, maxLength: 2000 }
-        canalRecepcion: { $ref: '#/components/schemas/CanalRecepcion' }
+        canalRecepcion: { allOf: [{ $ref: '#/components/schemas/CanalRecepcion' }], description: Sin él, INTERNET }
         saltosMalla: { type: integer, minimum: 0, description: Solo si llegó por malla }
-        firmaPaquete: { type: string, description: Solo si llegó por malla; se verifica con la llave pública del dispositivo }
-        detonador: { $ref: '#/components/schemas/Detonador' }
+        firmaPaquete: { type: string, description: Solo si llegó por malla; se acepta y no se guarda }
+        detonador: { allOf: [{ $ref: '#/components/schemas/Detonador' }], description: Sin él, BOTON }
         nivelBateria: { type: integer, minimum: 0, maximum: 100 }
-        trayectoId: { type: string, format: uuid, description: Obligatorio si detonador = TEMPORIZADOR }
+        trayectoId: { type: string, format: uuid, description: Trayecto cuyo temporizador la activó; si va, debe ser de la persona }
         activadaEn: { type: string, format: date-time, description: Reloj del teléfono }
         enviadaEn: { type: string, format: date-time }
-        ubicacion: { $ref: '#/components/schemas/Ubicacion' }
+        ubicacion: { allOf: [{ $ref: '#/components/schemas/Ubicacion' }], description: 'Aquí fuente y capturadaEn son opcionales: sin ellas, GNSS y activadaEn' }
 
     AlertaRegistrada:
       type: object

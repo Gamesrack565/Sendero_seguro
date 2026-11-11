@@ -1,5 +1,7 @@
 package com.senderoseguro.server
 
+import com.senderoseguro.server.alertas.RegistroAlertas
+import com.senderoseguro.server.alertas.rutasRegistroAlertas
 import com.senderoseguro.server.archivos.Almacen
 import com.senderoseguro.server.archivos.AlmacenAzureBlob
 import com.senderoseguro.server.archivos.AlmacenCarpeta
@@ -28,8 +30,6 @@ import com.senderoseguro.server.avisos.Proveedor
 import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.avisos.ProveedorSmsGate
 import com.senderoseguro.server.avisos.ProveedorTwilio
-import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
-import com.senderoseguro.server.desarrollo.SyncAlertaPrueba
 import com.senderoseguro.server.desarrollo.rutasDesarrollo
 import com.senderoseguro.server.dispersion.AtencionServicio
 import com.senderoseguro.server.dispersion.ConsultaAlertas
@@ -42,7 +42,6 @@ import com.senderoseguro.server.dispersion.rutasEnlace
 import com.senderoseguro.server.pasarela.ConfigPasarela
 import com.senderoseguro.server.pasarela.ConfigSmsGate
 import com.senderoseguro.server.pasarela.RecepcionSms
-import com.senderoseguro.server.pasarela.RegistroAlertasSms
 import com.senderoseguro.server.pasarela.rutasPasarela
 import com.senderoseguro.server.pasarela.rutasPruebaSms
 import com.senderoseguro.server.pasarela.rutasSmsGate
@@ -126,14 +125,13 @@ fun Application.module() {
         urlEnlace = config.property("avisos.urlEnlace").getString(),
     )
     envioAvisos.iniciar(scope = this, cada = config.property("avisos.revisionMs").getString().toLong().milliseconds)
-    // Registro de las alertas que llegan por SMS: lo conecta el Módulo 2 (P4). Mientras, en desarrollo se usa el de prueba
-    // y en la nube los SMS válidos quedan pendientes en mensaje_sms hasta que exista.
-    val registroSms: RegistroAlertasSms? = if (modoDesarrollo) RegistroSmsPrueba else null
-    val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroSms)
+    // P4: registro de alertas. El mismo registro atiende POST /alertas, las ALERTA de /sync/lote y los SMS de la pasarela.
+    val registroAlertas = RegistroAlertas(baseDatos.dataSource, dispersion)
+    val recepcionSms = RecepcionSms(baseDatos.dataSource, dispersion, registroAlertas.registroSms)
     // Manejadores de /sync/lote: cada módulo registra el de su tipo, por ejemplo manejadoresSync[TipoSync.REPORTE] = ...
-    // Mientras, en desarrollo las ALERTA usan uno de prueba; un tipo sin manejador sale RECHAZADO temporal.
+    // Un tipo sin manejador sale RECHAZADO temporal.
     val manejadoresSync = mutableMapOf<TipoSync, ManejadorSync>()
-    if (modoDesarrollo) manejadoresSync[TipoSync.ALERTA] = SyncAlertaPrueba
+    manejadoresSync[TipoSync.ALERTA] = registroAlertas.manejadorSync
     recepcionSms.iniciar(scope = this, cada = 30.seconds)
     RetencionTrayectos(baseDatos.dataSource, dias = config.property("retencion.trayectoDias").getString().toInt())
         .iniciar(scope = this, cada = config.property("retencion.revisionHoras").getString().toInt().hours)
@@ -169,6 +167,7 @@ fun Application.module() {
             rutasCuentas(cuentas)
             rutasRedApoyo(redApoyo)
             rutasCancelacion(cancelacion)
+            rutasRegistroAlertas(registroAlertas)
             rutasAlertas(consulta, atencion)
             rutasEnlace(enlaces)
             rutasTiempoReal(tiempoReal, tokens)
@@ -183,7 +182,6 @@ fun Application.module() {
             rutasHistorial(Historial(baseDatos.dataSource))
             val estadisticas = Estadisticas(baseDatos.dataSource)
             rutasEstadisticas(estadisticas, Exportacion(baseDatos.dataSource, estadisticas))
-            // Aquí se registran las rutas de cada módulo, por ejemplo: rutasRegistroAlertas(baseDatos, dispersion)
             if (modoDesarrollo) rutasDesarrollo(baseDatos.dataSource, dispersion, escalamiento, enlaces, tokens, sms)
         }
     }

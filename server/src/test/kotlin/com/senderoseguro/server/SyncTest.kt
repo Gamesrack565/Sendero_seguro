@@ -1,7 +1,7 @@
 package com.senderoseguro.server
 
 import com.senderoseguro.server.desarrollo.AlertasPrueba
-import com.senderoseguro.server.desarrollo.SyncAlertaPrueba
+import com.senderoseguro.server.alertas.RegistroAlertas
 import com.senderoseguro.server.plataforma.EmisorTokens
 import com.senderoseguro.server.plataforma.Rol
 import com.senderoseguro.server.plataforma.UsuarioToken
@@ -52,7 +52,7 @@ class SyncTest : PruebaConBaseDatos() {
     private val dispositivoAna = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
     private val ana = ContextoSync(AlertasPrueba.ANA, dispositivoAna)
 
-    private fun sincronizacion(manejadores: Map<TipoSync, ManejadorSync> = mapOf(TipoSync.ALERTA to SyncAlertaPrueba)) =
+    private fun sincronizacion(manejadores: Map<TipoSync, ManejadorSync> = mapOf(TipoSync.ALERTA to RegistroAlertas(dataSource, dispersion).manejadorSync)) =
         Sincronizacion(dataSource, dispersion, manejadores)
 
     private fun datosAlerta(id: UUID, activadaEn: Instant) = buildJsonObject {
@@ -135,7 +135,7 @@ class SyncTest : PruebaConBaseDatos() {
         }
         val truena = ManejadorSync { _, _, _ -> error("falla de prueba") }
         val r = sincronizacion(
-            mapOf(TipoSync.ALERTA to SyncAlertaPrueba, TipoSync.TRAYECTO to rechaza, TipoSync.CHECKIN to truena),
+            mapOf(TipoSync.ALERTA to RegistroAlertas(dataSource, dispersion).manejadorSync, TipoSync.TRAYECTO to rechaza, TipoSync.CHECKIN to truena),
         ).procesar(
             ana,
             listOf(

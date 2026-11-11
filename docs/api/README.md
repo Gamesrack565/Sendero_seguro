@@ -24,7 +24,8 @@ Cada ruta del YAML trae `x-proceso`, que indica el proceso al que pertenece seg�
 | `GET /alertas`, `GET /alertas/{id}`, `acuse`, `estado`, `escalar` | P5 |
 | `/enlace/{token}`, `/dispositivos/{id}/push`, `/pasarela/smsgate`, `/pasarela/sms/*` | P5 y P16 |
 | `/historial`, `/usuarios/{id}/historial`, `/alertas/{id}/timeline`, `/bitacora*`, `/estadisticas*` | P13 |
-| `POST /alertas`, `POST /alertas/{id}/ubicaciones` | P4 y P6. Vienen como propuesta, para que la consola y la app tengan una forma de referencia. |
+| `POST /alertas` | P4 (registro de la alerta) |
+| `POST /alertas/{id}/ubicaciones` | P6. Viene como propuesta, para que la consola y la app tengan una forma de referencia. |
 
 **Dispersión.** La plataforma ofrece esta interfaz de Kotlin, que se llama después de guardar una alerta nueva:
 

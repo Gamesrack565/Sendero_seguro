@@ -3,7 +3,7 @@ package com.senderoseguro.server
 import com.senderoseguro.server.avisos.EnvioAvisos
 import com.senderoseguro.server.avisos.ProveedorSimulado
 import com.senderoseguro.server.desarrollo.AlertasPrueba
-import com.senderoseguro.server.desarrollo.RegistroSmsPrueba
+import com.senderoseguro.server.alertas.RegistroAlertas
 import com.senderoseguro.server.pasarela.ConfigPasarela
 import com.senderoseguro.server.pasarela.DatosSs1
 import com.senderoseguro.server.pasarela.FirmaTwilio
@@ -45,7 +45,7 @@ class PasarelaSmsTest : PruebaConBaseDatos() {
     private val urlPublica = "https://sendero.example/api/v1"
     private val numeroAna = "+525510000001"
 
-    private fun ApplicationTestBuilder.montar(registro: RegistroAlertasSms? = RegistroSmsPrueba) {
+    private fun ApplicationTestBuilder.montar(registro: RegistroAlertasSms? = RegistroAlertas(dataSource, dispersion).registroSms) {
         application {
             configurarSerializacion()
             configurarErrores()
@@ -151,7 +151,7 @@ class PasarelaSmsTest : PruebaConBaseDatos() {
         assertNull(texto("SELECT procesado_en::text FROM mensaje_sms WHERE id = ?", id))
 
         // Cuando el registro existe, la revisión periódica lo toma.
-        assertTrue(RecepcionSms(dataSource, dispersion, RegistroSmsPrueba).procesarPendientes() >= 1)
+        assertTrue(RecepcionSms(dataSource, dispersion, RegistroAlertas(dataSource, dispersion).registroSms).procesarPendientes() >= 1)
         val alertaId = assertNotNull(texto("SELECT alerta_id::text FROM mensaje_sms WHERE id = ? AND procesado_en IS NOT NULL", id))
         // Se despacha en segundo plano; se espera a que termine para que sus avisos no queden fuera de la limpieza.
         esperar { texto("SELECT estado::text FROM alerta WHERE id = ?::uuid", alertaId) == "ASIGNADA" }

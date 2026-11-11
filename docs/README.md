@@ -17,6 +17,7 @@ Con esto ya puedes:
 | Probar algo contra el servidor real | [Servidor en la nube](#servidor-en-la-nube) |
 | Correr el servidor en tu compu | [Correr el servidor en local](#correr-el-servidor-en-local) y [Datos y rutas de prueba](#datos-y-rutas-de-prueba) |
 | Conectar la app de identidad (registro, login, contactos, círculo, cancelación) | [Cuentas, red de apoyo y cancelación](#cuentas-red-de-apoyo-y-cancelación) |
+| Mandar una alerta desde la app | [Registro de alertas](#registro-de-alertas) |
 | Usar algo de la plataforma desde otra parte | [Puntos de conexión de la plataforma](#puntos-de-conexión-de-la-plataforma) |
 | Saber qué JSON manda y recibe cada ruta | [Ver el contrato de la API](#ver-el-contrato-de-la-api) y `docs/api/README.md` |
 | Arreglar un error al correr o al probar | [Errores comunes](#errores-comunes) |
@@ -44,6 +45,7 @@ server/                              Servidor Ktor (módulo de Gradle, junto a a
   src/main/kotlin/…/plataforma/      Base de datos, errores, JWT, logs, /salud y ayudas de SQL
   src/main/kotlin/…/cuentas/         Registro, login con bloqueo, sesiones, perfil y baja (P1)
   src/main/kotlin/…/redapoyo/        Contactos de confianza, círculo escolar y avisos de vinculación (P2)
+  src/main/kotlin/…/alertas/         Registro de las alertas: por internet, por el lote offline y por SMS (P4)
   src/main/kotlin/…/cancelacion/     Cancelación de alertas con PIN y posible coacción (P8)
   src/main/kotlin/…/dispersion/      Canalización, asignación de la unidad más cercana y escalamiento (P5)
   src/main/kotlin/…/tiemporeal/      WebSocket de la consola y del enlace (P16)
@@ -169,8 +171,8 @@ Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hac
 - `dispersion.cancelada(alertaId)`: para una alerta que ya quedó `CANCELADA`. Avisa a los operadores asignados y a la red de apoyo, libera las unidades y apaga el enlace. Con el PIN de coacción no aplica, porque la alerta sigue activa en silencio.
 
 **Alertas por SMS**
-- `RegistroAlertasSms` (`pasarela/RecepcionSms.kt`) es la interfaz por la que la pasarela entrega una alerta que llegó por SMS y todavía no existe. La implementación recibe la conexión de la transacción, inserta la alerta con `canal_recepcion = SMS` y un id que empieza con el id corto del SMS, y no despacha (la pasarela despacha después). Se conecta en `Application.kt`.
-- Mientras no hay implementación, en local se usa un registro de prueba y en la nube los SMS válidos quedan guardados como pendientes. Cuando se conecta, se procesan solos los de las últimas 24 horas.
+- `RegistroAlertasSms` (`pasarela/RecepcionSms.kt`) es la interfaz por la que la pasarela entrega una alerta que llegó por SMS y todavía no existe. La implementa `RegistroAlertas.registroSms` (`alertas/`): inserta la alerta con `canal_recepcion = SMS` y un id que empieza con el id corto del SMS, y no despacha (la pasarela despacha después).
+- Si un SMS válido no se pudo registrar, queda pendiente y se reintenta solo, hasta 24 horas después de recibido.
 - Una misma alerta que llega por dos caminos (SMS y después internet o lote) se reconoce por persona + id corto + hora ±60 s y no se duplica.
 
 **Lote offline (`/sync/lote`)**
@@ -247,6 +249,17 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - `exitoso: true`: la alerta pasa a `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`.
 - `exitoso: false` (el PIN no coincidió): se toma como posible coacción. La alerta sigue activa, la consola ve la marca y a la persona se le muestra como cancelada.
 - Reenviar el mismo intento no lo duplica, y si la alerta ya terminó, el intento se guarda sin cambiar nada.
+
+## Registro de alertas
+
+`POST /alertas` (P4): la app registra la alerta en cuanto tiene internet. Contrato en `docs/api/openapi.yaml` (`AlertaNueva` y `AlertaRegistrada`).
+
+- Con el token de quien la envía (Integrante o Coordinador; un Operador recibe `403`).
+- El `id` es el UUID que generó el teléfono. La primera vez responde `201` con el folio (`ALR-2026-…`); un reenvío responde `200` con la misma alerta. Un id que ya es de otra persona responde `409`.
+- Lo mínimo es `id`, `activadaEn` y `ubicacion` (`latitud`, `longitud`). Sin `tipoIncidenteId`, o con uno que no está en el catálogo, se registra como genérica. Sin `detonador`, `BOTON`; sin `canalRecepcion`, `INTERNET`.
+- Valores de `detonador`: `BOTON`, `ATAJO_FISICO`, `WIDGET`, `VOZ`, `CAIDA` y `TEMPORIZADOR`.
+- Guarda la alerta (`ENVIADA`), su primera ubicación, el evento de la línea de tiempo y la bitácora (`ENVIAR_ALERTA`). Después la despacha (`dispersion.despachar`) sin que la app espere.
+- La misma alerta que llega también por el lote offline o por SMS se guarda una sola vez: se reconoce por `id`, o por id corto y hora ±60 s si antes llegó por SMS.
 
 ## Dispersión
 
@@ -380,7 +393,7 @@ manejadoresSync[TipoSync.REPORTE] = ManejadorSync { conn, contexto, elemento ->
 }
 ```
 
-Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. En local, las `ALERTA` usan un manejador de prueba.
+Un tipo sin manejador sale `RECHAZADO` con `temporal: true`, así que el teléfono lo guarda hasta que exista. Las `ALERTA` las guarda `RegistroAlertas.manejadorSync`, con el mismo cuerpo que `POST /alertas`.
 
 ## SMS de contingencia
 
