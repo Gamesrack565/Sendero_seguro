@@ -48,6 +48,7 @@ class ModuloEmergencias(
     // P4: id de la alerta que ya no hay que mandar (el servidor la confirmó o la rechazó), y el envío en curso.
     @Volatile private var alertaResuelta: String? = null
     @Volatile private var envioAlerta: Job? = null
+    @Volatile private var detonadorEnCuenta: TipoDetonador = TipoDetonador.BOTON_SOS
 
     // Configurable desde P3 (A-12): 3, 5 o 10 segundos antes de enviar la alerta
     var segundosCuentaRegresivaConfig: Int = 5
@@ -194,6 +195,7 @@ class ModuloEmergencias(
             return
         }
 
+        detonadorEnCuenta = detonador
         val idTemporal = java.util.UUID.randomUUID().toString()
         _historialEventosAlerta.value = emptyList()
         actualizarHistorialEventoAlerta(idTemporal, null, EstadoAlertaE01.CREADA, "Botón presionado ($detonador)")
@@ -389,6 +391,19 @@ class ModuloEmergencias(
                 delay(intervaloMs)
             }
         }
+    }
+
+    /**
+     * P8 (RF-13): se usó el PIN de coacción. La alerta se ve cancelada pero sigue: GPS, envío al servidor y malla.
+     * Si todavía iba en la cuenta regresiva, se envía en ese momento en vez de esperar.
+     */
+    fun activarModoCoaccionSilencioso() {
+        if (_alertaActiva.value?.activa != true && jobCuentaRegresivaPreEnvio?.isActive == true) {
+            jobCuentaRegresivaPreEnvio?.cancel()
+            _segundosRestantesPreEnvio.value = null
+            activarAlertaEmergencia(detonadorEnCuenta)
+        }
+        _alertaActiva.update { a -> if (a?.activa == true) a.copy(enModoCoaccionSilencioso = true) else a }
     }
 
     fun desactivarAlertaEmergencia(simulacionCoaccion: Boolean = false) {

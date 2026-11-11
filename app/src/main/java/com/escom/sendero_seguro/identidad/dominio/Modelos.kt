@@ -182,4 +182,10 @@ sealed class EventoCancelacion {
 
     /** Intento fallido: la alerta sigue activa y el backend lo marca como posible coacción. */
     data class IntentoFallido(val alertaId: String) : EventoCancelacion()
+
+    /**
+     * Se usó el PIN de coacción: la pantalla ya muestra la alerta como cancelada, pero sigue activa. El Módulo 2
+     * entra en modo silencioso (sigue con GPS, envío y malla sin mostrarlo).
+     */
+    data class CoaccionSilenciosa(val alertaId: String) : EventoCancelacion()
 }

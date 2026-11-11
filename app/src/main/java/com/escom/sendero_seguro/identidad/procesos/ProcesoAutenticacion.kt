@@ -170,6 +170,28 @@ class ProcesoAutenticacion(
     }
 
     /**
+     * PIN de coacción (P3, RF-13): un segundo PIN, distinto del de cancelación. Si alguien obliga a la persona a
+     * apagar la alerta, ella usa este: la pantalla muestra la alerta como cancelada y la alerta sigue activa.
+     * Solo se guarda su hash.
+     */
+    suspend fun crearPinCoaccion(pin: String, confirmacion: String): Resultado<Unit> {
+        if (sesionLocal() == null) return falla(ErrorIdentidad.SinSesion)
+        val cancelacion = almacen.leerHashPin() ?: return falla(ErrorIdentidad.PinNoConfigurado)
+        val e = Validaciones.validarPin(pin, confirmacion)
+        if (e.isNotEmpty()) return falla(ErrorIdentidad.Validacion(e))
+        if (withContext(cpu) { HashPin.verificar(pin, cancelacion) }) {
+            return falla(ErrorIdentidad.Validacion(mapOf(Validaciones.PIN to "Debe ser distinto de tu PIN de cancelación")))
+        }
+        almacen.guardarHashPinCoaccion(withContext(cpu) { HashPin.generar(pin) })
+        return exito(Unit)
+    }
+
+    /** Quita el PIN de coacción: un PIN distinto del de cancelación vuelve a ser solo un intento fallido. */
+    fun quitarPinCoaccion() = almacen.borrarHashPinCoaccion()
+
+    fun tienePinCoaccion(): Boolean = almacen.leerHashPinCoaccion() != null
+
+    /**
      * Sesión guardada en el teléfono. Funciona sin internet: el botón de pánico solo necesita
      * saber quién es la persona; tokenVigente indica si hay que renovar al recuperar señal.
      */
@@ -229,6 +251,10 @@ class ProcesoAutenticacion(
         }
         val e = Validaciones.validarPin(nuevo, confirmacion)
         if (e.isNotEmpty()) return falla(ErrorIdentidad.Validacion(e))
+        val coaccion = almacen.leerHashPinCoaccion()
+        if (coaccion != null && withContext(cpu) { HashPin.verificar(nuevo, coaccion) }) {
+            return falla(ErrorIdentidad.Validacion(mapOf(Validaciones.PIN to "Debe ser distinto de tu PIN de coacción")))
+        }
         almacen.guardarHashPin(withContext(cpu) { HashPin.generar(nuevo) })
         return exito(Unit)
     }

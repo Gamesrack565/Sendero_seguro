@@ -29,6 +29,8 @@ import kotlinx.coroutines.withContext
  * - El PIN se verifica en el teléfono (funciona sin internet).
  * - Si no coincide la alerta SIGUE ACTIVA, el intento se registra (cancelacion.exitoso = false) para que el
  *   backend lo trate como posible coacción, y la pantalla solo muestra un mensaje neutro (flujo 3a de CU-21).
+ * - Con el PIN de coacción (si la persona lo creó) la pantalla recibe Cancelada, igual que una cancelación real,
+ *   pero al backend va como intento no exitoso: la alerta sigue y escala en silencio (P8, RF-13).
  * - Si coincide se avisa al backend, que pasa la alerta a CANCELADA, avisa a la unidad y a la red de apoyo
  *   y revoca enlace_ubicacion. Sin señal la cancelación queda en cola_alerta (tipo CANCELACION).
  *
@@ -100,6 +102,8 @@ class ProcesoCancelacion(
             is Resultado.Error -> return r
             is Resultado.Exito -> r.valor
         }
+        // PIN de coacción: a la vista se cancela; en el servidor la alerta sigue y se marca la coacción.
+        if (esPinCoaccion(pin)) return exito(simularCancelacionPorCoaccion(alertaId, m))
         return when (val v = verificarPinCancelacion(alertaId, pin, m)) {
             is Resultado.Error -> v
             is Resultado.Exito ->
@@ -156,6 +160,23 @@ class ProcesoCancelacion(
     }
 
     // ------------------------------------------------------------------ internos
+
+    private suspend fun esPinCoaccion(pin: String): Boolean {
+        val guardado = almacen.leerHashPinCoaccion() ?: return false
+        return pin.length == 4 && withContext(cpu) { HashPin.verificar(pin, guardado) }
+    }
+
+    /**
+     * Responde igual que una cancelación real, para que quien vea la pantalla no note nada. Al servidor va como
+     * intento no exitoso (posible coacción): la alerta sigue, la consola ve la marca y no se avisa la cancelación.
+     */
+    private suspend fun simularCancelacionPorCoaccion(alertaId: String, motivo: CancelacionMotivo): ResultadoCancelacion.Cancelada {
+        val s = solicitud(alertaId, motivo, MetodoAutenticacion.PIN, exitoso = false)
+        val enviada = remoto.registrarCancelacion(s) is Resultado.Exito
+        if (!enviada) guardarFallidos(leerFallidos() + s)
+        _eventos.emit(EventoCancelacion.CoaccionSilenciosa(alertaId))
+        return ResultadoCancelacion.Cancelada(alertaId, sincronizada = enviada)
+    }
 
     private suspend fun registrarIntentoFallido(alertaId: String, motivo: CancelacionMotivo?, metodo: MetodoAutenticacion) {
         val s = solicitud(alertaId, motivo, metodo, exitoso = false)

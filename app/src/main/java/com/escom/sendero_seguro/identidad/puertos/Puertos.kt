@@ -71,6 +71,11 @@ interface AlmacenSeguro {
     fun borrarToken()
     fun guardarHashPin(hash: String)
     fun leerHashPin(): String?
+
+    /** PIN de coacción (P3, RF-13): otro PIN que la persona elige; al usarlo la pantalla simula la cancelación. */
+    fun guardarHashPinCoaccion(hash: String) {}
+    fun leerHashPinCoaccion(): String? = null
+    fun borrarHashPinCoaccion() {}
     fun borrarTodo()
 }
 

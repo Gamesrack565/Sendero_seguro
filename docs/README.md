@@ -255,7 +255,9 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - La pantalla A-08 usa `CancelacionViewModel` con el `idAlerta` de `SenderoApp.emergencias.alertaActiva`.
 - Al cancelar con PIN o huella, `SenderoApp` detiene la alerta del Módulo 2 (GPS, envío de ubicaciones y malla). Un PIN que no coincide no la detiene.
 - Sin señal, la cancelación queda en `cola_alerta` (tipo `CANCELACION`) y el intento fallido en `config_local`. `SenderoApp` los manda al abrir la app y cada vez que vuelve internet (`ModuloIdentidad.sincronizarPendientes`). Si el servidor responde que la alerta no existe, la cancelación se conserva hasta que vence (72 h), porque la alerta puede venir en camino.
-- `app/src/test/.../identidad/ProcesosTest.kt` prueba la cola sin señal.
+- PIN de coacción (P8): la persona puede crear un segundo PIN, distinto al de cancelación (`ProcesoAutenticacion.crearPinCoaccion`, `quitarPinCoaccion`, `tienePinCoaccion`). Su hash se guarda en el Keystore (`pin_coaccion_hash`).
+- Si se escribe el PIN de coacción, la pantalla muestra la alerta como cancelada, pero se manda al servidor un intento con `exitoso: false`. `SenderoApp` recibe `CoaccionSilenciosa` y `ModuloEmergencias.activarModoCoaccionSilencioso()` deja la alerta activa en modo silencioso. Si estaba en la cuenta regresiva, la alerta se activa en ese momento. Sin señal, el intento se guarda y se manda después.
+- `app/src/test/.../identidad/ProcesosTest.kt` prueba la cola sin señal y el PIN de coacción.
 
 ## Registro de alertas
 
