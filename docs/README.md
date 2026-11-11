@@ -261,6 +261,12 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - Guarda la alerta (`ENVIADA`), su primera ubicación, el evento de la línea de tiempo y la bitácora (`ENVIAR_ALERTA`). Después la despacha (`dispersion.despachar`) sin que la app espere.
 - La misma alerta que llega también por el lote offline o por SMS se guarda una sola vez: se reconoce por `id`, o por id corto y hora ±60 s si antes llegó por SMS.
 
+**En la app**
+- `app/.../emergencias/remoto/ServidorAlertas.kt` manda la alerta con el JWT de la sesión del Módulo 1 y traduce los detonadores de la app (`BOTON_SOS` → `BOTON`, `COMANDO_VOZ` → `VOZ`, `CAIDA_IMPACTO` → `CAIDA`, `VENCIMIENTO_CAMINATA_SEGURA` → `TEMPORIZADOR`).
+- `ModuloEmergencias.activarAlertaEmergencia` la manda en cuanto hay internet, sin detener la activación. Reintenta 3 veces si no hubo red o el servidor falló, y la alerta toma el folio del servidor. Sin internet sigue por la malla.
+- Hay un solo `ModuloEmergencias` para toda la app, en `SenderoApp.emergencias`, y usa el id de la cuenta con sesión.
+- `app/src/test/.../emergencias/ServidorAlertasTest.kt` lo prueba contra el servidor local, igual que `ConexionServidorTest`.
+
 ## Dispersión
 
 Quien registra una alerta nueva llama a `dispersion.despachar(alertaId)` justo después de guardarla. La llamada regresa de inmediato y la dispersión corre aparte:

@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
+import com.escom.sendero_seguro.emergencias.remoto.CanalServidorAlertas
+import com.escom.sendero_seguro.emergencias.remoto.ResultadoServidor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,12 +18,16 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class ModuloEmergencias(
     private val context: Context,
-    private val usuarioIdActual: String = "USR_LOCAL_01"
+    // Id de la cuenta (Módulo 1). MainActivity lo pone en cuanto lee la sesión.
+    var usuarioIdActual: String = "USR_LOCAL_01",
+    // P4: registro en el servidor (Módulo 4). Sin él, la alerta solo vive en el teléfono y en la malla.
+    private val servidor: CanalServidorAlertas? = null
 ) {
 
     companion object {
@@ -233,6 +239,8 @@ class ModuloEmergencias(
         )
         sincronizarVistaRedApoyoYEmisora()
 
+        if (hayInternet) enviarAlServidor(nuevaAlerta)
+
         if (modoSinRedMallaActivo) {
             gestorMalla.emitirAlertaEnMalla(nuevaAlerta, usuarioIdActual)
         }
@@ -242,6 +250,37 @@ class ModuloEmergencias(
         iniciarHiloDeFondoTelemetria(intervaloMs = 10_000L)
 
         return nuevaAlerta
+    }
+
+    /**
+     * P4: manda la alerta al servidor sin detener la activación. Reintenta 3 veces si no hubo red o el servidor
+     * falló; el servidor no la duplica. Si responde, la alerta toma el folio del servidor.
+     */
+    private fun enviarAlServidor(alerta: AlertaEmergencia) {
+        val canal = servidor ?: return
+        moduloScope.launch {
+            repeat(3) { intento ->
+                when (val r = canal.enviar(alerta)) {
+                    is ResultadoServidor.Registrada -> {
+                        _alertaActiva.update { a -> if (a?.idAlerta == alerta.idAlerta) a.copy(folio = r.folio) else a }
+                        actualizarHistorialEventoAlerta(
+                            alertaId = alerta.idAlerta,
+                            estadoAnterior = EstadoAlertaE01.ENVIADA,
+                            estadoNuevo = EstadoAlertaE01.ENVIADA,
+                            detalle = "Registrada en el servidor con folio ${r.folio}"
+                        )
+                        return@launch
+                    }
+                    is ResultadoServidor.Fallo -> {
+                        if (!r.reintentar || intento == 2) {
+                            Log.w(TAG, "El servidor no registró la alerta (HTTP ${r.codigoHttp})")
+                            return@launch
+                        }
+                        delay(2000L * (intento + 1))
+                    }
+                }
+            }
+        }
     }
 
     /**

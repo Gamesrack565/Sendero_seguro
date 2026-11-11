@@ -50,7 +50,7 @@ class PantallaDiagnosticoModulo2_vista : ComponentActivity() {
         Configuration.getInstance().userAgentValue = packageName
 
         enableEdgeToEdge()
-        val modulo2 = ModuloEmergencias(this)
+        val modulo2 = (application as SenderoApp).emergencias
 
         setContent {
             Sendero_seguroTheme {
