@@ -51,6 +51,11 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
+    // --- Frontend móvil (A-04 UI y Navegación)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.osmdroid.android)
+
     // --- Módulo 1 (Identidad)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.biometric)
@@ -67,9 +72,6 @@ dependencies {
 
     // --- Tareas en Segundo Plano (WorkManager)
     implementation(libs.androidx.work.runtime.ktx)
-
-    // --- Mapas
-    implementation("org.osmdroid:osmdroid-android:6.1.18")
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
