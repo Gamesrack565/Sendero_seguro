@@ -211,6 +211,9 @@ class GestorMalla(private val context: Context? = null) {
         val nuevoTtl = paqueteEntrante.ttl - 1
         val nuevosSaltos = paqueteEntrante.saltosRecorridos + 1
 
+        // A-01: con internet se entrega al servidor aunque ya no queden saltos para retransmitirlo.
+        if (nuevoTtl <= 0) enviarAServidorLinux(paqueteEntrante.copy(ttl = 0, saltosRecorridos = nuevosSaltos))
+
         if (nuevoTtl <= 0) {
             reportar("⏹️ Paquete ${paqueteEntrante.packetId} descartado (TTL=0)")
             return null
