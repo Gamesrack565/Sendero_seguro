@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -90,6 +91,7 @@ class ServidorAlertasTest {
         assertTrue("Se esperaba Registrada y llegó $primero", primero is ResultadoServidor.Registrada)
         val folio = (primero as ResultadoServidor.Registrada).folio
         assertTrue(folio.startsWith("ALR-"))
+        assertNotNull("La línea de tiempo de evento_alerta debe devolver un estado", servidor.consultarEstado(a.idAlerta))
 
         val reenvio = servidor.enviar(a)
         assertEquals(folio, (reenvio as ResultadoServidor.Registrada).folio)

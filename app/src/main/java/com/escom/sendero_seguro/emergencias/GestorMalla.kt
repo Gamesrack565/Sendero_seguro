@@ -1,6 +1,7 @@
 package com.escom.sendero_seguro.emergencias
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.*
@@ -202,6 +203,24 @@ class GestorMalla(private val context: Context? = null) {
 
         transmitirPorHardwareBLE(paquete)
         return paquete
+    }
+
+    @SuppressLint("MissingPermission")
+    fun puedeTransmitirAlertasPorBluetooth(): Boolean {
+        val appContext = context ?: return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
+        return try {
+            val manager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            val adapter = manager?.adapter
+            adapter?.isEnabled == true && adapter.bluetoothLeAdvertiser != null
+        } catch (_: SecurityException) {
+            false
+        }
     }
 
     fun interceptarYRetransmitir(paqueteEntrante: PaqueteMalla): PaqueteMalla? {

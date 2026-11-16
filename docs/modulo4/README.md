@@ -215,7 +215,7 @@ Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hac
 - `ApiException` responde con el formato de error del contrato (ver [Cómo se agrega una ruta](#cómo-se-agrega-una-ruta)).
 
 **Dirección del servidor y base del teléfono**
-- En la nube, la de [Servidor en la nube](#servidor-en-la-nube). En local, `http://localhost:8080/api/v1`; desde el emulador de Android, `http://10.0.2.2:8080/api/v1`.
+- En la nube, la de [Servidor en la nube](#servidor-en-la-nube). En local, `http://localhost:8080/api/v1`; desde el emulador de Android, `http://10.0.2.2:8080/api/v1`. Un teléfono físico debe usar la IPv4 Wi-Fi de la PC (`http://<IP-PC>:8080/api/v1/`) y estar en la misma red; configura `senderoApiUrl` en el `local.properties` ignorado por Git como indica la guía de [prueba local de alertas](../prueba-alerta-local.md).
 - La base local del teléfono (Room) sigue `db/sendero_seguro_local_sqlite.sql` (ver [Base de datos del teléfono](#base-de-datos-del-teléfono)).
 
 ## Cuentas, red de apoyo y cancelación
@@ -226,7 +226,7 @@ Rutas que usa la app de identidad (Módulo 1). El contrato completo está en `do
 - JSON en camelCase, como el resto del servidor (`telefonoMovil`, `escuelaId`, `nombreGrupo`…).
 - Los errores traen sus datos dentro de `detalle`: `detalle.errores` (un texto por campo, con las mismas claves que usa la app), `detalle.intentosRestantes`, `detalle.bloqueadaHasta` y `detalle.rol`.
 - `401 NO_AUTENTICADO` significa que falta el token, que venció o que la sesión se cerró: hay que volver a iniciar sesión. `401 CREDENCIALES_INVALIDAS` es la contraseña mala en el login.
-- La dirección del servidor está en `app/build.gradle.kts` (`API_BASE_URL`): la versión debug usa el servidor de la PC (`http://10.0.2.2:8080/api/v1/`) y la release, el de Azure. Para probar la debug contra la nube: `.\gradlew.bat :app:installDebug -PsenderoApiUrl=<url de la nube>/api/v1/`.
+- La dirección del servidor está en `app/build.gradle.kts` (`API_BASE_URL`): la versión debug usa `http://10.0.2.2:8080/api/v1/` en emulador o `senderoApiUrl` de `local.properties` en teléfono físico; también puede pasarse con `-PsenderoApiUrl=...`. La release usa Azure. Para probar la debug contra la nube: `.\gradlew.bat :app:installDebug -PsenderoApiUrl=<url de la nube>/api/v1/`.
 - `app/src/test/.../identidad/ConexionServidorTest.kt` prueba el código de red de la app contra el servidor local (registro, login, contactos, círculo y cancelación). Se corre con `.\gradlew.bat :app:testDebugUnitTest` con el servidor prendido; si no está prendido, se omite.
 
 **Pendiente en la app: el token de push**

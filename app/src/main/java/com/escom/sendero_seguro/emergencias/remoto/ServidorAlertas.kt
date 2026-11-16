@@ -14,6 +14,7 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
 import java.io.IOException
@@ -74,12 +75,33 @@ data class LoteUbicacionesDto(val lecturas: List<LecturaUbicacionDto>)
 @Serializable
 data class UbicacionesAgregadasDto(val insertadas: Int, val duplicadas: Int)
 
+@Serializable
+data class SolicitudTokenDesarrolloDto(val cuenta: String)
+
+@Serializable
+data class TokenDesarrolloDto(val token: String, val usuarioId: String, val rol: String, val expiraEn: String)
+
+@Serializable
+data class LineaTiempoAlertaDto(val alertaId: String, val eventos: List<EventoTimelineAlertaDto>)
+
+@Serializable
+data class EventoTimelineAlertaDto(
+    val tipo: String,
+    val estadoNuevo: String? = null
+)
+
 interface EmergenciasApi {
     @POST("alertas")
     suspend fun registrarAlerta(@Body body: AlertaNuevaDto): Response<AlertaRegistradaDto>
 
     @POST("alertas/{id}/ubicaciones")
     suspend fun agregarUbicaciones(@Path("id") alertaId: String, @Body body: LoteUbicacionesDto): Response<UbicacionesAgregadasDto>
+
+    @GET("alertas/{id}/timeline")
+    suspend fun consultarLineaTiempo(@Path("id") alertaId: String): Response<LineaTiempoAlertaDto>
+
+    @POST("dev/token")
+    suspend fun obtenerTokenDesarrollo(@Body body: SolicitudTokenDesarrolloDto): Response<TokenDesarrolloDto>
 }
 
 /** Qué pasó al mandar la alerta al servidor. */
@@ -94,6 +116,11 @@ sealed interface ResultadoServidor {
 /** Por aquí [com.escom.sendero_seguro.emergencias.ModuloEmergencias] manda la alerta al servidor. */
 fun interface CanalServidorAlertas {
     suspend fun enviar(alerta: AlertaEmergencia): ResultadoServidor
+
+    suspend fun consultarEstado(alertaId: String): String? = null
+
+    suspend fun reenviarPendiente(payloadJson: String): ResultadoServidor =
+        ResultadoServidor.Fallo(null, reintentar = true)
 }
 
 /** Qué pasó al mandar un grupo de ubicaciones. */
@@ -134,14 +161,46 @@ class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAl
 
     override suspend fun enviar(alerta: AlertaEmergencia): ResultadoServidor = try {
         val r = api.registrarAlerta(aDto(alerta))
+        resultadoRegistro(r)
+    } catch (_: IOException) {
+        ResultadoServidor.Fallo(null, reintentar = true)
+    }
+
+    override suspend fun consultarEstado(alertaId: String): String? = try {
+        val r = api.consultarLineaTiempo(alertaId)
+        if (r.isSuccessful) {
+            r.body()?.eventos?.lastOrNull { it.tipo == "CAMBIO_ESTADO" }?.estadoNuevo
+        } else {
+            null
+        }
+    } catch (_: IOException) {
+        null
+    }
+
+    override suspend fun reenviarPendiente(payloadJson: String): ResultadoServidor = try {
+        val alerta = json.decodeFromString(AlertaNuevaDto.serializer(), payloadJson)
+        resultadoRegistro(api.registrarAlerta(alerta))
+    } catch (_: IOException) {
+        ResultadoServidor.Fallo(null, reintentar = true)
+    } catch (e: kotlinx.serialization.SerializationException) {
+        ResultadoServidor.Fallo(null, reintentar = false)
+    }
+
+    suspend fun tokenDeDesarrolloLocal(): TokenDesarrolloDto {
+        val respuesta = api.obtenerTokenDesarrollo(SolicitudTokenDesarrolloDto("ana"))
+        if (!respuesta.isSuccessful) {
+            throw IOException("El servidor local rechazó POST /dev/token (HTTP ${respuesta.code()})")
+        }
+        return respuesta.body() ?: throw IOException("POST /dev/token no devolvió un token")
+    }
+
+    private fun resultadoRegistro(r: Response<AlertaRegistradaDto>): ResultadoServidor {
         val cuerpo = r.body()
-        when {
+        return when {
             r.isSuccessful && cuerpo != null -> ResultadoServidor.Registrada(cuerpo.folio, cuerpo.estado)
             // 401: la sesión venció; 5xx: el servidor falló. Las dos se arreglan reintentando más tarde.
             else -> ResultadoServidor.Fallo(r.code(), reintentar = r.code() == 401 || r.code() >= 500)
         }
-    } catch (_: IOException) {
-        ResultadoServidor.Fallo(null, reintentar = true)
     }
 
     companion object {

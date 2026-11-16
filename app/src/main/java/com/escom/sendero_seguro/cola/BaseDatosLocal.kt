@@ -1,57 +1,27 @@
 package com.escom.sendero_seguro.cola
 
 import android.content.Context
-import androidx.room.Database
-import androidx.room.Room
-import androidx.room.RoomDatabase
+import com.escom.sendero_seguro.core.db.SenderoDatabase
 
 /**
- * ER-06: Base local del teléfono.
- * Sin llaves foráneas entre tablas: usan el mismo UUID que el servidor para que un reenvío no duplique.
- * Abstracción de SQLite mediante Room.
+ * Acceso del P11 a la base Room compartida del teléfono. La cola y la identidad deben usar
+ * la misma instancia para no abrir el mismo archivo con esquemas Room incompatibles.
  */
-@Database(
-    entities = [
-        ColaAlertaEntity::class,
-        ColaReporteEntity::class,
-        PaqueteVistoEntity::class,
-        CacheMapaEntity::class,
-        ConfigLocalEntity::class,
-        CatalogoLocalEntity::class,
-        ContactoLocalEntity::class
-    ],
-    version = 1,
-    exportSchema = false
-)
-abstract class BaseDatosLocal : RoomDatabase() {
+class BaseDatosLocal private constructor(private val db: SenderoDatabase) {
 
-    abstract fun colaAlertaDao(): ColaAlertaDao
-    abstract fun colaReporteDao(): ColaReporteDao
-    abstract fun paqueteVistoDao(): PaqueteVistoDao
-    abstract fun cacheMapaDao(): CacheMapaDao
-    abstract fun configLocalDao(): ConfigLocalDao
-    abstract fun catalogoLocalDao(): CatalogoLocalDao
-    abstract fun contactoLocalDao(): ContactoLocalDao
+    fun colaAlertaDao(): ColaAlertaDao = db.colaAlertaDaoOffline()
+    fun colaReporteDao(): ColaReporteDao = db.colaReporteDao()
+    fun paqueteVistoDao(): PaqueteVistoDao = db.paqueteVistoDao()
+    fun cacheMapaDao(): CacheMapaDao = db.cacheMapaDao()
+    fun catalogoLocalDao(): CatalogoLocalDao = db.catalogoLocalDao()
 
     companion object {
-        private const val NOMBRE_BASE_DATOS = "sendero_seguro_local.db"
-
         @Volatile
-        private var INSTANCIA: BaseDatosLocal? = null
+        private var instancia: BaseDatosLocal? = null
 
-        fun obtenerInstancia(context: Context): BaseDatosLocal {
-            return INSTANCIA ?: synchronized(this) {
-                val instancia = Room.databaseBuilder(
-                    context.applicationContext,
-                    BaseDatosLocal::class.java,
-                    NOMBRE_BASE_DATOS
-                )
-                    .fallbackToDestructiveMigration()
-                    .build()
-                INSTANCIA = instancia
-                instancia
-            }
+        fun obtenerInstancia(context: Context): BaseDatosLocal = instancia ?: synchronized(this) {
+            instancia ?: BaseDatosLocal(SenderoDatabase.obtener(context.applicationContext))
+                .also { instancia = it }
         }
     }
 }
-

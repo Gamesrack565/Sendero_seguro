@@ -1,6 +1,7 @@
 package com.escom.sendero_seguro.cola
 
 import androidx.room.*
+import com.escom.sendero_seguro.core.db.ColaAlertaEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -124,29 +125,11 @@ interface CacheMapaDao {
 }
 
 @Dao
-interface ConfigLocalDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun guardarConfig(config: ConfigLocalEntity)
-
-    @Query("SELECT valor FROM config_local WHERE clave = :clave LIMIT 1")
-    suspend fun obtenerValor(clave: String): String?
-}
-
-@Dao
 interface CatalogoLocalDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun guardarCatalogo(items: List<CatalogoLocalEntity>)
 
     @Query("SELECT * FROM catalogo_local ORDER BY prioridad ASC")
     suspend fun obtenerCatalogoCompleto(): List<CatalogoLocalEntity>
-}
-
-@Dao
-interface ContactoLocalDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun guardarContactos(contactos: List<ContactoLocalEntity>)
-
-    @Query("SELECT * FROM contacto_local ORDER BY prioridad ASC")
-    suspend fun obtenerContactosPriorizados(): List<ContactoLocalEntity>
 }
 

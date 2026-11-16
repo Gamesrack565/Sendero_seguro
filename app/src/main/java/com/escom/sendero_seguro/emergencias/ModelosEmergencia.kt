@@ -81,6 +81,34 @@ data class AlertaEmergencia(
     val enModoCoaccionSilencioso: Boolean = false
 )
 
+data class DatosPruebaAlerta(
+    val tipoIncidenteId: Int,
+    val descripcion: String,
+    val latitud: Double,
+    val longitud: Double,
+    val precisionMetros: Float,
+    val nivelBateria: Int
+)
+
+enum class EtapaEnvioAlerta {
+    PREPARANDO,
+    INTERNET,
+    MALLA,
+    SMS,
+    COLA_LOCAL,
+    REGISTRADA,
+    RECHAZADA,
+    ERROR
+}
+
+data class EstadoEnvioAlerta(
+    val alertaId: String,
+    val etapa: EtapaEnvioAlerta,
+    val mensaje: String,
+    val folio: String? = null,
+    val estadoServidor: String? = null
+)
+
 // P6: Registro inmutable para la línea de tiempo (tabla evento_alerta en E3)
 data class EventoHistorialAlerta(
     val idEvento: Long = System.currentTimeMillis(),

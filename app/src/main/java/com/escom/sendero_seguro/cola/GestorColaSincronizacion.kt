@@ -2,9 +2,12 @@ package com.escom.sendero_seguro.cola
 
 import android.content.Context
 import android.util.Log
+import com.escom.sendero_seguro.core.db.ColaAlertaEntity
 import com.escom.sendero_seguro.emergencias.AlertaEmergencia
 import com.escom.sendero_seguro.emergencias.DatosTelemetria
 import com.escom.sendero_seguro.emergencias.PaqueteMalla
+import com.escom.sendero_seguro.emergencias.remoto.AlertaNuevaDto
+import com.escom.sendero_seguro.emergencias.remoto.ServidorAlertasRetrofit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -57,17 +60,8 @@ class GestorColaSincronizacion(
         val ahora = System.currentTimeMillis()
         val expiraEn = ahora + (vigenciaHoras * MS_POR_HORA)
 
-        // Serializamos los datos de la alerta a un paquete binario / JSON representativo
-        val jsonPayload = JSONObject().apply {
-            put("idAlerta", alerta.idAlerta)
-            put("detonador", alerta.detonador.name)
-            put("latitudInicial", alerta.latitudInicial)
-            put("longitudInicial", alerta.longitudInicial)
-            put("precisionMetros", alerta.precisionMetros)
-            put("nivelBateria", alerta.nivelBateria)
-            put("timestampInicio", alerta.timestampInicio)
-            put("enModoCoaccionSilencioso", alerta.enModoCoaccionSilencioso)
-        }.toString()
+        val dto = ServidorAlertasRetrofit.aDto(alerta).copy(canalRecepcion = "INTERNET")
+        val jsonPayload = ServidorAlertasRetrofit.json.encodeToString(AlertaNuevaDto.serializer(), dto)
 
         val entidad = ColaAlertaEntity(
             alertaId = alerta.idAlerta,
@@ -222,7 +216,7 @@ class GestorColaSincronizacion(
                     id = alerta.alertaId,
                     paqueteBytes = alerta.paquete,
                     tipoElemento = alerta.tipoElemento,
-                    ultimoCanal = alerta.ultimoCanal,
+                    ultimoCanal = alerta.ultimoCanal ?: CanalEnvio.FALLO_TOTAL.valor,
                     reintentos = alerta.reintentos,
                     creadoEn = alerta.creadoEn,
                     expiraEn = alerta.expiraEn
@@ -293,6 +287,11 @@ class GestorColaSincronizacion(
         exito
     }
 
+    suspend fun obtenerAlertasPendientes(): List<ColaAlertaEntity> = withContext(Dispatchers.IO) {
+        colaAlertaDao.obtenerAlertasPendientes(System.currentTimeMillis())
+            .filter { it.tipoElemento == TipoElementoAlerta.ALERTA_SOS.valor }
+    }
+
     /**
      * A-05: Error de red durante el envío al backend.
      * Sumar reintento y esperar backoff.
@@ -355,7 +354,7 @@ class GestorColaSincronizacion(
             PaqueteVistoEntity(
                 paqueteId = paqueteId,
                 alertaId = alertaId,
-                visto_en = System.currentTimeMillis(),
+                vistoEn = System.currentTimeMillis(),
                 retransmitido = 0
             )
         )

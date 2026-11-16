@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
+import androidx.core.content.ContextCompat
+import com.escom.sendero_seguro.BuildConfig
+import com.escom.sendero_seguro.cola.GestorColaSincronizacion
 import com.escom.sendero_seguro.emergencias.remoto.CanalServidorAlertas
 import com.escom.sendero_seguro.emergencias.remoto.CanalUbicaciones
 import com.escom.sendero_seguro.emergencias.remoto.EnvioUbicaciones
@@ -39,6 +42,7 @@ class ModuloEmergencias(
     }
 
     private val appContext = context.applicationContext
+    private val colaOffline = GestorColaSincronizacion(appContext)
     private val moduloScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var jobHiloTelemetria: Job? = null
     private var jobCuentaRegresivaPreEnvio: Job? = null
@@ -58,6 +62,9 @@ class ModuloEmergencias(
 
     private val _alertaActiva = MutableStateFlow<AlertaEmergencia?>(null)
     val alertaActiva: StateFlow<AlertaEmergencia?> = _alertaActiva.asStateFlow()
+
+    private val _estadoEnvioAlerta = MutableStateFlow<EstadoEnvioAlerta?>(null)
+    val estadoEnvioAlerta: StateFlow<EstadoEnvioAlerta?> = _estadoEnvioAlerta.asStateFlow()
 
     // E3 P6: Línea de tiempo de estados de la alerta (tabla evento_alerta / E-01)
     private val _historialEventosAlerta = MutableStateFlow<List<EventoHistorialAlerta>>(emptyList())
@@ -160,7 +167,12 @@ class ModuloEmergencias(
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
-        appContext.registerReceiver(receptorBotonEncendido5x, filtroPantalla)
+        ContextCompat.registerReceiver(
+            appContext,
+            receptorBotonEncendido5x,
+            filtroPantalla,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     fun iniciarProteccionSegundoPlano() {
@@ -250,11 +262,7 @@ class ModuloEmergencias(
         )
         sincronizarVistaRedApoyoYEmisora()
 
-        if (hayInternet) enviarAlServidor(nuevaAlerta)
-
-        if (modoSinRedMallaActivo) {
-            gestorMalla.emitirAlertaEnMalla(nuevaAlerta, usuarioIdActual)
-        }
+        iniciarCascadaEnvio(nuevaAlerta, modoSinRedMallaActivo)
 
         // E3 P6: Lectura GNSS periódica cada 10 segundos (RNF / A-07)
         gestorTelemetria.iniciarTelemetriaTiempoReal(intervaloMs = 10_000L)
@@ -263,37 +271,241 @@ class ModuloEmergencias(
         return nuevaAlerta
     }
 
+    fun enviarAlertaPrueba(datos: DatosPruebaAlerta): AlertaEmergencia {
+        require(datos.tipoIncidenteId >= 0) { "El tipo de incidente no puede ser negativo" }
+        require(datos.latitud in -90.0..90.0 && datos.longitud in -180.0..180.0) {
+            "La ubicación está fuera de rango"
+        }
+        require(datos.precisionMetros.isFinite() && datos.precisionMetros >= 0f) {
+            "La precisión debe ser un número válido"
+        }
+        require(datos.nivelBateria in 0..100) { "La batería debe estar entre 0 y 100" }
+
+        val nuevaAlerta = AlertaEmergencia(
+            detonador = TipoDetonador.BOTON_SOS,
+            tipoIncidenteId = datos.tipoIncidenteId,
+            nombreTipoIncidente = if (datos.tipoIncidenteId in 0..1) "Genérica" else "Tipo ${datos.tipoIncidenteId}",
+            esGenerica = datos.tipoIncidenteId in 0..1,
+            descripcionRelato = datos.descripcion.trim(),
+            latitudInicial = datos.latitud,
+            longitudInicial = datos.longitud,
+            precisionMetros = datos.precisionMetros,
+            nivelBateria = datos.nivelBateria,
+            canalRecepcion = if (gestorMalla.hayConexionAInternet()) CanalRecepcion.INTERNET else CanalRecepcion.MALLA
+        )
+        _alertaActiva.value = nuevaAlerta
+        _historialEventosAlerta.value = emptyList()
+        actualizarHistorialEventoAlerta(
+            nuevaAlerta.idAlerta, null, EstadoAlertaE01.PENDIENTE_ENVIO, "Formulario de prueba de cascada"
+        )
+        iniciarCascadaEnvio(nuevaAlerta, intentarMalla = true)
+        return nuevaAlerta
+    }
+
+    fun mostrarErrorPreparandoPrueba(mensaje: String) {
+        _estadoEnvioAlerta.value = EstadoEnvioAlerta(
+            alertaId = "",
+            etapa = EtapaEnvioAlerta.ERROR,
+            mensaje = mensaje
+        )
+    }
+
     /**
-     * P4: manda la alerta al servidor sin detener la activación. Reintenta 3 veces si no hubo red o el servidor
-     * falló; el servidor no la duplica. Si responde, la alerta toma el folio del servidor.
+     * La cola local conserva el mismo DTO que acepta POST /alertas y lo reenvía al volver la conexión.
      */
-    private fun enviarAlServidor(alerta: AlertaEmergencia) {
+    suspend fun sincronizarAlertasEnCola() {
         val canal = servidor ?: return
-        envioAlerta = moduloScope.launch {
-            repeat(3) { intento ->
-                when (val r = canal.enviar(alerta)) {
-                    is ResultadoServidor.Registrada -> {
-                        alertaResuelta = alerta.idAlerta
-                        _alertaActiva.update { a -> if (a?.idAlerta == alerta.idAlerta) a.copy(folio = r.folio) else a }
-                        actualizarHistorialEventoAlerta(
-                            alertaId = alerta.idAlerta,
-                            estadoAnterior = EstadoAlertaE01.ENVIADA,
-                            estadoNuevo = EstadoAlertaE01.ENVIADA,
-                            detalle = "Registrada en el servidor con folio ${r.folio}"
-                        )
-                        return@launch
+        if (!gestorMalla.hayConexionAInternet()) return
+
+        for (pendiente in colaOffline.obtenerAlertasPendientes()) {
+            val payload = pendiente.paquete?.toString(Charsets.UTF_8) ?: continue
+            when (val resultado = canal.reenviarPendiente(payload)) {
+                is ResultadoServidor.Registrada -> {
+                    colaOffline.marcarSincronizadoYEliminar(pendiente.alertaId, esAlerta = true)
+                    _estadoEnvioAlerta.update { actual ->
+                        if (actual?.alertaId == pendiente.alertaId) {
+                            actual.copy(
+                                etapa = EtapaEnvioAlerta.REGISTRADA,
+                                mensaje = "Alerta sincronizada desde la cola local",
+                                folio = resultado.folio,
+                                estadoServidor = resultado.estado
+                            )
+                        } else actual
                     }
-                    is ResultadoServidor.Fallo -> {
-                        if (!r.reintentar || intento == 2) {
-                            if (!r.reintentar) alertaResuelta = alerta.idAlerta
-                            Log.w(TAG, "El servidor no registró la alerta (HTTP ${r.codigoHttp})")
-                            return@launch
-                        }
-                        delay(2000L * (intento + 1))
+                    _alertaActiva.update { alerta ->
+                        if (alerta?.idAlerta == pendiente.alertaId) alerta.copy(folio = resultado.folio) else alerta
+                    }
+                }
+                is ResultadoServidor.Fallo -> {
+                    colaOffline.registrarFalloReintento(pendiente.alertaId, esAlerta = true)
+                    if (!resultado.reintentar) {
+                        Log.e(TAG, "El servidor rechazó permanentemente la alerta en cola ${pendiente.alertaId}")
                     }
                 }
             }
         }
+    }
+
+    suspend fun cargarEstadoColaLocal() {
+        val pendiente = colaOffline.obtenerAlertasPendientes().lastOrNull() ?: return
+        _estadoEnvioAlerta.update { actual ->
+            if (actual == null || actual.etapa == EtapaEnvioAlerta.COLA_LOCAL) {
+                EstadoEnvioAlerta(
+                    alertaId = pendiente.alertaId,
+                    etapa = EtapaEnvioAlerta.COLA_LOCAL,
+                    mensaje = "Alerta pendiente de sincronización local"
+                )
+            } else actual
+        }
+    }
+
+    private fun iniciarCascadaEnvio(alerta: AlertaEmergencia, intentarMalla: Boolean) {
+        alertaResuelta = null
+        envioAlerta?.cancel()
+        envioAlerta = moduloScope.launch { ejecutarCascadaEnvio(alerta, intentarMalla) }
+    }
+
+    private suspend fun ejecutarCascadaEnvio(alerta: AlertaEmergencia, intentarMalla: Boolean) {
+        if (gestorMalla.hayConexionAInternet()) {
+            actualizarEstadoEnvio(alerta, EtapaEnvioAlerta.INTERNET, "Enviando al servidor")
+            when (val resultado = enviarAlServidor(alerta)) {
+                is ResultadoServidor.Registrada -> {
+                    confirmarRegistroServidor(alerta, resultado)
+                    return
+                }
+                is ResultadoServidor.Fallo -> {
+                    if (!resultado.reintentar) {
+                        actualizarEstadoEnvio(
+                            alerta,
+                            EtapaEnvioAlerta.RECHAZADA,
+                            "El servidor rechazó la alerta (HTTP ${resultado.codigoHttp ?: "sin respuesta"})"
+                        )
+                        return
+                    }
+                    Log.w(TAG, "No se confirmó la alerta por internet; se intentará la malla")
+                }
+                null -> Unit
+            }
+        }
+
+        if (intentarMalla) {
+            actualizarEstadoEnvio(alerta, EtapaEnvioAlerta.MALLA, "Intentando retransmisión P5.1 por Bluetooth")
+            if (gestorMalla.puedeTransmitirAlertasPorBluetooth()) {
+                gestorMalla.emitirAlertaEnMalla(alerta, usuarioIdActual)
+                actualizarEstadoEnvio(
+                    alerta,
+                    EtapaEnvioAlerta.MALLA,
+                    "Paquete emitido por malla; P5.1 no ofrece acuse al teléfono emisor"
+                )
+                delay(3000L)
+
+                // Una retransmisión puede haber llegado al servidor mientras se esperaba el relevo.
+                if (gestorMalla.hayConexionAInternet()) {
+                    when (val resultado = enviarAlServidor(alerta)) {
+                        is ResultadoServidor.Registrada -> {
+                            confirmarRegistroServidor(alerta, resultado)
+                            return
+                        }
+                        is ResultadoServidor.Fallo -> if (!resultado.reintentar) {
+                            actualizarEstadoEnvio(
+                                alerta, EtapaEnvioAlerta.RECHAZADA,
+                                "El servidor rechazó la alerta (HTTP ${resultado.codigoHttp ?: "sin respuesta"})"
+                            )
+                            return
+                        }
+                        null -> Unit
+                    }
+                }
+            } else {
+                actualizarEstadoEnvio(
+                    alerta, EtapaEnvioAlerta.MALLA,
+                    "No hay Bluetooth disponible o falta el permiso de anuncios BLE"
+                )
+            }
+        }
+
+        actualizarEstadoEnvio(alerta, EtapaEnvioAlerta.SMS, "Intentando SMS de contingencia")
+        when (val sms = EnvioSmsContingencia(appContext, BuildConfig.SMS_GATEWAY_NUMBER).enviar(alerta)) {
+            ResultadoSmsContingencia.Enviado -> {
+                actualizarEstadoEnvio(
+                    alerta, EtapaEnvioAlerta.SMS,
+                    "Android confirmó el envío SMS; falta la recepción de la pasarela"
+                )
+                return
+            }
+            is ResultadoSmsContingencia.Fallo ->
+                Log.w(TAG, "Falló el SMS de contingencia: ${sms.motivo}")
+        }
+
+        try {
+            colaOffline.encolarAlertaFalloCascada(alerta)
+            actualizarEstadoEnvio(
+                alerta, EtapaEnvioAlerta.COLA_LOCAL,
+                "Sin confirmación del servidor ni SMS; alerta guardada en SQLite local"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "No se pudo guardar la alerta ${alerta.idAlerta} en la cola local", e)
+            actualizarEstadoEnvio(alerta, EtapaEnvioAlerta.ERROR, "Falló el guardado en la cola local: ${e.message}")
+        }
+    }
+
+    private suspend fun enviarAlServidor(alerta: AlertaEmergencia): ResultadoServidor? {
+        val canal = servidor ?: return null
+        repeat(3) { intento ->
+            when (val resultado = canal.enviar(alerta)) {
+                is ResultadoServidor.Registrada -> return resultado
+                is ResultadoServidor.Fallo -> {
+                    if (!resultado.reintentar || intento == 2) return resultado
+                    delay(2000L * (intento + 1))
+                }
+            }
+        }
+        return null
+    }
+
+    private suspend fun confirmarRegistroServidor(alerta: AlertaEmergencia, resultado: ResultadoServidor.Registrada) {
+        alertaResuelta = alerta.idAlerta
+        _alertaActiva.update { actual ->
+            if (actual?.idAlerta == alerta.idAlerta) actual.copy(folio = resultado.folio) else actual
+        }
+        actualizarHistorialEventoAlerta(
+            alertaId = alerta.idAlerta,
+            estadoAnterior = EstadoAlertaE01.PENDIENTE_ENVIO,
+            estadoNuevo = EstadoAlertaE01.ENVIADA,
+            detalle = "Registrada en el servidor con folio ${resultado.folio}"
+        )
+        actualizarEstadoEnvio(
+            alerta, EtapaEnvioAlerta.REGISTRADA,
+            "Registrada en servidor; consultando evento_alerta",
+            resultado.folio,
+            resultado.estado
+        )
+
+        val canal = servidor ?: return
+        repeat(5) {
+            delay(1000L)
+            val estado = canal.consultarEstado(alerta.idAlerta) ?: return@repeat
+            _estadoEnvioAlerta.update { actual ->
+                if (actual?.alertaId == alerta.idAlerta) actual.copy(estadoServidor = estado) else actual
+            }
+            if (estado !in setOf("ENVIADA", "PENDIENTE_ENVIO")) return
+        }
+    }
+
+    private fun actualizarEstadoEnvio(
+        alerta: AlertaEmergencia,
+        etapa: EtapaEnvioAlerta,
+        mensaje: String,
+        folio: String? = null,
+        estadoServidor: String? = null
+    ) {
+        _estadoEnvioAlerta.value = EstadoEnvioAlerta(
+            alertaId = alerta.idAlerta,
+            etapa = etapa,
+            mensaje = mensaje,
+            folio = folio,
+            estadoServidor = estadoServidor
+        )
     }
 
     /**
@@ -380,7 +592,15 @@ class ModuloEmergencias(
                     _colaTelemetriaOfflineP11.tryEmit(datos)
                 } else if (alerta != null) {
                     // Si se activó sin internet, la alerta sale al servidor en cuanto vuelve la señal.
-                    if (alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) enviarAlServidor(alerta)
+                    if (alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) {
+                        when (val resultado = enviarAlServidor(alerta)) {
+                            is ResultadoServidor.Registrada -> confirmarRegistroServidor(alerta, resultado)
+                            is ResultadoServidor.Fallo -> Log.w(
+                                TAG, "No se pudo reenviar la alerta ${alerta.idAlerta} (HTTP ${resultado.codigoHttp})"
+                            )
+                            null -> Unit
+                        }
+                    }
                     envioUbicaciones?.enviarPendientes(alerta.idAlerta)
                 }
 
@@ -400,6 +620,7 @@ class ModuloEmergencias(
     fun activarModoCoaccionSilencioso() {
         if (_alertaActiva.value?.activa != true && jobCuentaRegresivaPreEnvio?.isActive == true) {
             jobCuentaRegresivaPreEnvio?.cancel()
+            envioAlerta?.cancel()
             _segundosRestantesPreEnvio.value = null
             activarAlertaEmergencia(detonadorEnCuenta)
         }

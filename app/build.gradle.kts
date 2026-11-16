@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -19,22 +21,34 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "SMS_GATEWAY_NUMBER", "\"\"")
     }
 
     // URL del backend (Ktor, Módulo 4):
-    // - debug: el servidor en la PC. 10.0.2.2 es la PC anfitriona vista desde el emulador.
+    // - debug: 10.0.2.2 funciona en emuladores; en teléfono físico senderoApiUrl se lee de local.properties.
     // - release: el servidor en la nube (Azure).
-    // Para probar la versión debug contra la nube: .\gradlew.bat :app:installDebug -PsenderoApiUrl=https://.../api/v1/
+    // Para un teléfono físico: .\gradlew.bat :app:installDebug -PsenderoApiUrl=http://<IP-PC>:8080/api/v1/
     val urlLocal = "http://10.0.2.2:8080/api/v1/"
+    val propiedadesLocales = Properties().apply {
+        val archivo = rootProject.file("local.properties")
+        if (archivo.isFile) archivo.inputStream().use { load(it) }
+    }
+    val urlLocalTelefono = propiedadesLocales.getProperty("senderoApiUrl")
     val urlNube = "https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1/"
     val urlForzada = providers.gradleProperty("senderoApiUrl").orNull
 
     buildTypes {
         debug {
-            buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlLocal}\"")
+            buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlLocalTelefono ?: urlLocal}\"")
+            val smsGatewayNumber = providers.gradleProperty("senderoSmsGatewayNumber").orNull.orEmpty()
+            require(smsGatewayNumber.isBlank() || Regex("\\+?[0-9]{10,15}").matches(smsGatewayNumber)) {
+                "senderoSmsGatewayNumber debe tener de 10 a 15 dígitos, opcionalmente con + inicial"
+            }
+            buildConfigField("String", "SMS_GATEWAY_NUMBER", "\"$smsGatewayNumber\"")
         }
         release {
             buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlNube}\"")
+            buildConfigField("String", "SMS_GATEWAY_NUMBER", "\"\"")
             optimization {
                 enable = false
             }
@@ -59,11 +73,13 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.navigation.compose)
 
     // --- Módulo 1 (identidad)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
