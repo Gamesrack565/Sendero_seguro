@@ -4,7 +4,7 @@ import android.Manifest
 import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
-import android.preference.PreferenceManager
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -28,35 +28,36 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.escom.sendero_seguro.emergencias.*
+import com.escom.sendero_seguro.mapas.ModuloMapas
 import com.escom.sendero_seguro.ui.theme.Sendero_seguroTheme
-import org.osmdroid.config.Configuration
+import com.escom.sendero_seguro.ui.mapa.ConfiguracionMapaOffline
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 class PantallaDiagnosticoModulo2_vista : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Configuration.getInstance().load(
-            applicationContext,
-            PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        )
-        Configuration.getInstance().userAgentValue = packageName
+        ConfiguracionMapaOffline.inicializar(applicationContext)
 
         enableEdgeToEdge()
-        val modulo2 = (application as SenderoApp).emergencias
+        val senderoApp = application as SenderoApp
 
         setContent {
             Sendero_seguroTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     PantallaDiagnosticoModulo2(
-                        modulo = modulo2,
+                        modulo = senderoApp.emergencias,
+                        moduloMapas = senderoApp.mapas,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -66,9 +67,14 @@ class PantallaDiagnosticoModulo2_vista : ComponentActivity() {
 }
 
 @Composable
-fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = Modifier) {
+fun PantallaDiagnosticoModulo2(
+    modulo: ModuloEmergencias,
+    moduloMapas: ModuloMapas,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val colaSqlite = remember { GestorColaLocalSQLiteER06(context) }
+    val scope = rememberCoroutineScope()
 
     val alerta by modulo.alertaActiva.collectAsState()
     val segundosPreEnvio by modulo.segundosRestantesPreEnvio.collectAsState()
@@ -436,20 +442,44 @@ fun PantallaDiagnosticoModulo2(modulo: ModuloEmergencias, modifier: Modifier = M
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    val comp = modulo.gestorCaminataSegura.calcularRutasEnDispositivoOffline(
-                        origen = PuntoRuta(19.5045, -99.1469),
-                        destino = PuntoRuta(19.5010, -99.1490)
-                    )
-                    modulo.gestorCaminataSegura.iniciarCaminataSegura(
-                        rutaObjetivo = comp.rutaSeguraRecomendada.nodos,
-                        tiempoEstimadoLlegadaMs = comp.rutaSeguraRecomendada.tiempoEstimadoMin * 60_000L,
-                        intervaloCheckInSeg = 15L,
-                        toleranciaMetros = 50.0
-                    )
-                    registrarEvento(
-                        "P7 (A-18)",
-                        "Ruta Segura calculada offline: ${comp.rutaSeguraRecomendada.distanciaTotalKm}km (${comp.rutaSeguraRecomendada.tiempoEstimadoMin} min) evitando Salida Metro Politécnico"
-                    )
+                    scope.launch {
+                        try {
+                            val grafo = moduloMapas.obtenerGrafoOfflineP7()
+                            if (grafo == null || grafo.aristas.isEmpty()) {
+                                registrarEvento(
+                                    "P7 (A-18)",
+                                    "No hay un grafo P12 descargado para calcular la ruta; sincroniza el Mapa P12 primero.",
+                                )
+                                return@launch
+                            }
+                            val comp = modulo.gestorCaminataSegura.calcularRutasEnDispositivoOffline(
+                                origen = PuntoRuta(19.5045, -99.1469),
+                                destino = PuntoRuta(19.5010, -99.1490),
+                                aristasGrafoCache = grafo.aristas,
+                                versionCapaRiesgo = grafo.versionCapaRiesgo,
+                            )
+                            modulo.gestorCaminataSegura.iniciarCaminataSegura(
+                                rutaObjetivo = comp.rutaSeguraRecomendada.nodos,
+                                tiempoEstimadoLlegadaMs = comp.rutaSeguraRecomendada.tiempoEstimadoMin * 60_000L,
+                                intervaloCheckInSeg = 15L,
+                                toleranciaMetros = 50.0
+                            )
+                            registrarEvento(
+                                "P7 (A-18)",
+                                "Ruta calculada con grafo P12 v${grafo.versionGrafo}, capa v${grafo.versionCapaRiesgo}: " +
+                                    "${comp.rutaSeguraRecomendada.distanciaTotalKm} km " +
+                                    "(${comp.rutaSeguraRecomendada.tiempoEstimadoMin} min).",
+                            )
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: IOException) {
+                            Log.e("DiagnosticoP7", "No se pudo cargar el grafo P12 para P7.", e)
+                            registrarEvento("P7 (A-18)", "Error con el grafo P12: ${e.message}")
+                        } catch (e: IllegalStateException) {
+                            Log.e("DiagnosticoP7", "No se pudo calcular la ruta con el grafo P12.", e)
+                            registrarEvento("P7 (A-18)", "No se encontró una ruta en el grafo P12: ${e.message}")
+                        }
+                    }
                 },
                 modifier = Modifier.weight(1f)
             ) { Text("P7: Ruta Segura", fontSize = 10.sp) }

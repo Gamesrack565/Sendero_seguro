@@ -51,7 +51,8 @@ class GestorCaminataSegura(
     fun calcularRutasEnDispositivoOffline(
         origen: PuntoRuta,
         destino: PuntoRuta,
-        aristasGrafoCache: List<AristaVialOffline> = obtenerGrafoZacatencoPorDefecto()
+        aristasGrafoCache: List<AristaVialOffline> = obtenerGrafoZacatencoPorDefecto(),
+        versionCapaRiesgo: Int = 42,
     ): ComparativaRutasP7 {
         // 1. Calcular Ruta Más Corta (alfa = 0.0 -> solo importa la distancia física)
         val rutaMasCorta = ejecutarDijkstraPonderado(
@@ -74,7 +75,7 @@ class GestorCaminataSegura(
         val comparativa = ComparativaRutasP7(
             rutaSeguraRecomendada = rutaSegura,
             rutaMasCorta = rutaMasCorta,
-            versionCapaRiesgo = 42
+            versionCapaRiesgo = versionCapaRiesgo
         )
         _comparativaRutasOffline.value = comparativa
         return comparativa
@@ -139,7 +140,9 @@ class GestorCaminataSegura(
             if (actual == nodoFinal) break
             if (costoActual > costos.getValue(actual)) continue
 
-            val vecinas = aristas.filter { it.nodoOrigen == actual || it.nodoDestino == actual }
+            val vecinas = aristas.filter {
+                it.nodoOrigen == actual || (it.bidireccional && it.nodoDestino == actual)
+            }
             for (arista in vecinas) {
                 val vecino = if (arista.nodoOrigen == actual) arista.nodoDestino else arista.nodoOrigen
                 val penalizacionSinLuz = if (!arista.bienIluminada && alfa > 0.0) 0.25 else 0.0
@@ -155,6 +158,10 @@ class GestorCaminataSegura(
                     cola.add(vecino to nuevoCosto)
                 }
             }
+        }
+
+        if (nodoInicial != nodoFinal && nodoFinal !in previos) {
+            throw IllegalStateException("El grafo offline no conecta el origen con el destino.")
         }
 
         val caminoNodos = mutableListOf<PuntoRuta>()

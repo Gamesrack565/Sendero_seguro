@@ -131,7 +131,7 @@ interface ColaAlertaDao {
         CacheMapaEntity::class,
         CatalogoLocalEntity::class
     ],
-    version = 4,
+    version = 6,
     exportSchema = false
 )
 abstract class SenderoDatabase : RoomDatabase() {
@@ -160,6 +160,19 @@ abstract class SenderoDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE cola_alerta ADD COLUMN proximo_intento_en INTEGER NOT NULL DEFAULT 0"
                 )
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cache_mapa ADD COLUMN version_contenido TEXT")
+                db.execSQL("ALTER TABLE cache_mapa ADD COLUMN archivo_local TEXT")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cola_reporte ADD COLUMN usuario_id TEXT NOT NULL DEFAULT ''")
             }
         }
 
@@ -236,7 +249,7 @@ abstract class SenderoDatabase : RoomDatabase() {
 
         fun obtener(context: Context): SenderoDatabase = instancia ?: synchronized(this) {
             instancia ?: Room.databaseBuilder(context.applicationContext, SenderoDatabase::class.java, NOMBRE)
-                .addMigrations(MIGRATION_1_3, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_3, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 .also { instancia = it }
         }

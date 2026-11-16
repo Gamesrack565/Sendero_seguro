@@ -129,7 +129,13 @@ class MapaCalorServicio(private val dataSource: DataSource) {
                    ORDER BY densidad_ponderada DESC""",
                 capaId, periodoDias, tipoId, tipoId,
             ) { it.aZona() }
-            CapaRiesgo(version, en, periodoDias, zonas)
+            CapaRiesgo(
+                version = version,
+                generadaEn = en,
+                periodoDias = periodoDias,
+                zonas = zonas,
+                leyenda = "Información orientativa: zonas con reportes comunitarios publicados, no una predicción.",
+            )
         }
     }
 

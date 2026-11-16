@@ -157,10 +157,13 @@ fun Application.module() {
     val catalogo = CatalogoServicio(baseDatos.dataSource)
     val mapaCalor = MapaCalorServicio(baseDatos.dataSource)
     mapaCalor.iniciar(scope = this, cada = config.property("mapaCalor.revisionHoras").getString().toInt().hours)
+    val autoPublicarConfigurado = config.property("reportes.autoPublicar").getString().toBooleanStrictOrNull()
+        ?: error("reportes.autoPublicar debe ser true o false")
     val reportes = ReportesServicio(
         baseDatos.dataSource,
         AutorProtegido(config.property("reportes.llaveAutor").getString()),
         alCambiarPublicados = { mapaCalor.pedirRecalculo(this) },
+        publicarAutomaticamente = modoDesarrollo && autoPublicarConfigurado,
     )
     manejadoresSync[TipoSync.REPORTE] = reportes.manejadorSync
     val comunidad = Comunidad(

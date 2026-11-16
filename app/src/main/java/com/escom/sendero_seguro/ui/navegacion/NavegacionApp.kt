@@ -25,11 +25,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.escom.sendero_seguro.SenderoApp
 import com.escom.sendero_seguro.ui.demo.DatosDemo
 import com.escom.sendero_seguro.ui.pantallas.PantallaEnConstruccion
 import com.escom.sendero_seguro.ui.pantallas.PantallaGaleria
 import com.escom.sendero_seguro.ui.pantallas.inicio.EstadoInicio
 import com.escom.sendero_seguro.ui.pantallas.inicio.PantallaInicio
+import com.escom.sendero_seguro.ui.pantallas.reporte.PantallaReporteComunitario
 import com.escom.sendero_seguro.ui.theme.Fondo
 import com.escom.sendero_seguro.ui.theme.RojoTexto
 import com.escom.sendero_seguro.ui.theme.Superficie
@@ -50,7 +52,9 @@ private val Pestanas = listOf(
 fun NavegacionApp(nav: NavHostController = rememberNavController()) {
     val entrada by nav.currentBackStackEntryAsState()
     val actual = Pantalla.deRuta(entrada?.destination?.route)
-    val esDesarrollo = LocalContext.current.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    val context = LocalContext.current
+    val senderoApp = context.applicationContext as SenderoApp
+    val esDesarrollo = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     Scaffold(
         containerColor = Fondo,
@@ -72,10 +76,17 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
                 )
             }
             composable(Pantalla.GALERIA.ruta) { PantallaGaleria(onVolver = { nav.popBackStack() }) }
+            composable(Pantalla.A15.ruta) {
+                PantallaReporteComunitario(
+                    moduloReportes = senderoApp.reportes,
+                    prepararSesion = { senderoApp.prepararSesionPruebaLocal() },
+                    onVolver = { nav.popBackStack() },
+                )
+            }
 
             // Pantallas aún por construir: se pueden recorrer siguiendo el mapa de navegación.
             Pantalla.entries
-                .filter { it != Pantalla.A04 && it != Pantalla.GALERIA }
+                .filter { it != Pantalla.A04 && it != Pantalla.A15 && it != Pantalla.GALERIA }
                 .forEach { p ->
                     composable(p.ruta) {
                         val extra = buildList {

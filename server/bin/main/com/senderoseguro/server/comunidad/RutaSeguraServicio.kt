@@ -6,6 +6,7 @@ import com.senderoseguro.server.plataforma.Bitacora
 import com.senderoseguro.server.plataforma.UsuarioToken
 import com.senderoseguro.server.plataforma.consultar
 import com.senderoseguro.server.plataforma.consultarUno
+import com.senderoseguro.server.plataforma.ejecutar
 import com.senderoseguro.server.plataforma.transaccion
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.buildJsonObject
@@ -84,9 +85,16 @@ class RutaSeguraServicio(private val dataSource: DataSource, private val mapaCal
                    WHERE o.latitud BETWEEN ? AND ? AND o.longitud BETWEEN ? AND ?""",
                 capa?.first, caja.minLat, caja.maxLat, caja.minLon, caja.maxLon,
             ) { Arista(it.getLong(1), it.getLong(2), it.getLong(3), it.getDouble(4), it.getBoolean(5), it.getDouble(6)) }
-            Grafo(capa?.second, nodos.values.map { NodoEntrada(it.id, it.p.lat, it.p.lon) }, aristas)
+            Grafo(
+                capaVersion = capa?.second,
+                nodos = nodos.values.map { NodoEntrada(it.id, it.p.lat, it.p.lon) },
+                aristas = aristas,
+                versionGrafo = versionGrafo(conn),
+            )
         }
     }
+
+    fun versionGrafoVigente(): Int = dataSource.connection.use { conn -> versionGrafo(conn) }
 
     /** Carga o actualiza el grafo (Administrador). Los tramos con nodos desconocidos se rechazan. */
     fun cargarGrafo(admin: UsuarioToken, g: GrafoEntrada, ip: String?): GrafoCargado {
@@ -134,6 +142,9 @@ class RutaSeguraServicio(private val dataSource: DataSource, private val mapaCal
                 }
                 it.executeBatch()
             }
+            if (g.finalizarVersion) {
+                conn.ejecutar("UPDATE parametro_sistema SET valor = (valor::integer + 1)::text WHERE clave = 'version_grafo'")
+            }
             val tramos = conn.consultarUno("SELECT id FROM capa_riesgo WHERE es_vigente") { it.getInt(1) }?.let { mapaCalor.calcularTramos(conn, it) } ?: 0
             Bitacora.registrar(conn, "CARGAR_GRAFO_PEATONAL", admin.usuarioId, "arista_vial", null,
                 buildJsonObject { put("nodos", g.nodos.size); put("aristas", g.aristas.size) }, ip)
@@ -163,6 +174,9 @@ class RutaSeguraServicio(private val dataSource: DataSource, private val mapaCal
             }
         return nodos to tramos
     }
+
+    private fun versionGrafo(conn: Connection): Int =
+        conn.consultarUno("SELECT valor::integer FROM parametro_sistema WHERE clave = 'version_grafo'") { it.getInt(1) } ?: 0
 
     private fun masCercano(nodos: Collection<Nodo>, p: Geo.Punto): Nodo? =
         nodos.minByOrNull { Geo.distanciaM(it.p, p) }?.takeIf { Geo.distanciaM(it.p, p) <= MAX_DISTANCIA_A_GRAFO_M }

@@ -207,7 +207,8 @@ data class AristaVialOffline(
     val longitudMetros: Double,
     val riesgoNormalizado: Double, // 0.0 a 1.0 (según capa IA-2 v42)
     val bienIluminada: Boolean = true,
-    val zonaRiesgoNombre: String? = null
+    val zonaRiesgoNombre: String? = null,
+    val bidireccional: Boolean = true,
 )
 
 // P7 (E3 A-18): Resultado de cálculo de ruta peatonal

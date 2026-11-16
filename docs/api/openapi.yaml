@@ -11,8 +11,8 @@ info:
     - Las rutas de P5 Dispersión, P13 Auditoría, P14 Plataforma y P16 Pasarelas.
     - Las del Módulo 1 que guardan en la nube: P1 Cuentas, P2 Red de apoyo y P8 Cancelación.
     - Administración de cuentas, corporaciones, unidades y operadores (W-08, W-09) y el catálogo (P3, W-06, W-07).
-    - P11 Trayectos y el lado del servidor del Módulo 3: P9 Reportes y moderación, P10 Feed y mapa de calor,
-      P12 Ruta segura y mapas offline.
+    - P11 Trayectos y el lado del servidor del Módulo 3: P9 Mapa comunitario (feed y mapa de calor),
+      P10 Reportes, P12 Ruta segura y mapas offline.
     - `POST /alertas` y `POST /alertas/{id}/ubicaciones` como propuesta de referencia
       (P4 y P6 escriben `alerta` y `ubicacion_alerta`). La dispersión se engancha después
       del registro.
@@ -58,9 +58,9 @@ tags:
   - name: Trayectos
     description: P11 · caminata segura y check-ins guardados en el servidor
   - name: Reportes
-    description: P9 · reportes comunitarios, moderación, identidad protegida y feed
+    description: P10 · reportes comunitarios, moderación e identidad protegida
   - name: Mapa de calor
-    description: P10 · zonas de riesgo con los reportes publicados
+    description: P9 · feed comunitario y zonas de riesgo con los reportes publicados
   - name: Ruta segura
     description: P12 · ruta segura, grafo peatonal, paquetes de mapa offline, puntos de interés y zonas
 
@@ -458,7 +458,7 @@ paths:
 
         - `evidencia`: cualquier cuenta. `image/jpeg`, `image/png`, `image/webp`, `audio/mpeg`, `audio/mp4`,
           `audio/aac` o `audio/ogg`. Hasta 10 MB.
-        - `mapa`: solo el Administrador. `application/zip` o `application/octet-stream`. Hasta 200 MB.
+        - `mapa`: solo el Administrador. `application/vnd.sqlite3` con un MBTiles vectorial. Hasta 200 MB.
       x-proceso: P15
       parameters:
         - name: tipo
@@ -471,7 +471,7 @@ paths:
           image/jpeg: { schema: { type: string, format: binary } }
           image/png: { schema: { type: string, format: binary } }
           audio/mp4: { schema: { type: string, format: binary } }
-          application/zip: { schema: { type: string, format: binary } }
+          application/vnd.sqlite3: { schema: { type: string, format: binary } }
       responses:
         '201':
           description: Guardado
@@ -1852,8 +1852,8 @@ paths:
   /mapas/version:
     get:
       tags: [Ruta segura]
-      summary: Versiones vigentes de la capa, el catálogo y los paquetes (CU-36 1a)
-      description: La app las compara con su caché para saber qué descargar.
+      summary: Versiones vigentes de la capa, el grafo, el catálogo y los paquetes (CU-36 1a)
+      description: La app las compara con su caché para descargar solo los datos que cambiaron.
       x-proceso: P12
       responses:
         '200': { description: Versiones, content: { application/json: { schema: { $ref: '#/components/schemas/VersionesMapas' } } } }
@@ -3094,6 +3094,7 @@ components:
               tipoVia: { type: string }
               bidireccional: { type: boolean, default: true }
               osmWayId: { type: integer }
+        finalizarVersion: { type: boolean, default: true, description: Ponlo en false en cargas parciales; true publica la nueva versión para los teléfonos }
 
     GrafoCargado:
       type: object
@@ -3108,6 +3109,7 @@ components:
       required: [nodos, aristas]
       properties:
         capaVersion: { type: integer }
+        versionGrafo: { type: integer, description: Cambia cada vez que un administrador carga una actualización del grafo }
         nodos:
           type: array
           items: { type: object, required: [id, latitud, longitud], properties: { id: { type: integer }, latitud: { type: number }, longitud: { type: number } } }
@@ -3150,7 +3152,7 @@ components:
         minLongitud: { type: number }
         maxLatitud: { type: number }
         maxLongitud: { type: number }
-        clave: { type: string, description: 'Lo que respondió POST /archivos/mapa (mapa/<uuid>.zip o .bin)' }
+        clave: { type: string, description: 'Lo que respondió POST /archivos/mapa. Para P12 se publica un archivo MBTiles SQLite vectorial compatible con OpenMapTiles.' }
         tamanoBytes: { type: integer }
         hashSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
 
@@ -3160,6 +3162,7 @@ components:
       properties:
         capaRiesgo: { type: integer }
         catalogo: { type: integer }
+        grafo: { type: integer, description: Versión vigente de los datos de calles para ruteo offline }
         paquetes:
           type: array
           items: { type: object, required: [region, version], properties: { region: { type: string }, version: { type: string } } }

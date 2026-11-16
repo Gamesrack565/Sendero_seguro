@@ -37,7 +37,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
-    <!-- Permiso de micrófono para P4 -->
+    <!-- Permiso de micrófono para comandos de voz y grabación de reportes -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Obligatorio en Android 11+ para que la app pueda acceder al motor de voz del teléfono -->

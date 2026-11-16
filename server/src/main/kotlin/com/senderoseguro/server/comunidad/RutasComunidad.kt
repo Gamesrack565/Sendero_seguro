@@ -123,7 +123,9 @@ fun Route.rutasComunidad(c: Comunidad) {
 
         get("/mapas/version") {
             call.usuarioActual()
-            call.respond(io { c.mapas.versiones(c.mapaCalor.versionVigente(), c.versionCatalogo()) })
+            call.respond(io {
+                c.mapas.versiones(c.mapaCalor.versionVigente(), c.versionCatalogo(), c.rutas.versionGrafoVigente())
+            })
         }
         get("/mapas/paquetes") {
             call.usuarioActual()

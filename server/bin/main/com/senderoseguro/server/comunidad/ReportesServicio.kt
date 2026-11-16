@@ -25,6 +25,8 @@ import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
+import java.util.logging.Level
+import java.util.logging.Logger
 import javax.sql.DataSource
 
 private val CLAVE_EVIDENCIA = Regex("^evidencia/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z0-9]{2,5}$")
@@ -34,10 +36,11 @@ private val CORREO = Regex("[^\\s@]+@[^\\s@]+\\.[^\\s@]+")
 private const val OCULTO = "[dato oculto]"
 
 /**
- * Reportes comunitarios (Módulo 3 en el servidor: P9 y P10).
+ * Reportes comunitarios (Módulo 3: P10; el feed y el mapa comunitario corresponden a P9).
  *
- * - CU-28 y CU-29: la app manda el reporte por internet (`POST /reportes`) o en la cola sin señal (tipo REPORTE). Queda
- *   PENDIENTE de moderación. Si es anónimo no se guarda el autor, sino su id cifrado ([AutorProtegido]).
+ * - CU-28 y CU-29: la app manda el reporte por internet (`POST /reportes`) o en la cola sin señal (tipo REPORTE).
+ *   Puede publicarse automáticamente en la etapa provisional. Si es anónimo no se guarda el autor, sino su id cifrado
+ *   ([AutorProtegido]).
  * - CU-30: el Administrador publica, rechaza o retira. Publicar crea la versión pública con la ubicación aproximada a
  *   la celda de ~150 m (geohash de 7) y sin el autor si es anónimo; rechazar avisa al autor.
  * - CU-31: consultar la identidad de un anónimo pide justificación y queda en la bitácora.
@@ -48,13 +51,18 @@ class ReportesServicio(
     private val dataSource: DataSource,
     private val autor: AutorProtegido,
     private val alCambiarPublicados: () -> Unit = {},
+    private val publicarAutomaticamente: Boolean = false,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val logger = Logger.getLogger(ReportesServicio::class.java.name)
 
     // ---------------------------------------------------------------- Levantar reporte (CU-28, CU-29)
 
-    fun crear(usuarioId: UUID, e: ReporteEntrada, ip: String?): Pair<ReporteRecibido, Boolean> =
-        dataSource.transaccion { conn -> guardar(conn, usuarioId, e, ip) }
+    fun crear(usuarioId: UUID, e: ReporteEntrada, ip: String?): Pair<ReporteRecibido, Boolean> {
+        val resultado = dataSource.transaccion { conn -> guardar(conn, usuarioId, e, ip) }
+        notificarCambioPublicado(resultado.first, resultado.second)
+        return resultado
+    }
 
     /** Manejador de REPORTE en `/sync/lote`: los `datos` son el mismo cuerpo de `POST /reportes`. */
     val manejadorSync = ManejadorSync { conn, contexto, elemento ->
@@ -62,9 +70,14 @@ class ReportesServicio(
             ?: return@ManejadorSync ResultadoManejo.Rechazado("VALIDACION", "Faltan datos del reporte (id, tipoIncidenteId, descripcion, ubicación, creadoEn)")
         try {
             val (r, nuevo) = guardar(conn, contexto.usuarioId, e, null)
+            notificarCambioPublicado(r, nuevo)
             if (nuevo) ResultadoManejo.Aceptado(r.folio) else ResultadoManejo.Duplicado(r.folio)
         } catch (ex: ApiException) {
-            ResultadoManejo.Rechazado(ex.codigo, ex.detalle?.toString() ?: ex.message ?: ex.codigo)
+            ResultadoManejo.Rechazado(
+                ex.codigo,
+                ex.detalle?.toString() ?: ex.message ?: ex.codigo,
+                temporal = ex.status.value >= 500,
+            )
         }
     }
 
@@ -129,10 +142,70 @@ class ReportesServicio(
                 id, ev.clave, ev.mime, ev.tamanoBytes.toInt(), ev.hashSha256,
             )
         }
+        val estado = if (publicarAutomaticamente) "PUBLICADO" else "PENDIENTE"
+        if (publicarAutomaticamente) {
+            conn.ejecutar("UPDATE reporte SET estado = 'PUBLICADO', moderado_en = now() WHERE id = ?", id)
+            val nombreAutor = if (e.esAnonimo) null else conn.consultarUno(
+                "SELECT nombre FROM usuario WHERE id = ?", usuarioId
+            ) { it.getString(1) }
+            insertarVersionPublica(
+                conn, id!!, tipoId.toShort(), descripcion, e.latitud, e.longitud,
+                e.esAnonimo, nombreAutor, referencia = null, ocultarDatosPersonales = true,
+            )
+            Bitacora.registrar(
+                conn, "PUBLICAR_REPORTE_AUTOMATICAMENTE", null, "reporte", id.toString(),
+                buildJsonObject {
+                    put("folio", folio)
+                    put("motivo", "Publicación automática temporal")
+                    put("datosPersonalesOcultos", true)
+                },
+            )
+        }
         // La bitácora no guarda quién levantó un reporte anónimo.
         Bitacora.registrar(conn, "LEVANTAR_REPORTE", if (e.esAnonimo) null else usuarioId, "reporte", id.toString(),
             buildJsonObject { put("folio", folio); put("anonimo", e.esAnonimo); put("evidencias", e.evidencias.size) }, if (e.esAnonimo) null else ip)
-        return ReporteRecibido(id.toString(), folio, "PENDIENTE", Geo.geohash(e.latitud, e.longitud)) to true
+        return ReporteRecibido(id.toString(), folio, estado, Geo.geohash(e.latitud, e.longitud)) to true
+    }
+
+    private fun notificarCambioPublicado(reporte: ReporteRecibido, nuevo: Boolean) {
+        if (nuevo && publicarAutomaticamente && reporte.estado == "PUBLICADO") {
+            solicitarRecalculoMapa()
+        }
+    }
+
+    private fun solicitarRecalculoMapa() {
+        try {
+            alCambiarPublicados()
+        } catch (e: Exception) {
+            logger.log(Level.SEVERE, "No se pudo programar el recálculo del mapa de calor.", e)
+        }
+    }
+
+    private fun insertarVersionPublica(
+        conn: Connection,
+        id: UUID,
+        tipoId: Short,
+        descripcion: String,
+        latitud: Double,
+        longitud: Double,
+        esAnonimo: Boolean,
+        nombreAutor: String?,
+        referencia: String?,
+        ocultarDatosPersonales: Boolean,
+    ) {
+        val celda = Geo.geohash(latitud, longitud)
+        val centro = Geo.centro(celda)
+        val texto = if (ocultarDatosPersonales) {
+            descripcion.replace(CORREO, OCULTO).replace(TELEFONO, OCULTO)
+        } else {
+            descripcion
+        }
+        conn.ejecutar(
+            """INSERT INTO reporte_publico (reporte_id, tipo_incidente_id, descripcion, celda, latitud_aprox, longitud_aprox, referencia, autor_visible)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            id, tipoId, texto, celda, centro.lat, centro.lon, referencia?.trim()?.ifEmpty { null },
+            if (esAnonimo) null else nombreAutor,
+        )
     }
 
     /** Los reportes con nombre de la persona (los anónimos no se pueden ligar a ella). */
@@ -213,16 +286,9 @@ class ReportesServicio(
             conn.ejecutar("UPDATE reporte SET estado = ?::reporte_estado, moderado_en = now() WHERE id = ?", nuevo, id)
             when (decision) {
                 "PUBLICAR" -> {
-                    val celda = Geo.geohash(r.lat, r.lon)
-                    val centro = Geo.centro(celda)
-                    var texto = r.descripcion
-                    if (d.ocultaDatosPersonales) texto = texto.replace(CORREO, OCULTO).replace(TELEFONO, OCULTO)
-                    conn.ejecutar(
-                        """INSERT INTO reporte_publico (reporte_id, tipo_incidente_id, descripcion, celda, latitud_aprox, longitud_aprox, referencia, autor_visible)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                        id, r.tipoId, texto, celda, centro.lat, centro.lon,
-                        d.referencia?.trim()?.ifEmpty { null },
-                        if (r.esAnonimo) null else r.nombre,
+                    insertarVersionPublica(
+                        conn, id, r.tipoId, r.descripcion, r.lat, r.lon, r.esAnonimo, r.nombre,
+                        d.referencia, d.ocultaDatosPersonales,
                     )
                 }
                 "RECHAZAR" -> {
@@ -242,7 +308,7 @@ class ReportesServicio(
                 }, ip)
             decision != "RECHAZAR"
         }
-        if (cambio) runCatching(alCambiarPublicados)
+        if (cambio) solicitarRecalculoMapa()
         return paraModerar(id)
     }
 

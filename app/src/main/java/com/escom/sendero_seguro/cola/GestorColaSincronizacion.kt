@@ -19,7 +19,7 @@ import java.util.UUID
  * 
  * Responsabilidades:
  * 1. encolarPendienteConVigencia(): Guarda en SQLite/Room local los envíos pendientes asignándoles
- *    su tiempo de expiración (2h para acuses/alertas, 6 días para reportes comunitarios).
+ *    su tiempo de expiración (2h para alertas y telemetría, 6 días para reportes comunitarios).
  * 2. Priorización de envíos (A-05): Alertas primero, luego Reportes comunitarios.
  * 3. Descarte por TTL: Purga de elementos cuya vigencia ha expirado antes de intentar enviarlos.
  * 4. Gestión de reintentos y cálculo de espera creciente (backoff exponencial).
@@ -35,6 +35,7 @@ class GestorColaSincronizacion(
 
         // Vigencias por defecto según especificación P11
         const val VIGENCIA_ALERTAS_HORAS = 2L
+        const val VIGENCIA_TELEMETRIA_HORAS = VIGENCIA_ALERTAS_HORAS
         const val VIGENCIA_REPORTES_DIAS = 6L
 
         const val MS_POR_HORA = 3600 * 1000L
@@ -129,7 +130,7 @@ class GestorColaSincronizacion(
     suspend fun encolarTelemetria(
         telemetria: DatosTelemetria,
         alertaIdPadre: String,
-        vigenciaHoras: Long = VIGENCIA_ALERTAS_HORAS
+        vigenciaHoras: Long = VIGENCIA_TELEMETRIA_HORAS
     ): ColaAlertaEntity = withContext(Dispatchers.IO) {
         val ahora = System.currentTimeMillis()
         val expiraEn = ahora + (vigenciaHoras * MS_POR_HORA)
@@ -164,7 +165,8 @@ class GestorColaSincronizacion(
      * Vigencia: 6 días (518,400,000 ms).
      */
     suspend fun encolarReporteComunitario(
-        reporteId: String = UUID.randomUUID().toString(),
+        reporteId: String,
+        usuarioId: String,
         datosJson: String,
         rutasEvidencia: List<String> = emptyList(),
         tamanoBytes: Long = 0L,
@@ -182,7 +184,8 @@ class GestorColaSincronizacion(
             tamanoBytes = tamanoBytes,
             reintentos = 0,
             creadoEn = ahora,
-            expiraEn = expiraEn
+            expiraEn = expiraEn,
+            usuarioId = usuarioId
         )
 
         colaReporteDao.insertarOActualizar(entidad)
@@ -294,6 +297,25 @@ class GestorColaSincronizacion(
     suspend fun obtenerAlertasPendientes(): List<ColaAlertaEntity> = withContext(Dispatchers.IO) {
         colaAlertaDao.obtenerAlertasPendientes(System.currentTimeMillis())
             .filter { it.tipoElemento == TipoElementoAlerta.ALERTA_SOS.valor }
+    }
+
+    suspend fun hayAlertasOTelemetriasPendientes(): Boolean = withContext(Dispatchers.IO) {
+        colaAlertaDao.obtenerAlertasPendientes(System.currentTimeMillis()).any {
+            it.tipoElemento == TipoElementoAlerta.ALERTA_SOS.valor ||
+                it.tipoElemento == TipoElementoAlerta.TELEMETRIA.valor
+        }
+    }
+
+    suspend fun obtenerReportesPendientes(): List<ColaReporteEntity> = withContext(Dispatchers.IO) {
+        colaReporteDao.obtenerReportesPendientes(System.currentTimeMillis())
+    }
+
+    suspend fun obtenerReportesExpirados(): List<ColaReporteEntity> = withContext(Dispatchers.IO) {
+        colaReporteDao.obtenerReportesExpirados(System.currentTimeMillis())
+    }
+
+    suspend fun actualizarDatosReporte(reporteId: String, datos: String): Int = withContext(Dispatchers.IO) {
+        colaReporteDao.actualizarDatos(reporteId, datos)
     }
 
     suspend fun obtenerAlertasListasParaReintento(): List<ColaAlertaEntity> = withContext(Dispatchers.IO) {

@@ -1,6 +1,6 @@
 package com.escom.sendero_seguro.ui.mapa
 
-import android.preference.PreferenceManager
+import android.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,15 +18,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.escom.sendero_seguro.ui.theme.Superficie
 import com.escom.sendero_seguro.ui.theme.TextoSecundario
-import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polygon
 
 data class Punto(val latitud: Double, val longitud: Double)
 
 data class MarcadorMapa(val punto: Punto, val titulo: String)
+
+data class PoligonoMapa(val puntos: List<Punto>, val nivel: String)
 
 /** Proveedor con el que se dibuja el mapa. Se muestra en la esquina para saber cuál está activo. */
 enum class ProveedorMapa(val etiqueta: String) {
@@ -54,6 +56,7 @@ fun MapaSendero(
     modifier: Modifier = Modifier,
     zoom: Double = 16.5,
     marcadores: List<MarcadorMapa> = emptyList(),
+    poligonos: List<PoligonoMapa> = emptyList(),
     hayRed: Boolean = true,
     nota: String? = null
 ) {
@@ -61,7 +64,7 @@ fun MapaSendero(
     Box(modifier) {
         when (proveedor) {
             // El SDK de MapBox se integra cuando el equipo tenga la llave; hasta entonces cae al respaldo.
-            ProveedorMapa.MAPBOX, ProveedorMapa.BASE_OFFLINE -> MapaBase(centro, zoom, marcadores)
+            ProveedorMapa.MAPBOX, ProveedorMapa.BASE_OFFLINE -> MapaBase(centro, zoom, marcadores, poligonos)
         }
         Text(
             listOfNotNull(proveedor.etiqueta, nota).joinToString(" · "),
@@ -78,12 +81,9 @@ fun MapaSendero(
 }
 
 @Composable
-private fun MapaBase(centro: Punto, zoom: Double, marcadores: List<MarcadorMapa>) {
+private fun MapaBase(centro: Punto, zoom: Double, marcadores: List<MarcadorMapa>, poligonos: List<PoligonoMapa>) {
     val contexto = LocalContext.current
-    remember {
-        Configuration.getInstance().load(contexto, PreferenceManager.getDefaultSharedPreferences(contexto))
-        Configuration.getInstance().userAgentValue = contexto.packageName
-    }
+    remember(contexto) { ConfiguracionMapaOffline.inicializar(contexto) }
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
@@ -96,7 +96,15 @@ private fun MapaBase(centro: Punto, zoom: Double, marcadores: List<MarcadorMapa>
         update = { mapa ->
             mapa.controller.setZoom(zoom)
             mapa.controller.setCenter(GeoPoint(centro.latitud, centro.longitud))
-            mapa.overlays.removeAll { it is Marker }
+            mapa.overlays.removeAll { it is Marker || it is Polygon }
+            poligonos.forEach { poligono ->
+                mapa.overlays.add(Polygon(mapa).apply {
+                    points = poligono.puntos.map { GeoPoint(it.latitud, it.longitud) }
+                    fillPaint.color = colorDeRiesgo(poligono.nivel)
+                    outlinePaint.color = colorDeRiesgo(poligono.nivel).let { Color.argb(220, Color.red(it), Color.green(it), Color.blue(it)) }
+                    outlinePaint.strokeWidth = 3f
+                })
+            }
             marcadores.forEach { m ->
                 mapa.overlays.add(Marker(mapa).apply {
                     position = GeoPoint(m.punto.latitud, m.punto.longitud)
@@ -107,4 +115,10 @@ private fun MapaBase(centro: Punto, zoom: Double, marcadores: List<MarcadorMapa>
             mapa.invalidate()
         }
     )
+}
+
+private fun colorDeRiesgo(nivel: String): Int = when (nivel.uppercase()) {
+    "ALTO" -> Color.argb(95, 220, 38, 38)
+    "MEDIO" -> Color.argb(95, 245, 158, 11)
+    else -> Color.argb(80, 34, 197, 94)
 }

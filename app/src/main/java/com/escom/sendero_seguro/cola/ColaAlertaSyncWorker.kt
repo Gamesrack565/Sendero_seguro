@@ -26,10 +26,14 @@ class ColaAlertaSyncWorker(
         return try {
             if (app.prepararSesionPruebaLocal() != null) {
                 Log.w(TAG, "No se sincroniza la cola: se requiere una sesión válida.")
-                return Result.success()
+                return if (app.reportes.hayReportesPendientes() ||
+                    app.emergencias.hayPendientesSincronizacion()
+                ) Result.retry() else Result.success()
             }
 
-            if (app.emergencias.sincronizarAlertasEnCola()) Result.success() else Result.retry()
+            if (!app.emergencias.sincronizarAlertasEnCola()) return Result.retry()
+            if (!app.reportes.sincronizarColaOffline()) return Result.retry()
+            Result.success()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

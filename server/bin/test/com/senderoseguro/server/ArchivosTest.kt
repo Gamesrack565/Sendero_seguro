@@ -100,11 +100,35 @@ class ArchivosTest {
         assertEquals(HttpStatusCode.UnsupportedMediaType, subir("evidencia", Rol.INTEGRANTE, ContentType.Application.Pdf, ByteArray(10)))
         assertEquals(HttpStatusCode.BadRequest, subir("evidencia", Rol.INTEGRANTE, ContentType.Image.PNG, ByteArray(0)))
         assertEquals(HttpStatusCode.PayloadTooLarge, subir("evidencia", Rol.INTEGRANTE, ContentType.Image.PNG, ByteArray(1025)))
-        assertEquals(HttpStatusCode.Forbidden, subir("mapa", Rol.INTEGRANTE, ContentType.Application.Zip, ByteArray(10)))
-        assertEquals(HttpStatusCode.Created, subir("mapa", Rol.ADMINISTRADOR, ContentType.Application.Zip, ByteArray(4096)))
+        val tipoMbtiles = ContentType.parse("application/vnd.sqlite3")
+        assertEquals(HttpStatusCode.Forbidden, subir("mapa", Rol.INTEGRANTE, tipoMbtiles, ByteArray(10)))
+        assertEquals(HttpStatusCode.UnsupportedMediaType, subir("mapa", Rol.ADMINISTRADOR, ContentType.Application.Zip, ByteArray(10)))
+        assertEquals(HttpStatusCode.Created, subir("mapa", Rol.ADMINISTRADOR, tipoMbtiles, ByteArray(4096)))
         assertEquals(HttpStatusCode.NotFound, subir("otro", Rol.ADMINISTRADOR, ContentType.Application.Zip, ByteArray(10)))
         // Nada de lo rechazado quedó guardado: solo el mapa.
         assertEquals(1, Files.walk(carpeta).filter { Files.isRegularFile(it) }.count())
+    }
+
+    @Test
+    fun `un MBTiles se sube y se descarga como paquete vectorial`() = testApplication {
+        montar()
+        val contenido = ByteArray(128) { it.toByte() }
+        val subida = client.post("/api/v1/archivos/mapa") {
+            header("Authorization", "Bearer ${jwt(Rol.ADMINISTRADOR)}")
+            contentType(ContentType.parse("application/vnd.sqlite3"))
+            setBody(contenido)
+        }
+        assertEquals(HttpStatusCode.Created, subida.status)
+        val respuesta = Json.parseToJsonElement(subida.bodyAsText()).jsonObject
+        val clave = respuesta["clave"]!!.jsonPrimitive.content
+        assertTrue(Regex("^mapa/[0-9a-f-]{36}\\.mbtiles$").matches(clave))
+
+        val descarga = client.get("/api/v1/archivos/$clave") {
+            header("Authorization", "Bearer ${jwt(Rol.ADMINISTRADOR)}")
+        }
+        assertEquals(HttpStatusCode.OK, descarga.status)
+        assertEquals("application/vnd.sqlite3", descarga.headers[HttpHeaders.ContentType])
+        assertContentEquals(contenido, descarga.bodyAsBytes())
     }
 
     @Test

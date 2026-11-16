@@ -31,7 +31,10 @@ data class ColaReporteEntity(
     val creadoEn: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "expira_en")
-    val expiraEn: Long
+    val expiraEn: Long,
+
+    @ColumnInfo(name = "usuario_id", defaultValue = "''")
+    val usuarioId: String = ""
 )
 
 /**
@@ -73,6 +76,12 @@ data class CacheMapaEntity(
     @ColumnInfo(name = "grafo", typeAffinity = ColumnInfo.BLOB)
     val grafo: ByteArray?,
 
+    @ColumnInfo(name = "version_contenido")
+    val versionContenido: String? = null,
+
+    @ColumnInfo(name = "archivo_local")
+    val archivoLocal: String? = null,
+
     @ColumnInfo(name = "descargado_en")
     val descargadoEn: Long = System.currentTimeMillis()
 ) {
@@ -87,6 +96,8 @@ data class CacheMapaEntity(
             if (other.grafo == null) return false
             if (!grafo.contentEquals(other.grafo)) return false
         } else if (other.grafo != null) return false
+        if (versionContenido != other.versionContenido) return false
+        if (archivoLocal != other.archivoLocal) return false
         if (descargadoEn != other.descargadoEn) return false
         return true
     }
@@ -96,6 +107,8 @@ data class CacheMapaEntity(
         result = 31 * result + versionCapa
         result = 31 * result + (geojsonRiesgo?.hashCode() ?: 0)
         result = 31 * result + (grafo?.contentHashCode() ?: 0)
+        result = 31 * result + (versionContenido?.hashCode() ?: 0)
+        result = 31 * result + (archivoLocal?.hashCode() ?: 0)
         result = 31 * result + descargadoEn.hashCode()
         return result
     }

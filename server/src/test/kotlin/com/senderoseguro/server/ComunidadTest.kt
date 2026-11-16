@@ -21,9 +21,14 @@ import com.senderoseguro.server.plataforma.Rol
 import com.senderoseguro.server.plataforma.UsuarioToken
 import com.senderoseguro.server.sincronizacion.ContextoSync
 import com.senderoseguro.server.sincronizacion.ElementoSync
+import com.senderoseguro.server.sincronizacion.ResultadoManejo
 import com.senderoseguro.server.sincronizacion.Sincronizacion
 import com.senderoseguro.server.sincronizacion.TipoSync
+import com.senderoseguro.server.plataforma.transaccion
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import java.time.Instant
 import java.util.UUID
@@ -93,6 +98,41 @@ class ComunidadTest : PruebaConBaseDatos() {
     }
 
     @Test
+    fun `auto publicar hace visibles reportes directos y recibidos por la cola con bitacora`() {
+        var recalculos = 0
+        val automaticos = ReportesServicio(dataSource, autor, { recalculos++ }, publicarAutomaticamente = true)
+        val directoEntrada = reporte(descripcion = "Me llamaron al 55 1234 5678 desde acoso@ejemplo.mx")
+        val (directo, nuevo) = automaticos.crear(ana, directoEntrada, null)
+
+        assertTrue(nuevo)
+        assertEquals("PUBLICADO", directo.estado)
+        assertEquals(1, numero("SELECT count(*) FROM reporte_publico WHERE reporte_id = ?", directo.id))
+        val descripcionPublica = texto("SELECT descripcion FROM reporte_publico WHERE reporte_id = ?", directo.id)!!
+        assertTrue("1234" !in descripcionPublica && "@" !in descripcionPublica, descripcionPublica)
+        assertEquals(1, numero(
+            "SELECT count(*) FROM bitacora WHERE accion = 'PUBLICAR_REPORTE_AUTOMATICAMENTE' AND entidad_id = ?",
+            directo.id,
+        ))
+        assertEquals(1, recalculos)
+
+        val colaEntrada = reporte()
+        val datos = Json.parseToJsonElement(
+            Json.encodeToString(ReporteEntrada.serializer(), colaEntrada)
+        ).jsonObject
+        val resultado = dataSource.transaccion { conn ->
+            automaticos.manejadorSync.procesar(
+                conn,
+                ContextoSync(ana, UUID.randomUUID()),
+                ElementoSync(TipoSync.REPORTE, UUID.fromString(colaEntrada.id), Instant.parse(colaEntrada.creadoEn), datos),
+            )
+        }
+
+        assertTrue(resultado is ResultadoManejo.Aceptado)
+        assertEquals(2, numero("SELECT count(*) FROM reporte_publico WHERE reporte_id IN (?, ?)", directo.id, colaEntrada.id))
+        assertEquals(2, recalculos)
+    }
+
+    @Test
     fun `el autor anonimo se guarda cifrado y solo se consulta con justificacion`() {
         val (r, _) = reportes.crear(ana, reporte(anonimo = true), null)
         val id = UUID.fromString(r.id)
@@ -158,7 +198,11 @@ class ComunidadTest : PruebaConBaseDatos() {
         fun nodo(n: Long, este: Double, norte: Double) = punto(este, norte).let { NodoEntrada(base + n, it.first, it.second) }
         val nodos = listOf(nodo(1, 0.0, 0.0), nodo(2, 100.0, 0.0), nodo(3, 200.0, 0.0), nodo(4, 0.0, 30.0), nodo(5, 200.0, 30.0))
         val aristas = listOf(1L to 2L, 2L to 3L, 1L to 4L, 4L to 5L, 5L to 3L).map { (a, b) -> AristaEntrada(base + a, base + b) }
+        assertEquals(0, rutas.versionGrafoVigente())
+        assertEquals(5, rutas.cargarGrafo(admin, GrafoEntrada(nodos, aristas, finalizarVersion = false), null).aristas)
+        assertEquals(0, rutas.versionGrafoVigente())
         assertEquals(5, rutas.cargarGrafo(admin, GrafoEntrada(nodos, aristas), null).aristas)
+        assertEquals(1, rutas.versionGrafoVigente())
 
         // Seis asaltos (peso 3) sobre la línea recta: una zona ALTO.
         listOf(40.0, 50.0, 60.0, 140.0, 150.0, 160.0).forEachIndexed { i, x -> publicar(reporte(tipo = "ASALTO_ROBO", este = x, norte = if (i % 2 == 0) -3.0 else 3.0)) }
@@ -187,6 +231,8 @@ class ComunidadTest : PruebaConBaseDatos() {
         val grafo = rutas.grafo(caja)
         assertEquals(5, grafo.nodos.count { it.id in nodos.map { n -> n.id } })
         assertTrue(grafo.aristas.any { it.riesgo == 1.0 })
+        assertEquals(1, grafo.versionGrafo)
+        assertEquals(1, MapasServicio(dataSource).versiones(generada.version, null, rutas.versionGrafoVigente()).grafo)
     }
 
     @Test
@@ -203,7 +249,7 @@ class ComunidadTest : PruebaConBaseDatos() {
 
         val mapas = MapasServicio(dataSource)
         val region = "Region prueba ${Random.nextInt(100_000, 999_999)}"
-        fun paquete(v: String) = PaqueteEntrada(region, v, 19.49, -99.16, 19.51, -99.13, "mapa/${UUID.randomUUID()}.zip", 1024, "b".repeat(64))
+        fun paquete(v: String) = PaqueteEntrada(region, v, 19.49, -99.16, 19.51, -99.13, "mapa/${UUID.randomUUID()}.mbtiles", 1024, "b".repeat(64))
         mapas.publicarPaquete(admin, paquete("1"), null)
         assertEquals("2", mapas.publicarPaquete(admin, paquete("2"), null).version)
         assertEquals(listOf("2"), mapas.paquetes().filter { it.region == region }.map { it.version })

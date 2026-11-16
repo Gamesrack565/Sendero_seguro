@@ -42,7 +42,7 @@ enum class TipoArchivo(val roles: Set<Rol>, val mimes: Map<String, String>) {
     /** Paquetes de mapas y ruteo offline (tabla `paquete_mapa`, P12). Solo el Administrador los publica. */
     MAPA(
         setOf(Rol.ADMINISTRADOR),
-        mapOf("application/zip" to "zip", "application/octet-stream" to "bin"),
+        mapOf("application/vnd.sqlite3" to "mbtiles"),
     ),
     ;
 
@@ -69,7 +69,7 @@ data class ArchivoGuardado(
     val hashSha256: String,
 )
 
-private val NOMBRE = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z0-9]{2,5}$")
+private val NOMBRE = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z0-9]{2,8}$")
 
 /**
  * - `POST /archivos/{tipo}` (`evidencia` o `mapa`): sube un archivo. El cuerpo es el archivo tal cual, con su

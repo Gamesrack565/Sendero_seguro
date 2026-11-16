@@ -12,7 +12,6 @@ import com.escom.sendero_seguro.cola.GestorColaSincronizacion
 import com.escom.sendero_seguro.emergencias.AvisoMallaUsuario
 import com.escom.sendero_seguro.emergencias.remoto.CanalServidorAlertas
 import com.escom.sendero_seguro.emergencias.remoto.CanalUbicaciones
-import com.escom.sendero_seguro.emergencias.remoto.EnvioUbicaciones
 import com.escom.sendero_seguro.emergencias.remoto.LecturaUbicacionDto
 import com.escom.sendero_seguro.emergencias.remoto.ResultadoUbicaciones
 import com.escom.sendero_seguro.emergencias.remoto.ResultadoServidor
@@ -47,6 +46,7 @@ class ModuloEmergencias(
 
     companion object {
         private const val TAG = "MODULO2_MOTOR_P4_P6"
+        private const val UBICACIONES_POR_ENVIO = 100
     }
 
     private val appContext = context.applicationContext
@@ -56,7 +56,6 @@ class ModuloEmergencias(
     private var jobCuentaRegresivaPreEnvio: Job? = null
     private var ultimoDisparoCaidaMs: Long = 0L
     private val canalUbicaciones = ubicaciones
-    private val envioUbicaciones = canalUbicaciones?.let { EnvioUbicaciones(it) }
     private val candadoSincronizacionCola = Mutex()
 
     // P4: id de la alerta que ya no hay que mandar (el servidor la confirmó o la rechazó), y el envío en curso.
@@ -374,26 +373,41 @@ class ModuloEmergencias(
 
         val ubicaciones = canalUbicaciones
         if (ubicaciones != null) {
-            for (pendiente in colaOffline.obtenerTelemetriasPendientes()) {
+            val pendientesPorAlerta = colaOffline.obtenerTelemetriasPendientes().map { pendiente ->
                 val payload = JSONObject(pendiente.paquete.toString(Charsets.UTF_8))
                 val alertaIdPadre = payload.getString("alertaIdPadre")
                 val lectura = ServidorAlertasRetrofit.json.decodeFromString(
                     LecturaUbicacionDto.serializer(),
                     payload.getString("lectura")
                 )
-                when (ubicaciones.enviar(alertaIdPadre, listOf(lectura))) {
-                    ResultadoUbicaciones.ENTREGADAS,
-                    ResultadoUbicaciones.DESCARTAR,
-                    ResultadoUbicaciones.ALERTA_TERMINADA ->
-                        colaOffline.marcarSincronizadoYEliminar(pendiente.alertaId, esAlerta = true)
-                    ResultadoUbicaciones.REINTENTAR ->
-                        colaOffline.registrarFalloReintento(pendiente.alertaId, esAlerta = true)
+                Triple(pendiente, alertaIdPadre, lectura)
+            }.groupBy { it.second }
+            for ((alertaIdPadre, pendientes) in pendientesPorAlerta) {
+                for (lote in pendientes.chunked(UBICACIONES_POR_ENVIO)) {
+                    when (ubicaciones.enviar(alertaIdPadre, lote.map { it.third })) {
+                        ResultadoUbicaciones.ENTREGADAS,
+                        ResultadoUbicaciones.DESCARTAR ->
+                            lote.forEach { colaOffline.marcarSincronizadoYEliminar(it.first.alertaId, esAlerta = true) }
+                        ResultadoUbicaciones.ALERTA_TERMINADA -> {
+                            pendientes.forEach {
+                                colaOffline.marcarSincronizadoYEliminar(it.first.alertaId, esAlerta = true)
+                            }
+                            break
+                        }
+                        ResultadoUbicaciones.REINTENTAR -> {
+                            lote.forEach { colaOffline.registrarFalloReintento(it.first.alertaId, esAlerta = true) }
+                            break
+                        }
+                    }
                 }
             }
         }
         programarSiguienteReintentoCola()
         true
     }
+
+    suspend fun hayPendientesSincronizacion(): Boolean =
+        colaOffline.hayAlertasOTelemetriasPendientes()
 
     private suspend fun programarSiguienteReintentoCola() {
         val esperaMs = colaOffline.tiempoHastaProximoIntentoMs(incluirTelemetria = canalUbicaciones != null)
@@ -678,23 +692,24 @@ class ModuloEmergencias(
     private fun iniciarHiloDeFondoTelemetria(intervaloMs: Long = 10_000L) {
         jobHiloTelemetria?.cancel()
         jobHiloTelemetria = moduloScope.launch {
-            envioUbicaciones?.reiniciar()
             while (isActive && _alertaActiva.value?.activa == true) {
                 val datos = gestorTelemetria.emitirUbicacionGNSSPeriodica()
                 gestorMalla.ajustarEscaneoMallaPorBateria(datos.nivelBateria)
                 val alerta = _alertaActiva.value
+                val hayInternet = gestorMalla.hayConexionAInternet()
 
-                if (!gestorMalla.hayConexionAInternet()) {
-                    _colaTelemetriaOfflineP11.tryEmit(datos)
-                    alerta?.let {
-                        colaOffline.encolarTelemetria(datos, it.idAlerta)
-                        programarSincronizacionCola()
+                if (!hayInternet) _colaTelemetriaOfflineP11.tryEmit(datos)
+                if (alerta != null) {
+                    val encolada = try {
+                        colaOffline.encolarTelemetria(datos, alerta.idAlerta)
+                        true
+                    } catch (e: Exception) {
+                        Log.e(TAG, "No se pudo persistir la telemetría P6 en la cola P11.", e)
+                        false
                     }
-                } else if (alerta != null) {
-                    // P6: cada lectura va al servidor; si falla, EnvioUbicaciones la conserva en memoria.
-                    envioUbicaciones?.agregar(datos)
+
                     // Si se activó sin internet, la alerta sale al servidor en cuanto vuelve la señal.
-                    if (alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) {
+                    if (hayInternet && alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) {
                         when (val resultado = enviarAlServidor(alerta)) {
                             is ResultadoServidor.Registrada -> confirmarRegistroServidor(alerta, resultado)
                             is ResultadoServidor.Fallo -> Log.w(
@@ -703,7 +718,14 @@ class ModuloEmergencias(
                             null -> Unit
                         }
                     }
-                    envioUbicaciones?.enviarPendientes(alerta.idAlerta)
+
+                    if (encolada) {
+                        if (hayInternet) {
+                            if (!sincronizarAlertasEnCola()) programarSincronizacionCola()
+                        } else {
+                            programarSincronizacionCola()
+                        }
+                    }
                 }
 
                 if (gestorCaminataSegura.estadoCaminata.value.activa) {
@@ -744,7 +766,6 @@ class ModuloEmergencias(
 
         jobHiloTelemetria?.cancel()
         alertaResuelta = null
-        moduloScope.launch { envioUbicaciones?.reiniciar() }
         gestorTelemetria.detenerTelemetriaTiempoReal()
         gestorMalla.detenerSoloTransmisionBLE()
         _alertaActiva.value = null

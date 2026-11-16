@@ -14,7 +14,7 @@ import kotlinx.serialization.json.put
 import java.sql.SQLException
 import javax.sql.DataSource
 
-private val CLAVE_MAPA = Regex("^mapa/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(zip|bin)$")
+private val CLAVE_MAPA = Regex("^mapa/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.mbtiles$")
 private val HASH = Regex("^[0-9a-f]{64}$")
 
 /**
@@ -64,8 +64,8 @@ class MapasServicio(private val dataSource: DataSource) {
         return paquetes().first { it.region == region }
     }
 
-    fun versiones(capaRiesgo: Int?, catalogo: Int?): VersionesMapas =
-        VersionesMapas(capaRiesgo, catalogo, paquetes().map { PaqueteVersion(it.region, it.version) })
+    fun versiones(capaRiesgo: Int?, catalogo: Int?, grafo: Int? = null): VersionesMapas =
+        VersionesMapas(capaRiesgo, catalogo, paquetes().map { PaqueteVersion(it.region, it.version) }, grafo)
 
     fun puntosInteres(caja: Geo.Caja?): List<PuntoInteres> = dataSource.connection.use { conn ->
         conn.consultar(

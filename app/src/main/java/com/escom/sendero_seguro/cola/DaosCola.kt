@@ -83,6 +83,9 @@ interface ColaReporteDao {
     @Query("SELECT * FROM cola_reporte WHERE expira_en <= :ahora")
     suspend fun obtenerReportesExpirados(ahora: Long): List<ColaReporteEntity>
 
+    @Query("UPDATE cola_reporte SET datos = :datos WHERE reporte_id = :reporteId")
+    suspend fun actualizarDatos(reporteId: String, datos: String): Int
+
     @Query("DELETE FROM cola_reporte WHERE reporte_id = :reporteId")
     suspend fun eliminarPorId(reporteId: String): Int
 
@@ -131,6 +134,12 @@ interface CacheMapaDao {
 
     @Query("SELECT * FROM cache_mapa WHERE tesela = :tesela LIMIT 1")
     suspend fun obtenerPorTesela(tesela: String): CacheMapaEntity?
+
+    @Query("SELECT * FROM cache_mapa")
+    suspend fun obtenerTodas(): List<CacheMapaEntity>
+
+    @Query("DELETE FROM cache_mapa WHERE tesela = :tesela")
+    suspend fun eliminarTesela(tesela: String)
 
     @Query("SELECT version_capa FROM cache_mapa WHERE tesela = :tesela LIMIT 1")
     suspend fun obtenerVersionCapa(tesela: String): Int?

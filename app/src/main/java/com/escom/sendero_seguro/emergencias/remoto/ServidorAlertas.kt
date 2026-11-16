@@ -83,7 +83,13 @@ data class UbicacionesAgregadasDto(val insertadas: Int, val duplicadas: Int)
 data class SolicitudTokenDesarrolloDto(val cuenta: String)
 
 @Serializable
-data class TokenDesarrolloDto(val token: String, val usuarioId: String, val rol: String, val expiraEn: String)
+data class TokenDesarrolloDto(
+    val token: String,
+    val usuarioId: String,
+    val rol: String,
+    val expiraEn: String,
+    val dispositivoId: String? = null,
+)
 
 @Serializable
 data class LineaTiempoAlertaDto(val alertaId: String, val eventos: List<EventoTimelineAlertaDto>)

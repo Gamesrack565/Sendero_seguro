@@ -1,6 +1,6 @@
 # Sendero Seguro · Backend en la nube
 
-Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas. También tiene las rutas de la nube del Módulo 1: cuentas (P1), red de apoyo (P2) y cancelación de alertas (P8); la administración de cuentas, corporaciones, unidades y operadores; el catálogo de incidentes (P3); los trayectos (P11), y el lado del servidor del Módulo 3: reportes y moderación (P9), feed y mapa de calor (P10) y ruta segura con mapas offline (P12).
+Servidor, base de datos y contrato de la API de Sendero Seguro. Lo mantiene el Módulo 4 de backend, que cubre P5 Dispersión, P13 Auditoría, P14 Infraestructura y API, P15 Base de datos en la nube y P16 Pasarelas. También tiene las rutas de la nube del Módulo 1: cuentas (P1), red de apoyo (P2) y cancelación de alertas (P8); la administración de cuentas, corporaciones, unidades y operadores; el catálogo de incidentes (P3); los trayectos (P11), y el lado del servidor del Módulo 3: mapa comunitario (P9), reportes (P10) y ruta segura con mapas offline (P12).
 
 Con esto ya puedes:
 - usar el servidor que ya está en la nube (Azure);
@@ -305,7 +305,7 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - Con la alerta `ATENDIDA`, `CERRADA`, `CANCELADA` o `EXPIRADA` responde `409` (`CONFLICTO`). Una lectura inválida responde `400` y no se guarda nada del grupo.
 - La consola y el enlace las reciben en tiempo real: [Tiempo real](#tiempo-real) lee `ubicacion_alerta`.
 - Lo juntado sin internet también puede llegar en el lote (tipo `UBICACION`, ver [Sincronización](#sincronización)).
-- En la app, `emergencias/remoto/EnvioUbicaciones.kt` guarda las lecturas pendientes (hasta 500, en memoria) y las manda en grupos de 100 cuando hay internet. Con `404` las conserva (la alerta puede venir en camino); con `409` deja de mandar. Si la alerta se activó sin internet, `ModuloEmergencias` la manda al servidor en cuanto vuelve la señal.
+- En la app, cada lectura se persiste primero en la cola P11 de Room tanto si hay red como si no. WorkManager las reenvía en grupos de hasta 100, con backoff y después de registrar la alerta padre; si falla el almacenamiento local, queda un error en el log y no se intenta un envío no durable. La telemetría usa la misma vigencia de 2 horas que la alerta padre.
 - `app/src/test/.../emergencias/UbicacionesAlertaTest.kt` prueba los pendientes y el envío contra el servidor local.
 
 ## Dispersión
@@ -396,24 +396,38 @@ La caminata segura (P7) se calcula y se vigila en el teléfono; el servidor guar
 
 El lado del servidor del Módulo 3 (P9, P10 y P12).
 
-**Reportes (P9).** `POST /reportes` recibe el reporte con el `id` del teléfono. El tipo tiene que aplicar a reportes, la descripción va de 10 a 2000 caracteres y las evidencias (hasta 3) se suben antes con `POST /archivos/evidencia`. Sin señal va como `REPORTE` en `/sync/lote`. Todo reporte queda `PENDIENTE` hasta que se modera. `GET /reportes/mios` muestra los propios con nombre.
+**Reportes (P10).** `POST /reportes` recibe el reporte con el `id` del teléfono. El tipo tiene que aplicar a reportes, la descripción va de 10 a 2000 caracteres y las evidencias (hasta 3) se suben antes con `POST /archivos/evidencia`. Sin señal va como `REPORTE` en `/sync/lote`. Solo en el servidor local con `DB_DATOS_PRUEBA=true`, los reportes nuevos se aprueban automáticamente, se ocultan teléfonos y correos, se aproxima la ubicación a una celda geohash de unos 150 m y se registra la acción automática en la bitácora. En Azure, con `DB_DATOS_PRUEBA=false`, la aprobación automática queda desactivada y los reportes siguen `PENDIENTE` para moderación. Los reportes que ya estaban pendientes no se publican retroactivamente. `GET /reportes/mios` muestra los propios con nombre.
+
+**Formulario Android y cola P11.** Al abrir la app y al entrar a **Reportar**, se intenta cargar `GET /catalogo?aplicaA=REPORTE`; una respuesta válida se guarda en el teléfono. Sin conexión se usa esa copia e indica su versión. Para obtenerla por primera vez, la app debe abrirse al menos una vez con el servidor accesible; **Actualizar catálogo** vuelve a intentar descargar la versión vigente. El formulario permite adjuntar hasta tres fotos de 10 MB cada una o grabar audio desde el micrófono, con el mismo límite. El audio se adjunta como archivo, sin transcripción ni IA. Con conexión sube cada evidencia a `POST /archivos/evidencia` y después envía su clave, MIME, tamaño y SHA-256 en `POST /reportes`; si no hay red o el servidor responde con un error temporal, conserva el reporte y los archivos en `cola_reporte`. El WorkManager P11 procesa las alertas primero y después sube las evidencias pendientes y envía cada reporte por separado en `/sync/lote` (tipo `REPORTE`); `ACEPTADO` y `DUPLICADO` lo eliminan de Room y los errores temporales conservan el elemento para reintentar. Cuando el servidor confirma uno de esos dos resultados, la app notifica al usuario (si Android permite notificaciones) y actualiza el formulario si sigue abierto. El reporte vence en seis días.
+
+Para revisar los últimos registros en PostgreSQL:
+
+```sql
+SELECT id, folio, tipo_incidente_id, version_catalogo_id, descripcion,
+       latitud, longitud, precision_m, es_anonimo, estado, creado_en, recibido_en
+FROM reporte
+ORDER BY recibido_en DESC
+LIMIT 20;
+```
 
 **Reporte anónimo.** El autor se guarda cifrado con AES-256-GCM y la llave `REPORTES_LLAVE_AUTOR`, y la bitácora no guarda ni la cuenta ni la IP. En la consola sale como «Anónimo». Para verlo, `POST /reportes/{id}/identidad` pide una justificación de 20 caracteres o más, que queda en la bitácora (`CONSULTAR_IDENTIDAD_PROTEGIDA`). Si la llave cambia, los autores de los anónimos que ya existen ya no se pueden leer, así que se guarda con cuidado.
 
-**Moderación.** `GET /moderacion/reportes` es la cola (los `PENDIENTE` primero, del más viejo). `POST /reportes/{id}/decision`:
+**Moderación (API disponible; interfaz pospuesta).** `GET /moderacion/reportes` es la cola (los `PENDIENTE` primero, del más viejo). `POST /reportes/{id}/decision`:
 - `PUBLICAR`: el reporte sale en el feed con la ubicación del centro de su celda (geohash de 7 caracteres, unos 150 m), nunca la exacta. Con `ocultaDatosPersonales` se quitan teléfonos y correos de la descripción. `unidoAId` lo une a otro reporte publicado.
 - `RECHAZAR` (con motivo): se avisa al autor, también si es anónimo.
 - `RETIRAR` (con motivo): un publicado deja de salir.
 
-**Feed (P10).** `GET /feed` trae los publicados, del más nuevo al más viejo. Filtros: tipo, categoría, días, zona y radio alrededor de una ubicación (`latitud`, `longitud`, `radioM`). Se pagina con `siguiente`.
+**Feed (P9).** `GET /feed` trae los publicados, del más nuevo al más viejo. Filtros: tipo, categoría, días, zona y radio alrededor de una ubicación (`latitud`, `longitud`, `radioM`). Se pagina con `siguiente`.
 
-**Mapa de calor (P10).** El servidor agrupa los reportes publicados de los últimos 7 y 30 días con DBSCAN (`dbscan_eps_m` = 100 m, `dbscan_min_puntos` = 3), en general y por tipo. El nivel de cada zona sale de sumar el peso de riesgo de sus reportes (del catálogo): `MEDIO` desde `riesgo_umbral_medio` (4) y `ALTO` desde `riesgo_umbral_alto` (8). La capa se genera cada `MAPA_CALOR_REVISION_HORAS` (6), unos segundos después de cada publicación o retiro, y a mano con `POST /mapa-calor/generar`. `GET /mapa-calor?periodo=30` la entrega (con `?version=N` responde `304` si no cambió) y `GET /mapa-calor/zonas/{id}` dice qué tipos la forman. Es información orientativa con los reportes publicados.
+**Mapa comunitario Android (P9).** La app descarga hasta 100 reportes publicados de los últimos 30 días y conserva la última respuesta para consultarla sin conexión; el feed se actualiza al entrar al mapa y mediante WorkManager cuando hay red (periodicidad mínima de 15 minutos). Los filtros locales permiten categoría, 7/30 días y franja horaria. Los reportes se muestran con la ubicación pública aproximada; las capas de fondo, calor, grafo y reportes se pueden activar o desactivar en el mapa. La cola de descargas del feed es independiente de la cola P11 de reportes salientes. El mapa de calor es informativo, no un pronóstico generado por IA.
+
+**Mapa de calor (P9).** El servidor agrupa los reportes publicados de los últimos 7 y 30 días con DBSCAN (`dbscan_eps_m` = 100 m, `dbscan_min_puntos` = 3), en general y por tipo. El nivel de cada zona sale de sumar el peso de riesgo de sus reportes (del catálogo): `MEDIO` desde `riesgo_umbral_medio` (4) y `ALTO` desde `riesgo_umbral_alto` (8). La capa se genera cada `MAPA_CALOR_REVISION_HORAS` (6), unos segundos después de cada publicación o retiro, y a mano con `POST /mapa-calor/generar`. `GET /mapa-calor?periodo=30` la entrega (con `?version=N` responde `304` si no cambió) y `GET /mapa-calor/zonas/{id}` dice qué tipos la forman. Es información orientativa con los reportes publicados; DBSCAN requiere al menos tres reportes próximos para formar una zona.
 
 **Ruta segura (P12).** `POST /rutas/segura` calcula con A* la ruta más corta y la segura sobre el grafo peatonal. En la segura cada tramo pesa su largo × (1 + α·riesgo), con α = `riesgo_alfa` (0.35), y el riesgo del tramo sale de las zonas de 30 días (ALTO 1, MEDIO 0.6, BAJO 0.3). La respuesta trae las dos rutas, su distancia, su tiempo a pie, las zonas de riesgo por las que pasa la más corta y una explicación. Si el origen o el destino están a más de 400 m del grafo responde `422 FUERA_DE_AREA`.
 
-**Grafo peatonal.** Se carga con `POST /grafo` (Administrador): nodos y tramos de OpenStreetMap ya recortados a la zona, por partes. Si un nodo o tramo ya existe se actualiza. `GET /grafo?minLatitud=&minLongitud=&maxLatitud=&maxLongitud=` entrega el grafo de una caja (lados menores a 0.2°) con el riesgo de cada tramo, para que el teléfono calcule la ruta sin señal.
+**Grafo peatonal.** Se carga con `POST /grafo` (Administrador): nodos y tramos de OpenStreetMap ya recortados a la zona, por partes. Si un nodo o tramo ya existe se actualiza. En cargas parciales se manda `finalizarVersion=false` y solo la última parte incrementa `grafo` en `GET /mapas/version` (por omisión `finalizarVersion=true`). `GET /grafo?minLatitud=&minLongitud=&maxLatitud=&maxLongitud=` entrega el grafo de una caja (lados menores a 0.2°) con el riesgo de cada tramo y su versión, para que el teléfono calcule la ruta sin señal y detecte cambios.
 
-**Mapas offline, puntos de interés y zonas.** `GET /mapas/version` da las versiones vigentes de la capa de riesgo, del catálogo y de cada paquete, para que la app sepa qué descargar. `POST /mapas/paquetes` publica un paquete subido con `POST /archivos/mapa`, y la versión anterior de esa región deja de ser vigente. `GET`, `POST /puntos-interes` (casetas, botones de emergencia, luminarias) y `GET`, `POST /zonas` (las zonas que usan el feed y las estadísticas). Las altas son del Administrador.
+**Mapas offline, puntos de interés y zonas.** `GET /mapas/version` da las versiones vigentes de la capa de riesgo, del catálogo, del grafo y de cada paquete, para que la app sepa qué descargar. `POST /mapas/paquetes` publica un paquete subido con `POST /archivos/mapa`, y la versión anterior de esa región deja de ser vigente. `GET`, `POST /puntos-interes` (casetas, botones de emergencia, luminarias) y `GET`, `POST /zonas` (las zonas que usan el feed y las estadísticas). Las altas son del Administrador.
 
 ## Tiempo real
 
@@ -577,7 +591,7 @@ Las fotos y audios de los reportes (`evidencia`) y los paquetes de mapas offline
 | Ruta | Quién | Qué hace |
 |---|---|---|
 | `POST /archivos/evidencia` | Cualquier cuenta | Sube una foto o un audio. `image/jpeg`, `image/png`, `image/webp`, `audio/mpeg`, `audio/mp4`, `audio/aac` o `audio/ogg`, hasta 10 MB. |
-| `POST /archivos/mapa` | Administrador | Sube un paquete de mapas. `application/zip` o `application/octet-stream`, hasta 200 MB. |
+| `POST /archivos/mapa` | Administrador | Sube un MBTiles vectorial. `application/vnd.sqlite3`, hasta 200 MB. |
 | `GET /archivos/{tipo}/{nombre}` | Cualquier cuenta | Descarga el archivo con su `Content-Type`. Como nunca cambia, el teléfono lo puede guardar en caché. |
 
 - **Cómo se sube.** El cuerpo es el archivo tal cual, no multipart, con su `Content-Type` y el JWT. Responde `201` con `{ clave, url, mime, tamanoBytes, hashSha256 }`. Por ejemplo, la clave es `evidencia/3f2a….jpg` y la ruta de descarga es `/archivos/evidencia/3f2a….jpg`.
@@ -655,6 +669,7 @@ Los valores de `application.conf` sirven para desarrollo. En la nube se reemplaz
 | `ALMACEN_MAX_EVIDENCIA_MB` / `ALMACEN_MAX_MAPA_MB` | Tamaño máximo de una foto o audio y de un paquete de mapas | `10` / `200` |
 | `RETENCION_TRAYECTO_DIAS` / `RETENCION_REVISION_HORAS` | Días que se guarda un trayecto terminado sin alerta, y cada cuántas horas se revisa | `30` / `6` |
 | `REPORTES_LLAVE_AUTOR` | Llave para cifrar al autor de los reportes anónimos. Si cambia, los autores ya guardados no se pueden leer. | Valor de desarrollo. En la nube es obligatorio cambiarla. |
+| `reportes.autoPublicar` | Habilita la aprobación provisional; solo surte efecto con `DB_DATOS_PRUEBA=true` en local y se fuerza a desactivado fuera de ese modo | `true` |
 | `MAPA_CALOR_REVISION_HORAS` | Cada cuántas horas se genera la capa del mapa de calor | `6` |
 
 Para la nube se arma un solo archivo con `.\gradlew.bat :server:buildFatJar` (en Linux o Mac, `./gradlew`). Queda en `server/build/libs/sendero-seguro-server.jar` y se corre con `java -jar`.

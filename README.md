@@ -10,6 +10,8 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 |---|---|
 | `README.md` | Esta página: qué es el proyecto, estado de cada proceso y dónde está la documentación |
 | [`docs/prueba-alerta-local.md`](docs/prueba-alerta-local.md) | **Prueba local de alerta.** Formulario, cascada internet → malla → SMS → cola y consulta de `evento_alerta` |
+| [`docs/prueba-p12-local.md`](docs/prueba-p12-local.md) | **Prueba local P12.** Descarga versionada del mapa de calor, el grafo y los paquetes offline |
+| [`docs/azure/README.md`](docs/azure/README.md) | **Guía futura de integración en Azure.** Pasos documentados para desplegar y verificar P9–P12 cuando se autorice; no implica cambios en la nube |
 | [`docs/modulo4/README.md`](docs/modulo4/README.md) | **Backend en la nube (Módulo 4).** Servidor, base de datos, rutas de la API, cómo correrlo en local, el servidor en Azure, avisos, SMS, bitácora y configuración |
 | [`docs/api/openapi.yaml`](docs/api/openapi.yaml) | Contrato de la API: cada ruta con su JSON de entrada, respuestas y errores |
 | [`docs/api/README.md`](docs/api/README.md) | Mensajes del WebSocket, formato del SMS de contingencia `SS1` y puntos de conexión de la plataforma |
@@ -38,9 +40,9 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 | P7 Caminata segura | 2 | Funciona en el teléfono (ruta segura offline y check-in) |
 | P11 Trayectos | 4 | Listo en el servidor: guarda trayectos y check-ins, por internet o por la cola sin señal, y avisa a la red de apoyo si se comparte |
 | P8 Cancelación | 1 | Listo. Cancelar detiene la alerta en el teléfono y en el servidor. El PIN de coacción la muestra cancelada y la deja activa |
-| P9 Reportes y moderación | 3 | Listo en el servidor: reportes con evidencia, anónimos con el autor cifrado, moderación e identidad protegida con justificación |
-| P10 Feed y mapa de calor | 3 | Listo en el servidor: feed de reportes publicados y zonas de riesgo con DBSCAN, por 7 y 30 días |
-| P12 Ruta segura y mapas offline | 3 | Listo en el servidor: ruta segura con A* sobre el grafo peatonal, grafo por zona para el teléfono, paquetes de mapa, puntos de interés y zonas |
+| P9 Mapa comunitario | 3 | Pantalla provisional: muestra reportes públicos recientes con filtros y conserva el último feed para consulta sin conexión |
+| P10 Reportes comunitarios | 3 | Formulario provisional con fotos o grabación de audio y cola P11; aprobación automática únicamente en el servidor local |
+| P12 Ruta segura y mapas offline | 3 | Pantalla provisional para probar la descarga versionada de capa, grafo y paquetes y su caché local |
 | P13 Auditoría e historial | 4 | Listo en Azure: bitácora encadenada, línea de tiempo, historial y estadísticas |
 | P14 Infraestructura y API | 4 | Listo en Azure (App Service con Java 21) |
 | P15 Base de datos en la nube | 4 | Listo en Azure (PostgreSQL 16), con archivos en Azure Blob Storage |
@@ -55,7 +57,7 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 - **SMS de contingencia.** El envío `SS1` desde la app está habilitado únicamente en debug y solo con número de pasarela configurado; no se habilita en release.
 - **Modo operador (A-14).** El servidor ya recibe el acuse por la cola sin señal (`ACUSE` en `/sync/lote`) y el turno de la unidad (`/unidades/mia`); falta la pantalla del operador en la app que los mande. Mientras tanto el operador acusa con internet.
 - **Trayectos (P7 con P11).** El servidor ya guarda trayectos y check-ins (`/trayectos`, y `TRAYECTO` y `CHECKIN` en `/sync/lote`); falta que la app los mande. Mientras tanto se quedan en el teléfono.
-- **Reportes, feed y mapa de calor (Módulo 3).** El servidor ya tiene las rutas; faltan las pantallas de la app. Mientras tanto se prueban con `probar-unidades-y-comunidad.ps1`.
+- **Comunidad (Módulo 3, P9/P10/P12).** El formulario, el feed y el mapa actuales son provisionales. La aprobación automática está limitada al servidor local; faltan las pantallas finales y el panel de administración/moderación.
 
 **En la web**
 - **Consola del operador y página del enlace.** El servidor ya da las rutas y el WebSocket de la consola y del enlace de ubicación. El enlace hoy responde con los datos en JSON; falta la página que los muestra en un mapa.
@@ -66,7 +68,7 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 - **Grafo peatonal.** Falta cargar el grafo de calles de la zona con `POST /grafo` (datos de OpenStreetMap); mientras tanto `/rutas/segura` responde `FUERA_DE_AREA` y la app calcula la ruta en el teléfono.
 
 **Otros módulos y pruebas**
-- **Pronóstico de riesgo (IA-2).** Falta el modelo de IA; mientras tanto el mapa de calor agrupa los reportes publicados con DBSCAN.
+- **IA pendiente.** P10 todavía no tiene evaluación automática de veracidad; P9 todavía no tiene pronóstico de riesgo IA-2. El mapa actual es descriptivo y agrupa reportes publicados con DBSCAN. La transcripción de audio también está pospuesta.
 - **Teléfonos físicos.** Probar la malla BLE y el GPS entre dos o más teléfonos reales, y que un push llegue a un teléfono.
 
 ## Cómo se conectan los módulos
@@ -77,7 +79,7 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 | Módulo 1 con Módulo 2 | En `SenderoApp`. El Módulo 2 usa la sesión y el id de la cuenta del Módulo 1. Los eventos de cancelación del Módulo 1 detienen la alerta del Módulo 2, o la dejan en modo silencioso con el PIN de coacción. |
 | Alerta por internet (P4) | `ModuloEmergencias` manda la alerta a `POST /alertas` en cuanto hay internet y toma el folio del servidor. Hay un solo `ModuloEmergencias` para toda la app, en `SenderoApp`. Los detonadores de la app se traducen a los del servidor (`BOTON_SOS` → `BOTON`, etc.). |
 | Malla (P5.1, RF-14) | El paquete BLE es de 24 bytes, con ids cortos de la alerta y de la persona. El teléfono con internet que lo recibe lo entrega a `POST /malla/relevos`, también en el último salto. El servidor reconoce a la persona por su id corto y no duplica la alerta si llega por varios teléfonos. |
-| Ubicación en vivo (P6) | Cada lectura del GPS va a `POST /alertas/{id}/ubicaciones`. Sin señal se juntan y se mandan al volver internet; si la alerta se activó sin señal, primero se manda la alerta. La cola sin señal (`/sync/lote`) también acepta ubicaciones. |
+| Ubicación en vivo (P6) | Cada lectura del GPS se persiste en la cola P11 antes de enviarse a `POST /alertas/{id}/ubicaciones`. WorkManager reintenta los fallos al recuperar la red; primero sincroniza la alerta y después sus lecturas, con la vigencia de 2 horas de la cola de alertas. |
 | Cancelación (P8) | Las cancelaciones guardadas sin señal se mandan al abrir la app y al volver internet. El servidor encuentra la alerta con el id del teléfono aunque haya llegado antes por la malla o por SMS. |
 | PIN de coacción (P8) | Segundo PIN, distinto al de cancelación. Al usarlo la pantalla muestra la alerta cancelada, el servidor recibe el intento como coacción y la alerta sigue activa en silencio. |
 | Bases del teléfono | El Módulo 1 usa `sendero_seguro_local.db` (Room) y el Módulo 2, `sendero_seguro_malla.db` (SQLite). |
@@ -87,3 +89,34 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 - **Servidor:** `.\gradlew :server:test` (pruebas contra PostgreSQL en Docker).
 - **App:** `.\gradlew :app:testDebugUnitTest` con el servidor local corriendo (`.\gradlew :server:run`). Prueban el código real de la app contra el servidor: registro y cancelación de alertas, ubicación en vivo, relevo de la malla, cola sin señal y PIN de coacción. Para ejecutar la nueva prueba manual, sigue [`docs/prueba-alerta-local.md`](docs/prueba-alerta-local.md).
 - **Nube:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1`. Recorre cuentas, alertas, malla, cola sin señal, cancelación, coacción, consola, tiempo real, historial, archivos y bitácora contra Azure, y al final limpia lo que creó. `probar-unidades-y-comunidad.ps1` recorre usuarios, unidades, turno, acuse y atención, la cola sin señal del operador, el catálogo, trayectos, reportes, moderación, feed, mapa de calor y mapas, y también limpia. El detalle está en [docs/modulo4/README.md](docs/modulo4/README.md#servidor-en-la-nube).
+
+## Cambios recientes: pantallas provisionales de comunidad, mapas y colas
+
+Esta sección resume los prototipos actuales de P9, P10, P11 y P12. **No son las pantallas finales ni incluyen el panel de administración/moderación.** La aprobación automática está limitada al servidor local; no se debe desplegar ni habilitar en Azure.
+
+| Proceso | Cambios |
+|---|---|
+| **P9 — Mapa comunitario** | La pantalla provisional descarga el feed público, presenta reportes como puntos seleccionables, ofrece filtros locales y conserva el último feed para consultarlo sin conexión. |
+| **P10 — Reportes comunitarios** | El formulario provisional admite fotos y grabación de audio; los reportes y evidencias pueden esperar en la cola P11. En el servidor local, los reportes nuevos se aprueban automáticamente con datos personales ocultos y ubicación aproximada. Los reportes pendientes anteriores no se cambian. |
+| **P11 — Cola offline** | WorkManager reintenta reportes, evidencias y lecturas de telemetría pendientes. El audio se adjunta como evidencia; no se transcribe. |
+| **P12 — Mapas offline** | La pantalla provisional sincroniza versiones de la capa de calor, el grafo y los paquetes MBTiles, y conserva los datos descargados localmente. P12 proporciona el grafo cacheado que P7 puede usar para calcular rutas offline. |
+| **P6 — Telemetría** | Las ubicaciones se guardan en Room antes del envío y se reintentan por la cola, incluso si el primer intento falla con conexión disponible. |
+
+### Módulos involucrados
+
+| Módulo | Responsabilidad e integración actual |
+|---|---|
+| **Módulo 1 — Identidad** | Registro y sesión de usuario. Proporciona la identidad y sesión que usan los envíos autenticados. |
+| **Módulo 2 — Emergencias** | Alertas, malla, GPS y P6. La telemetría pendiente se persiste en la cola local y se envía después de su alerta asociada. |
+| **Módulo 3 — Inteligencia comunitaria** | Sus pantallas actuales son prototipos: P9 muestra el feed; P10 captura reportes; P12 sincroniza mapa de calor, grafo vial y MBTiles. La aprobación automática aplica solo al servidor local; Azure conserva el flujo existente. |
+| **Módulo 4 — Backend y nube** | API Ktor, PostgreSQL, Blob Storage y procesos de servidor. Recibe reportes/sincronizaciones y publica los datos consumidos por P9 y P12. |
+
+## Siguiente etapa de IA (pendiente)
+
+Las siguientes funciones no están implementadas. El mapa de calor actual no es IA ni predicción: agrupa reportes publicados con DBSCAN. Antes de empezar cualquiera de estas funciones hay que acordar fuentes de datos, privacidad, ejecución local o en nube y criterios de evaluación.
+
+1. **P10 — Veracidad y clasificación de reportes.** Definir qué señales puede sugerir el modelo y cómo medir falsos positivos. Integrarlo como apoyo a una decisión humana, no como rechazo automático. La publicación automática local es solo para pruebas y no debe llegar a Azure; antes del flujo final habrá que implementar las pantallas de administración y moderación.
+2. **P9 — Pronóstico de riesgo (IA-2).** Diseñar un modelo espacio-temporal separado del mapa descriptivo: horizonte de predicción, cobertura, confianza, validación con datos históricos y límites de uso. Publicarlo con una versión y marca de tiempo; mantener el mapa de calor actual como alternativa si el modelo no está disponible.
+3. **Transcripción opcional de audio.** Aún no se transcribe. Antes de implementarla, elegir entre reconocimiento en el dispositivo o un servicio de nube, pedir autorización para procesar el audio y definir cuánto tiempo se conserva. No enviar grabaciones a un servicio externo sin aprobación.
+
+Cada etapa de IA requiere pruebas con datos representativos, revisión de privacidad y sesgos, auditoría de resultados, despliegue gradual y una forma de desactivarla sin interrumpir los reportes ni el mapa actual.

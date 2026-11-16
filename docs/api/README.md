@@ -30,8 +30,8 @@ Cada ruta del YAML trae `x-proceso`, que indica el proceso al que pertenece seg�
 | `/corporaciones*`, `/unidades*` (y `/unidades/mia` del operador) | Corporaciones, unidades, operadores y turno (W-08, CU-10) |
 | `/catalogo`, `/catalogo/versiones*` | P3 (catálogo para la app y edición, W-06, W-07) |
 | `/trayectos*` | P11 |
-| `/reportes*`, `/moderacion/reportes*` | P9 |
-| `/feed`, `/mapa-calor*` | P10 |
+| `/reportes*`, `/moderacion/reportes*` | P10 |
+| `/feed`, `/mapa-calor*` | P9 |
 | `/rutas/segura`, `/grafo`, `/mapas/*`, `/puntos-interes`, `/zonas` | P12 |
 
 **Dispersión.** La plataforma ofrece esta interfaz de Kotlin, que se llama después de guardar una alerta nueva:

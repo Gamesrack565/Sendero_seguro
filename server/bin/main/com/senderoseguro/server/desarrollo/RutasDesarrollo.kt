@@ -52,8 +52,9 @@ fun Route.rutasDesarrollo(
             val rol = dataSource.connection.use { conn ->
                 conn.consultarUno("SELECT rol::text FROM usuario WHERE id = ?", id) { Rol.valueOf(it.getString(1)) }
             } ?: throw ApiException(HttpStatusCode.NotFound, "NO_ENCONTRADO", "La cuenta de prueba no existe; ¿están cargados los datos de prueba?")
-            val (token, expira) = tokens.emitir(UsuarioToken(id, rol, null, null), 8.hours)
-            call.respond(TokenPruebaRespuesta(token, id.toString(), rol.name, expira.toString()))
+            val dispositivoId = AlertasPrueba.DISPOSITIVO_ANA.takeIf { id == AlertasPrueba.ANA }
+            val (token, expira) = tokens.emitir(UsuarioToken(id, rol, dispositivoId, null), 8.hours)
+            call.respond(TokenPruebaRespuesta(token, id.toString(), rol.name, expira.toString(), dispositivoId?.toString()))
         }
 
         // Crea una alerta de Ana (datos de prueba) en la ubicación indicada y la despacha en ese momento.
@@ -113,7 +114,13 @@ data class TokenPrueba(val cuenta: String)
 data class Ss1Prueba(val de: String, val texto: String)
 
 @Serializable
-data class TokenPruebaRespuesta(val token: String, val usuarioId: String, val rol: String, val expiraEn: String)
+data class TokenPruebaRespuesta(
+    val token: String,
+    val usuarioId: String,
+    val rol: String,
+    val expiraEn: String,
+    val dispositivoId: String? = null,
+)
 
 /** Cuerpo de `POST /dev/alertas`. Sin cuerpo: alerta genérica frente a la ESCOM. */
 @Serializable
@@ -177,7 +184,7 @@ object AlertasPrueba {
         "ana" to "01", "beto" to "02", "admin" to "03",
         "caseta" to "11", "c5" to "12", "erum" to "13", "pbi" to "14",
     ).mapValues { UUID.fromString("00000000-0000-4000-8000-0000000000${it.value}") }
-    private val DISPOSITIVO_ANA: UUID = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
+    val DISPOSITIVO_ANA: UUID = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
 
     /** Crea la alerta (estado ENVIADA), su primera ubicación y su primer evento. Regresa el id y el folio. */
     fun crear(dataSource: DataSource, p: AlertaPrueba): Pair<UUID, String> = dataSource.transaccion { conn ->

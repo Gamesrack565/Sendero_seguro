@@ -1,6 +1,6 @@
 # Prueba en la nube de lo nuevo del servidor: administracion de usuarios y unidades (CU-07, CU-10), turno del
 # operador, acuse y atencion de punta a punta, acuse y cancelacion por la cola sin senal (A-14), catalogo (CU-08,
-# CU-09), trayectos y check-ins (P11), reportes, moderacion e identidad protegida (P9), feed, mapa de calor (P10),
+# CU-09), trayectos y check-ins (P11), reportes (P10), moderacion e identidad protegida, mapa comunitario (P9),
 # ruta segura (P12) y mapas offline.
 #
 # Crea tres cuentas de prueba (quien activa las alertas, un operador y un Administrador temporal), una unidad de
@@ -348,7 +348,7 @@ Comprobar "los dos entraron" ((Resultados $r) -eq "ACEPTADO,ACEPTADO") (Resultad
 
 # ---------------------------------------------------------------- 7. reportes y moderacion
 
-Write-Host "7. Reportes, moderacion e identidad protegida (P9)"
+Write-Host "7. Reportes, moderacion e identidad protegida (P10)"
 function Reporte($anonimo, $texto) {
     return @{ id = [string][guid]::NewGuid(); tipoIncidenteId = $acoso.id; descripcion = $texto; latitud = $lat; longitud = $lon
         precisionM = 10.0; esAnonimo = $anonimo; creadoEn = (Ahora -30) }
@@ -357,12 +357,14 @@ $e1 = Reporte $false "Prueba en la nube: reporte con nombre"
 $r = Pedir POST "/reportes" $a.token $e1
 Revisar "levantar reporte con nombre" 201 $r | Out-Null
 $rep1 = $r.json.id
-Comprobar "queda PENDIENTE" ($r.json.estado -eq "PENDIENTE") $r.json.estado
+$estadoRep1 = $r.json.estado
+Comprobar "queda pendiente o se publica automaticamente" (@("PENDIENTE", "PUBLICADO") -contains $estadoRep1) $estadoRep1
 Revisar "reenviar el mismo reporte" 200 (Pedir POST "/reportes" $a.token $e1) | Out-Null
 Revisar "reporte demasiado corto" 400 (Pedir POST "/reportes" $a.token (Reporte $false "corto")) | Out-Null
 $r = Pedir POST "/reportes" $a.token (Reporte $true "Prueba en la nube: reporte anonimo")
 Revisar "levantar reporte anonimo" 201 $r | Out-Null
 $rep2 = $r.json.id
+$estadoRep2 = $r.json.estado
 $r = Pedir GET "/reportes/mios" $a.token
 Revisar "mis reportes" 200 $r | Out-Null
 Comprobar "salen los reportes con nombre y no el anonimo" ((@($r.json | Where-Object { $_.id -eq $rep1 }).Count -eq 1) -and (@($r.json | Where-Object { $_.id -eq $rep2 }).Count -eq 0))
@@ -377,14 +379,23 @@ $r = Pedir POST "/reportes/$rep2/identidad" $admin.token @{ justificacion = "Pru
 Revisar "identidad con justificacion (queda en la bitacora)" 200 $r | Out-Null
 Comprobar "la identidad es la de quien lo levanto" ($r.json.usuarioId -eq $a.id)
 Revisar "rechazar sin motivo" 400 (Pedir POST "/reportes/$rep2/decision" $admin.token @{ decision = "RECHAZAR" }) | Out-Null
-Revisar "rechazar el anonimo" 200 (Pedir POST "/reportes/$rep2/decision" $admin.token @{ decision = "RECHAZAR"; motivo = "Prueba en la nube" }) | Out-Null
-$r = Pedir POST "/reportes/$rep1/decision" $admin.token @{ decision = "PUBLICAR" }
-Revisar "publicar el reporte con nombre" 200 $r | Out-Null
-Revisar "publicar dos veces" 409 (Pedir POST "/reportes/$rep1/decision" $admin.token @{ decision = "PUBLICAR" }) | Out-Null
+if ($estadoRep2 -eq "PENDIENTE") {
+    Revisar "rechazar el anonimo" 200 (Pedir POST "/reportes/$rep2/decision" $admin.token @{ decision = "RECHAZAR"; motivo = "Prueba en la nube" }) | Out-Null
+} else {
+    Revisar "retirar el anonimo publicado automaticamente" 200 (Pedir POST "/reportes/$rep2/decision" $admin.token @{ decision = "RETIRAR"; motivo = "Prueba en la nube" }) | Out-Null
+}
+$rep2 = $null
+if ($estadoRep1 -eq "PENDIENTE") {
+    $r = Pedir POST "/reportes/$rep1/decision" $admin.token @{ decision = "PUBLICAR" }
+    Revisar "publicar el reporte con nombre" 200 $r | Out-Null
+    Revisar "publicar dos veces" 409 (Pedir POST "/reportes/$rep1/decision" $admin.token @{ decision = "PUBLICAR" }) | Out-Null
+} else {
+    Revisar "el reporte ya publicado no se publica otra vez" 409 (Pedir POST "/reportes/$rep1/decision" $admin.token @{ decision = "PUBLICAR" }) | Out-Null
+}
 
 # ---------------------------------------------------------------- 8. feed y mapa de calor
 
-Write-Host "8. Feed y mapa de calor (P10)"
+Write-Host "8. Feed y mapa de calor (P9)"
 $cerca = "latitud=" + $lat.ToString($inv) + "&longitud=" + $lon.ToString($inv) + "&radioM=1000"
 $r = Pedir GET "/feed?$cerca" $a.token
 Revisar "feed cercano" 200 $r | Out-Null
@@ -431,6 +442,13 @@ foreach ($id in @($id1, $id2)) {
     }
 }
 if ($rep1 -and $admin -and $admin.token) { Pedir POST "/reportes/$rep1/decision" $admin.token @{ decision = "RETIRAR"; motivo = "Prueba en la nube" } | Out-Null }
+if ($rep2 -and $admin -and $admin.token) {
+    if ($estadoRep2 -eq "PUBLICADO") {
+        Pedir POST "/reportes/$rep2/decision" $admin.token @{ decision = "RETIRAR"; motivo = "Limpieza de prueba" } | Out-Null
+    } elseif ($estadoRep2 -eq "PENDIENTE") {
+        Pedir POST "/reportes/$rep2/decision" $admin.token @{ decision = "RECHAZAR"; motivo = "Limpieza de prueba" } | Out-Null
+    }
+}
 if ($unidad -and $admin -and $admin.token) {
     Revisar "baja de la unidad de prueba" 200 (Pedir PATCH ("/unidades/" + $unidad.id) $admin.token @{ activa = $false }) | Out-Null
 }

@@ -133,7 +133,7 @@ data class CapaRiesgo(
     val generadaEn: String,
     val periodoDias: Int,
     val zonas: List<Zona>,
-    val leyenda: String = "Información orientativa: zonas con reportes comunitarios publicados, no una predicción.",
+    val leyenda: String,
 )
 
 @Serializable
@@ -191,7 +191,11 @@ data class AristaEntrada(
 
 /** Carga del grafo peatonal (nodos y tramos de OpenStreetMap, ya recortados a la zona). */
 @Serializable
-data class GrafoEntrada(val nodos: List<NodoEntrada>, val aristas: List<AristaEntrada>)
+data class GrafoEntrada(
+    val nodos: List<NodoEntrada>,
+    val aristas: List<AristaEntrada>,
+    val finalizarVersion: Boolean = true,
+)
 
 @Serializable
 data class GrafoCargado(val nodos: Int, val aristas: Int, val tramosConRiesgo: Int)
@@ -201,7 +205,12 @@ data class Arista(val id: Long, val origen: Long, val destino: Long, val longitu
 
 /** Grafo de una caja para la caché del teléfono (CU-36), con el riesgo de cada tramo en la capa vigente. */
 @Serializable
-data class Grafo(val capaVersion: Int? = null, val nodos: List<NodoEntrada>, val aristas: List<Arista>)
+data class Grafo(
+    val capaVersion: Int? = null,
+    val nodos: List<NodoEntrada>,
+    val aristas: List<Arista>,
+    val versionGrafo: Int? = null,
+)
 
 // ---------------------------------------------------------------- Mapas offline, puntos de interés y zonas
 
@@ -236,7 +245,12 @@ data class PaqueteEntrada(
 
 /** Lo que la app compara con su caché para saber qué descargar (CU-36 1a). */
 @Serializable
-data class VersionesMapas(val capaRiesgo: Int? = null, val catalogo: Int? = null, val paquetes: List<PaqueteVersion>)
+data class VersionesMapas(
+    val capaRiesgo: Int? = null,
+    val catalogo: Int? = null,
+    val paquetes: List<PaqueteVersion>,
+    val grafo: Int? = null,
+)
 
 @Serializable
 data class PaqueteVersion(val region: String, val version: String)
