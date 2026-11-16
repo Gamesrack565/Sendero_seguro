@@ -17,3 +17,5 @@ local.properties
 .env
 *.env
 *.log
+server/bin/
+

@@ -99,7 +99,8 @@ function Ahora([int]$segundos = 0) {
 function NuevaCuenta($nombre) {
     $n = [string]$script:aleatorio.Next(10000000, 99999999)
     $c = @{
-        telefono = "55" + $n; matricula = "NUBE" + $n; contrasena = "Nube" + [string]$script:aleatorio.Next(100000, 999999)
+        # 55 00XX XXXX no existe en Mexico: los avisos que caen a SMS no le llegan a una persona real.
+        telefono = "5500" + $n.Substring(2); matricula = "NUBE" + $n; contrasena = "Nube" + [string]$script:aleatorio.Next(100000, 999999)
         dispositivo = @{ id = [string][guid]::NewGuid(); modelo = "Prueba nube"; androidApi = 34; soportaWifiAware = $false }
     }
     $registro = @{

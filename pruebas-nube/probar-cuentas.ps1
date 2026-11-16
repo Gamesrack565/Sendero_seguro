@@ -50,7 +50,8 @@ function Revisar($nombre, $esperado, $r) {
 
 $aleatorio = New-Object Random
 $numero = [string]$aleatorio.Next(10000000, 99999999)
-$telefono = "55" + $numero
+# 55 00XX XXXX no existe en Mexico: ningun SMS de prueba le llega a una persona real.
+$telefono = "5500" + $numero.Substring(2)
 $matricula = "NUBE" + $numero
 $contrasena = "Nube" + [string]$aleatorio.Next(100000, 999999)
 $dispositivo = @{ id = [string][guid]::NewGuid(); modelo = "Prueba nube"; androidApi = 34; soportaWifiAware = $false }

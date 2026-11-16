@@ -106,8 +106,9 @@ class ComunidadTest : PruebaConBaseDatos() {
 
         assertTrue(nuevo)
         assertEquals("PUBLICADO", directo.estado)
-        assertEquals(1, numero("SELECT count(*) FROM reporte_publico WHERE reporte_id = ?", directo.id))
-        val descripcionPublica = texto("SELECT descripcion FROM reporte_publico WHERE reporte_id = ?", directo.id)!!
+        val directoId = UUID.fromString(directo.id)
+        assertEquals(1, numero("SELECT count(*) FROM reporte_publico WHERE reporte_id = ?", directoId))
+        val descripcionPublica = texto("SELECT descripcion FROM reporte_publico WHERE reporte_id = ?", directoId)!!
         assertTrue("1234" !in descripcionPublica && "@" !in descripcionPublica, descripcionPublica)
         assertEquals(1, numero(
             "SELECT count(*) FROM bitacora WHERE accion = 'PUBLICAR_REPORTE_AUTOMATICAMENTE' AND entidad_id = ?",
@@ -128,7 +129,7 @@ class ComunidadTest : PruebaConBaseDatos() {
         }
 
         assertTrue(resultado is ResultadoManejo.Aceptado)
-        assertEquals(2, numero("SELECT count(*) FROM reporte_publico WHERE reporte_id IN (?, ?)", directo.id, colaEntrada.id))
+        assertEquals(2, numero("SELECT count(*) FROM reporte_publico WHERE reporte_id IN (?, ?)", directoId, UUID.fromString(colaEntrada.id)))
         assertEquals(2, recalculos)
     }
 
@@ -198,11 +199,12 @@ class ComunidadTest : PruebaConBaseDatos() {
         fun nodo(n: Long, este: Double, norte: Double) = punto(este, norte).let { NodoEntrada(base + n, it.first, it.second) }
         val nodos = listOf(nodo(1, 0.0, 0.0), nodo(2, 100.0, 0.0), nodo(3, 200.0, 0.0), nodo(4, 0.0, 30.0), nodo(5, 200.0, 30.0))
         val aristas = listOf(1L to 2L, 2L to 3L, 1L to 4L, 4L to 5L, 5L to 3L).map { (a, b) -> AristaEntrada(base + a, base + b) }
-        assertEquals(0, rutas.versionGrafoVigente())
+        // La versión del grafo es global y crece con cada carga: se compara contra la que había al empezar.
+        val versionAntes = rutas.versionGrafoVigente()
         assertEquals(5, rutas.cargarGrafo(admin, GrafoEntrada(nodos, aristas, finalizarVersion = false), null).aristas)
-        assertEquals(0, rutas.versionGrafoVigente())
+        assertEquals(versionAntes, rutas.versionGrafoVigente())
         assertEquals(5, rutas.cargarGrafo(admin, GrafoEntrada(nodos, aristas), null).aristas)
-        assertEquals(1, rutas.versionGrafoVigente())
+        assertEquals(versionAntes + 1, rutas.versionGrafoVigente())
 
         // Seis asaltos (peso 3) sobre la línea recta: una zona ALTO.
         listOf(40.0, 50.0, 60.0, 140.0, 150.0, 160.0).forEachIndexed { i, x -> publicar(reporte(tipo = "ASALTO_ROBO", este = x, norte = if (i % 2 == 0) -3.0 else 3.0)) }
@@ -231,8 +233,8 @@ class ComunidadTest : PruebaConBaseDatos() {
         val grafo = rutas.grafo(caja)
         assertEquals(5, grafo.nodos.count { it.id in nodos.map { n -> n.id } })
         assertTrue(grafo.aristas.any { it.riesgo == 1.0 })
-        assertEquals(1, grafo.versionGrafo)
-        assertEquals(1, MapasServicio(dataSource).versiones(generada.version, null, rutas.versionGrafoVigente()).grafo)
+        assertEquals(versionAntes + 1, grafo.versionGrafo)
+        assertEquals(versionAntes + 1, MapasServicio(dataSource).versiones(generada.version, null, rutas.versionGrafoVigente()).grafo)
     }
 
     @Test

@@ -1,14 +1,14 @@
-# Guía futura: integrar P9–P12 en Azure
+# Integración de P9 a P12 en Azure
 
-Esta guía conserva los pasos para una integración futura del feed comunitario, los reportes, las colas offline y los mapas con la infraestructura Azure existente.
+Pasos para tener en Azure el feed comunitario, los reportes, las colas offline y los mapas, y para actualizar el servidor después.
 
-**No se ha desplegado ningún cambio en Azure ni se ha modificado la instancia publicada.** No ejecutes estos pasos hasta que se decida y autorice ese despliegue. La aprobación automática es únicamente para el servidor local de pruebas y queda excluida de esta guía.
+**Estado:** el servidor con P9 a P12 ya está desplegado en Azure (16 de noviembre de 2026). Flyway aplicó `V4__version_grafo.sql` y `pruebas-nube\probar-unidades-y-comunidad.ps1` pasó completo contra la nube. Falta publicar los datos de P12 (ver [Lo que falta en Azure](#lo-que-falta-en-azure)). La aprobación automática de reportes es solo para el servidor local de pruebas; en Azure se modera.
 
 > Ejecuta primero los pasos en un entorno de pruebas. Los reportes, las alertas y los avisos enviados al entorno productivo pueden generar datos reales o notificaciones.
 
 ## Qué se integraría
 
-| Componente | Dónde corre | Integración futura |
+| Componente | Dónde corre | Integración |
 |---|---|---|
 | P9 — Mapa comunitario | App Android | Consultar `/feed` para reportes publicados; la app conserva el último feed local para usarlo offline. |
 | P10 — Reportes | App Android y servidor Ktor | Enviar reportes con `POST /reportes`, evidencias en Blob Storage y cola P11 si no hay conectividad. En Azure se mantiene el flujo de moderación existente. |
@@ -17,9 +17,9 @@ Esta guía conserva los pasos para una integración futura del feed comunitario,
 | P6 — Telemetría | App Android y servidor Ktor | La app persiste primero en Room y sincroniza las lecturas después de registrar la alerta padre. |
 | Módulo 4 — Backend | Azure App Service | JAR Ktor, PostgreSQL administrado, configuración existente y Blob Storage. Flyway aplica migraciones al iniciar. |
 
-## Antes de autorizar un despliegue
+## Antes de desplegar una versión nueva
 
-1. Confirma con el responsable del entorno que se autoriza actualizar el App Service y revisa cuál es el grupo de recursos y la suscripción. El host documentado es:
+1. Confirma con el responsable del entorno que se va a actualizar el App Service (grupo de recursos `sendero-seguro`, App Service `sendero-seguro`). El host es:
 
    ```text
    sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net
@@ -36,7 +36,7 @@ Esta guía conserva los pasos para una integración futura del feed comunitario,
 
 5. Comprueba el respaldo reciente de PostgreSQL antes de desplegar. La migración `V4__version_grafo.sql` se aplica mediante Flyway al iniciar el nuevo servidor; no edites migraciones que ya se aplicaron.
 
-## Publicar una futura versión del servidor
+## Publicar una versión nueva del servidor
 
 El App Service documentado usa Java 21 y PostgreSQL administrado. Conserva su runtime, comando de inicio, dominio y configuración actuales; no crees otro App Service para esta actualización.
 
@@ -55,14 +55,10 @@ El App Service documentado usa Java 21 y PostgreSQL administrado. Conserva su ru
    az account set --subscription "<ID_O_NOMBRE_DE_LA_SUSCRIPCION>"
    ```
 
-3. Cuando exista autorización explícita, despliega el JAR al App Service existente, sustituyendo `<GRUPO_DE_RECURSOS>` por su grupo real:
+3. Despliega el JAR al App Service existente:
 
    ```powershell
-   az webapp deploy `
-     --resource-group "<GRUPO_DE_RECURSOS>" `
-     --name "sendero-seguro-bse3efh5ddexczcx" `
-     --src-path ".\server\build\libs\sendero-seguro-server.jar" `
-     --type jar
+   az webapp deploy --resource-group sendero-seguro --name sendero-seguro --src-path server\build\libs\sendero-seguro-server.jar --type jar
    ```
 
    Si el equipo utiliza otro flujo manual validado, publica el mismo artefacto con ese flujo.
@@ -71,7 +67,7 @@ El App Service documentado usa Java 21 y PostgreSQL administrado. Conserva su ru
 
    **No habilites publicación automática en Azure.** La opción local `reportes.autoPublicar` solo se aplica cuando `DB_DATOS_PRUEBA=true`; en el servicio publicado debe mantenerse `DB_DATOS_PRUEBA=false` y la moderación existente. Los reportes nuevos de Azure deben conservar el comportamiento configurado actualmente.
 
-5. Una vez autorizado el despliegue, comprueba los logs del App Service y verifica:
+5. Al terminar el despliegue, revisa los logs del App Service y verifica:
 
    ```powershell
    $api = "https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1"
@@ -79,6 +75,13 @@ El App Service documentado usa Java 21 y PostgreSQL administrado. Conserva su ru
    ```
 
    El servidor debe responder con `estado = OK`. Si no arranca, revisa los logs antes de volver a desplegar.
+
+6. Corre las pruebas de la nube. Crean cuentas y datos de prueba y al final los limpian:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1
+   powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-unidades-y-comunidad.ps1
+   ```
 
 ## Conectar y probar la app Android
 
@@ -95,7 +98,7 @@ Los registros que ya estaban `PENDIENTE` no se publican automáticamente. Deben 
 
 ## Publicar datos de P12
 
-Estas operaciones también requieren autorización del responsable del entorno. Usa un token de Administrador obtenido por el flujo de autenticación autorizado; no existe `/dev/token` en Azure.
+Estas operaciones también requieren autorización del responsable del entorno. Usan el token de una cuenta Administrador, que se obtiene con `POST /auth/login` sin `dispositivo` (no existe `/dev/token` en Azure). El primer Administrador se crea con `pruebas-nube\crear-administrador.ps1`.
 
 ```powershell
 $api = "https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1"
@@ -137,6 +140,12 @@ No reutilices una versión vigente: los teléfonos descargan el paquete cuando d
 - Para generar el mapa de calor, usa `POST /mapa-calor/generar` con autorización de Administrador. El algoritmo actual no es IA: requiere al menos tres reportes publicados cercanos para formar una zona. La app sincroniza la capa de 30 días.
 - Comprueba de nuevo `GET /mapas/version` y `GET /mapa-calor?periodo=30`.
 
+## Lo que falta en Azure
+
+- **Mapa base de la CDMX.** Falta publicar el `.mbtiles` con `POST /archivos/mapa` y `POST /mapas/paquetes`; mientras tanto `GET /mapas/paquetes` responde vacío y la app no tiene mapa base sin conexión.
+- **Grafo peatonal real.** Falta cargarlo con `POST /grafo`; mientras tanto `POST /rutas/segura` responde `422 FUERA_DE_AREA` y la app no descarga grafo.
+- **Mapa de calor.** Se genera solo con los reportes publicados (al menos tres cercanos por zona); mientras no haya reportes reales publicados, la capa sale sin zonas.
+
 ## Verificación offline
 
 1. Con internet, abre **Mapa P12** y comprueba versiones, fecha de sincronización, tamaño del paquete, mapa base, grafo y capa de calor.
@@ -162,4 +171,4 @@ La variante release usa la URL de Azure configurada en `app/build.gradle.kts`. S
 - Para revertir el servidor, vuelve a desplegar el último JAR aprobado. No reviertas ni edites migraciones de Flyway ya aplicadas.
 - Si una publicación MBTiles tiene errores, publica una versión corregida mayor y deja que los teléfonos la descarguen y verifiquen antes de retirar la anterior.
 
-La aprobación automática local no forma parte de esta integración futura. La IA de veracidad P10, el pronóstico IA-2 de P9 y la transcripción del audio también quedan fuera hasta que se definan y autoricen por separado.
+La aprobación automática local no forma parte de esta integración. La IA de veracidad P10, el pronóstico IA-2 de P9 y la transcripción del audio también quedan fuera hasta que se definan y autoricen por separado.
