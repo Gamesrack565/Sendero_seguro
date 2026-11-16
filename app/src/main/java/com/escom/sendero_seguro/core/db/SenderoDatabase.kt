@@ -57,7 +57,8 @@ class ColaAlertaEntity(
     @ColumnInfo(name = "ultimo_canal") val ultimoCanal: String?,
     @ColumnInfo(name = "reintentos") val reintentos: Int,
     @ColumnInfo(name = "creado_en") val creadoEn: Long,
-    @ColumnInfo(name = "expira_en") val expiraEn: Long
+    @ColumnInfo(name = "expira_en") val expiraEn: Long,
+    @ColumnInfo(name = "proximo_intento_en", defaultValue = "0") val proximoIntentoEn: Long = 0L
 )
 
 @Dao
@@ -130,7 +131,7 @@ interface ColaAlertaDao {
         CacheMapaEntity::class,
         CatalogoLocalEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class SenderoDatabase : RoomDatabase() {
@@ -152,6 +153,14 @@ abstract class SenderoDatabase : RoomDatabase() {
 
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) = migrarColaCompartida(db)
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE cola_alerta ADD COLUMN proximo_intento_en INTEGER NOT NULL DEFAULT 0"
+                )
+            }
         }
 
         private fun migrarColaCompartida(db: SupportSQLiteDatabase) {
@@ -227,7 +236,7 @@ abstract class SenderoDatabase : RoomDatabase() {
 
         fun obtener(context: Context): SenderoDatabase = instancia ?: synchronized(this) {
             instancia ?: Room.databaseBuilder(context.applicationContext, SenderoDatabase::class.java, NOMBRE)
-                .addMigrations(MIGRATION_1_3, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_3, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instancia = it }
         }

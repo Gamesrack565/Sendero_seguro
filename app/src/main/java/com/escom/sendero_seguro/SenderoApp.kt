@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.util.Log
 import com.escom.sendero_seguro.BuildConfig
+import com.escom.sendero_seguro.cola.ColaAlertaSyncWorker
 import com.escom.sendero_seguro.emergencias.ModuloEmergencias
 import com.escom.sendero_seguro.emergencias.remoto.ServidorAlertasRetrofit
 import com.escom.sendero_seguro.identidad.ModuloIdentidad
@@ -99,6 +100,7 @@ class SenderoApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        ColaAlertaSyncWorker.programarInmediato(this)
 
         // P8 → P4: al cancelar con PIN o huella (Módulo 1) se detiene la alerta del Módulo 2: GPS, envío y malla.
         // Un PIN que no coincide no detiene nada: la alerta sigue y el servidor lo marca como posible coacción.
@@ -122,6 +124,7 @@ class SenderoApp : Application() {
         runCatching {
             red?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    ColaAlertaSyncWorker.programarInmediato(this@SenderoApp)
                     scope.launch {
                         runCatching { identidad.sincronizarPendientes() }
                             .onFailure { Log.w("SenderoApp", "No se pudo subir lo pendiente", it) }

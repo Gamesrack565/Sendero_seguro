@@ -3,6 +3,7 @@ package com.escom.sendero_seguro
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
 import android.preference.PreferenceManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.fragment.app.FragmentActivity
@@ -31,6 +32,7 @@ import com.escom.sendero_seguro.ui.demo.DatosDemo
 import com.escom.sendero_seguro.ui.modelo.CanalEnvio
 import com.escom.sendero_seguro.ui.pantallas.inicio.EstadoInicio
 import com.escom.sendero_seguro.ui.pantallas.inicio.PantallaInicio
+import com.escom.sendero_seguro.emergencias.AvisoMallaUsuario
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 
@@ -56,8 +58,8 @@ class MainActivity : FragmentActivity() {
                     val estadoEnvio by modulo2.estadoEnvioAlerta.collectAsState()
                     val scope = rememberCoroutineScope()
                     var mostrarDiagnostico by remember { mutableStateOf(false) }
-                    val smsPermissionLauncher = rememberLauncherForActivityResult(
-                        ActivityResultContracts.RequestPermission()
+                    val permisosLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestMultiplePermissions()
                     ) {}
 
                     LaunchedEffect(Unit) {
@@ -65,11 +67,20 @@ class MainActivity : FragmentActivity() {
                     }
 
                     LaunchedEffect(Unit) {
+                        val permisos = mutableListOf<String>()
                         if (BuildConfig.DEBUG && BuildConfig.SMS_GATEWAY_NUMBER.isNotBlank() &&
                             checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED
                         ) {
-                            smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
+                            permisos.add(Manifest.permission.SEND_SMS)
                         }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+                            !AvisoMallaUsuario.yaSeSolicitoPermisoNotificaciones(this@MainActivity)
+                        ) {
+                            AvisoMallaUsuario.marcarSolicitudPermisoNotificaciones(this@MainActivity)
+                            permisos.add(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        if (permisos.isNotEmpty()) permisosLauncher.launch(permisos.toTypedArray())
                     }
 
                     Column(Modifier.fillMaxSize().padding(innerPadding)) {

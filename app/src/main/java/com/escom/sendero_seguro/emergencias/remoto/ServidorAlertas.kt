@@ -1,5 +1,6 @@
 package com.escom.sendero_seguro.emergencias.remoto
 
+import android.util.Log
 import com.escom.sendero_seguro.emergencias.AlertaEmergencia
 import com.escom.sendero_seguro.emergencias.CanalRecepcion
 import com.escom.sendero_seguro.emergencias.DatosTelemetria
@@ -56,6 +57,9 @@ data class AlertaRegistradaDto(
     val enlaceSeguimiento: String? = null,
 )
 
+@Serializable
+data class AlertaCanalDto(val canalRecepcion: String)
+
 /** P6: una lectura de ubicación mientras la alerta sigue activa (`POST /alertas/{id}/ubicaciones`). */
 @Serializable
 data class LecturaUbicacionDto(
@@ -94,6 +98,9 @@ interface EmergenciasApi {
     @POST("alertas")
     suspend fun registrarAlerta(@Body body: AlertaNuevaDto): Response<AlertaRegistradaDto>
 
+    @GET("alertas/{id}")
+    suspend fun consultarAlerta(@Path("id") alertaId: String): Response<AlertaCanalDto>
+
     @POST("alertas/{id}/ubicaciones")
     suspend fun agregarUbicaciones(@Path("id") alertaId: String, @Body body: LoteUbicacionesDto): Response<UbicacionesAgregadasDto>
 
@@ -107,7 +114,11 @@ interface EmergenciasApi {
 /** Qué pasó al mandar la alerta al servidor. */
 sealed interface ResultadoServidor {
     /** El servidor la guardó (o ya la tenía) y le dio [folio]. */
-    data class Registrada(val folio: String, val estado: String) : ResultadoServidor
+    data class Registrada(
+        val folio: String,
+        val estado: String,
+        val canalRecepcion: String? = null,
+    ) : ResultadoServidor
 
     /** No se guardó. Con [reintentar] conviene volver a mandarla (sin red, servidor caído o sesión vencida). */
     data class Fallo(val codigoHttp: Int?, val reintentar: Boolean) : ResultadoServidor
@@ -145,6 +156,7 @@ fun interface CanalUbicaciones {
 
 /** Implementación con Retrofit. En [crear], `tokenActual` da el JWT de la sesión del Módulo 1 (null si no hay sesión). */
 class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAlertas, CanalUbicaciones {
+    private val tag = "ServidorAlertas"
 
     override suspend fun enviar(alertaId: String, lecturas: List<LecturaUbicacionDto>): ResultadoUbicaciones = try {
         val r = api.agregarUbicaciones(alertaId, LoteUbicacionesDto(lecturas))
@@ -194,13 +206,32 @@ class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAl
         return respuesta.body() ?: throw IOException("POST /dev/token no devolvió un token")
     }
 
-    private fun resultadoRegistro(r: Response<AlertaRegistradaDto>): ResultadoServidor {
+    private suspend fun resultadoRegistro(r: Response<AlertaRegistradaDto>): ResultadoServidor {
         val cuerpo = r.body()
         return when {
-            r.isSuccessful && cuerpo != null -> ResultadoServidor.Registrada(cuerpo.folio, cuerpo.estado)
+            r.isSuccessful && cuerpo != null -> {
+                val canal = if (r.code() == 200) consultarCanalExistente(cuerpo.id) else null
+                ResultadoServidor.Registrada(cuerpo.folio, cuerpo.estado, canal)
+            }
             // 401: la sesión venció; 5xx: el servidor falló. Las dos se arreglan reintentando más tarde.
             else -> ResultadoServidor.Fallo(r.code(), reintentar = r.code() == 401 || r.code() >= 500)
         }
+    }
+
+    private suspend fun consultarCanalExistente(alertaId: String): String? = try {
+        val respuesta = api.consultarAlerta(alertaId)
+        if (respuesta.isSuccessful) {
+            respuesta.body()?.canalRecepcion
+        } else {
+            Log.w(tag, "La consulta de canal respondió HTTP ${respuesta.code()}.")
+            null
+        }
+    } catch (e: IOException) {
+        Log.w(tag, "No se pudo consultar el canal de una alerta ya registrada.", e)
+        null
+    } catch (e: kotlinx.serialization.SerializationException) {
+        Log.w(tag, "La respuesta del canal de una alerta ya registrada no fue válida.", e)
+        null
     }
 
     companion object {

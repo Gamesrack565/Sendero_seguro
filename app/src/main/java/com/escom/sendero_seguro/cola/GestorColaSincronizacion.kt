@@ -7,6 +7,7 @@ import com.escom.sendero_seguro.emergencias.AlertaEmergencia
 import com.escom.sendero_seguro.emergencias.DatosTelemetria
 import com.escom.sendero_seguro.emergencias.PaqueteMalla
 import com.escom.sendero_seguro.emergencias.remoto.AlertaNuevaDto
+import com.escom.sendero_seguro.emergencias.remoto.LecturaUbicacionDto
 import com.escom.sendero_seguro.emergencias.remoto.ServidorAlertasRetrofit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -38,6 +39,11 @@ class GestorColaSincronizacion(
 
         const val MS_POR_HORA = 3600 * 1000L
         const val MS_POR_DIA = 24 * 3600 * 1000L
+
+        fun calcularEsperaBackoffMs(reintentosPrevios: Int): Long {
+            val factorExponencial = 1L shl reintentosPrevios.coerceAtLeast(0).coerceAtMost(6)
+            return minOf(15L * factorExponencial * 1000L, 10 * 60 * 1000L)
+        }
     }
 
     private val colaAlertaDao = db.colaAlertaDao()
@@ -128,17 +134,15 @@ class GestorColaSincronizacion(
         val ahora = System.currentTimeMillis()
         val expiraEn = ahora + (vigenciaHoras * MS_POR_HORA)
 
-        val jsonPayload = JSONObject().apply {
-            put("alertaIdPadre", alertaIdPadre)
-            put("latitud", telemetria.latitud)
-            put("longitud", telemetria.longitud)
-            put("precision", telemetria.precision)
-            put("velocidadMps", telemetria.velocidadMps)
-            put("rumboGrados", telemetria.rumboGrados)
-            put("aceleracionG", telemetria.aceleracionG)
-            put("nivelBateria", telemetria.nivelBateria)
-            put("timestamp", telemetria.timestamp)
-        }.toString()
+        val lectura = ServidorAlertasRetrofit.aDto(telemetria)
+        val jsonLectura = ServidorAlertasRetrofit.json.encodeToString(
+            LecturaUbicacionDto.serializer(),
+            lectura
+        )
+        val jsonPayload = JSONObject()
+            .put("alertaIdPadre", alertaIdPadre)
+            .put("lectura", jsonLectura)
+            .toString()
 
         val idTelemetria = UUID.randomUUID().toString()
         val entidad = ColaAlertaEntity(
@@ -292,15 +296,34 @@ class GestorColaSincronizacion(
             .filter { it.tipoElemento == TipoElementoAlerta.ALERTA_SOS.valor }
     }
 
+    suspend fun obtenerAlertasListasParaReintento(): List<ColaAlertaEntity> = withContext(Dispatchers.IO) {
+        colaAlertaDao.obtenerAlertasListasParaReintento(System.currentTimeMillis())
+    }
+
+    suspend fun obtenerTelemetriasPendientes(): List<ColaAlertaEntity> = withContext(Dispatchers.IO) {
+        colaAlertaDao.obtenerTelemetriasPendientes(System.currentTimeMillis())
+    }
+
+    suspend fun tiempoHastaProximoIntentoMs(incluirTelemetria: Boolean = true): Long? = withContext(Dispatchers.IO) {
+        val ahora = System.currentTimeMillis()
+        val tipos = buildList {
+            add(TipoElementoAlerta.ALERTA_SOS.valor)
+            if (incluirTelemetria) add(TipoElementoAlerta.TELEMETRIA.valor)
+        }
+        colaAlertaDao.obtenerProximoIntentoPendiente(tipos, ahora)?.minus(ahora)?.coerceAtLeast(0L)
+    }
+
     /**
      * A-05: Error de red durante el envío al backend.
      * Sumar reintento y esperar backoff.
      */
     suspend fun registrarFalloReintento(id: String, esAlerta: Boolean): Int = withContext(Dispatchers.IO) {
         if (esAlerta) {
-            colaAlertaDao.incrementarReintentos(id)
-            val actualizado = colaAlertaDao.buscarPorId(id)
-            actualizado?.reintentos ?: 1
+            val actual = colaAlertaDao.buscarPorId(id) ?: return@withContext 0
+            val reintentos = actual.reintentos + 1
+            val proximoIntento = System.currentTimeMillis() + calcularEsperaBackoffMs(actual.reintentos)
+            colaAlertaDao.programarReintento(id, reintentos, proximoIntento)
+            reintentos
         } else {
             colaReporteDao.incrementarReintentos(id)
             val actualizado = colaReporteDao.buscarPorId(id)
@@ -312,13 +335,6 @@ class GestorColaSincronizacion(
      * A-05: Cálculo de tiempo de espera creciente (exponential backoff) para el siguiente reintento.
      * Retorna tiempo en milisegundos.
      */
-    fun calcularEsperaBackoffMs(reintentos: Int): Long {
-        val backoffBaseSegundos = 15L // 15s inicial
-        val factorExponencial = 1L shl minOf(reintentos, 6) // máximo 2^6 = 64
-        val esperaMs = backoffBaseSegundos * factorExponencial * 1000L
-        return minOf(esperaMs, 10 * 60 * 1000L) // límite máximo de 10 minutos
-    }
-
     /**
      * P11: Métrica de estado actual de la cola (para diagnóstico y frontend de monitoreo).
      */

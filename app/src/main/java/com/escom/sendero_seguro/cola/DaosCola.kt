@@ -25,6 +25,18 @@ interface ColaAlertaDao {
     @Query("SELECT * FROM cola_alerta WHERE expira_en > :ahora ORDER BY creado_en ASC")
     suspend fun obtenerAlertasPendientes(ahora: Long): List<ColaAlertaEntity>
 
+    @Query("SELECT * FROM cola_alerta WHERE tipo_elemento = 'ALERTA_SOS' AND expira_en > :ahora AND proximo_intento_en <= :ahora ORDER BY creado_en ASC")
+    suspend fun obtenerAlertasListasParaReintento(ahora: Long): List<ColaAlertaEntity>
+
+    @Query("SELECT * FROM cola_alerta WHERE tipo_elemento = 'TELEMETRIA' AND expira_en > :ahora AND proximo_intento_en <= :ahora ORDER BY creado_en ASC")
+    suspend fun obtenerTelemetriasPendientes(ahora: Long): List<ColaAlertaEntity>
+
+    @Query("SELECT MIN(proximo_intento_en) FROM cola_alerta WHERE tipo_elemento IN (:tipos) AND expira_en > :ahora")
+    suspend fun obtenerProximoIntentoPendiente(tipos: List<String>, ahora: Long): Long?
+
+    @Query("UPDATE cola_alerta SET reintentos = :reintentos, proximo_intento_en = :proximoIntentoEn WHERE alerta_id = :alertaId")
+    suspend fun programarReintento(alertaId: String, reintentos: Int, proximoIntentoEn: Long): Int
+
     @Query("SELECT * FROM cola_alerta WHERE expira_en <= :ahora")
     suspend fun obtenerAlertasExpiradas(ahora: Long): List<ColaAlertaEntity>
 

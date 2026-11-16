@@ -7,11 +7,16 @@ import android.content.IntentFilter
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.escom.sendero_seguro.BuildConfig
+import com.escom.sendero_seguro.cola.ColaAlertaSyncWorker
 import com.escom.sendero_seguro.cola.GestorColaSincronizacion
+import com.escom.sendero_seguro.emergencias.AvisoMallaUsuario
 import com.escom.sendero_seguro.emergencias.remoto.CanalServidorAlertas
 import com.escom.sendero_seguro.emergencias.remoto.CanalUbicaciones
 import com.escom.sendero_seguro.emergencias.remoto.EnvioUbicaciones
+import com.escom.sendero_seguro.emergencias.remoto.LecturaUbicacionDto
+import com.escom.sendero_seguro.emergencias.remoto.ResultadoUbicaciones
 import com.escom.sendero_seguro.emergencias.remoto.ResultadoServidor
+import com.escom.sendero_seguro.emergencias.remoto.ServidorAlertasRetrofit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,6 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 
 class ModuloEmergencias(
     private val context: Context,
@@ -47,7 +55,9 @@ class ModuloEmergencias(
     private var jobHiloTelemetria: Job? = null
     private var jobCuentaRegresivaPreEnvio: Job? = null
     private var ultimoDisparoCaidaMs: Long = 0L
-    private val envioUbicaciones = ubicaciones?.let { EnvioUbicaciones(it) }
+    private val canalUbicaciones = ubicaciones
+    private val envioUbicaciones = canalUbicaciones?.let { EnvioUbicaciones(it) }
+    private val candadoSincronizacionCola = Mutex()
 
     // P4: id de la alerta que ya no hay que mandar (el servidor la confirmó o la rechazó), y el envío en curso.
     @Volatile private var alertaResuelta: String? = null
@@ -311,22 +321,39 @@ class ModuloEmergencias(
     }
 
     /**
-     * La cola local conserva el mismo DTO que acepta POST /alertas y lo reenvía al volver la conexión.
+     * Reenvía alertas y telemetría pendientes al recuperar la conexión.
      */
-    suspend fun sincronizarAlertasEnCola() {
-        val canal = servidor ?: return
-        if (!gestorMalla.hayConexionAInternet()) return
+    suspend fun sincronizarAlertasEnCola(): Boolean = candadoSincronizacionCola.withLock {
+        val canal = servidor ?: return@withLock false
+        if (!gestorMalla.hayConexionAInternet()) return@withLock false
 
-        for (pendiente in colaOffline.obtenerAlertasPendientes()) {
-            val payload = pendiente.paquete?.toString(Charsets.UTF_8) ?: continue
+        colaOffline.descartarYRegistrarVencidos()
+        for (pendiente in colaOffline.obtenerAlertasListasParaReintento()) {
+            val payload = pendiente.paquete.toString(Charsets.UTF_8)
             when (val resultado = canal.reenviarPendiente(payload)) {
                 is ResultadoServidor.Registrada -> {
                     colaOffline.marcarSincronizadoYEliminar(pendiente.alertaId, esAlerta = true)
+                    val recibidaPorMalla = resultado.canalRecepcion == "MALLA"
+                    if (recibidaPorMalla) {
+                        AvisoMallaUsuario.guardarYNotificar(
+                            appContext, pendiente.alertaId, resultado.folio, resultado.estado
+                        )
+                    }
                     _estadoEnvioAlerta.update { actual ->
-                        if (actual?.alertaId == pendiente.alertaId) {
+                        if (actual == null || recibidaPorMalla) {
+                            EstadoEnvioAlerta(
+                                alertaId = pendiente.alertaId,
+                                etapa = EtapaEnvioAlerta.REGISTRADA,
+                                mensaje = if (recibidaPorMalla) mensajeConfirmacionMalla()
+                                else "Alerta sincronizada desde la cola local",
+                                folio = resultado.folio,
+                                estadoServidor = resultado.estado
+                            )
+                        } else if (actual.alertaId == pendiente.alertaId) {
                             actual.copy(
                                 etapa = EtapaEnvioAlerta.REGISTRADA,
-                                mensaje = "Alerta sincronizada desde la cola local",
+                                mensaje = if (recibidaPorMalla) mensajeConfirmacionMalla()
+                                else "Alerta sincronizada desde la cola local",
                                 folio = resultado.folio,
                                 estadoServidor = resultado.estado
                             )
@@ -344,16 +371,67 @@ class ModuloEmergencias(
                 }
             }
         }
+
+        val ubicaciones = canalUbicaciones
+        if (ubicaciones != null) {
+            for (pendiente in colaOffline.obtenerTelemetriasPendientes()) {
+                val payload = JSONObject(pendiente.paquete.toString(Charsets.UTF_8))
+                val alertaIdPadre = payload.getString("alertaIdPadre")
+                val lectura = ServidorAlertasRetrofit.json.decodeFromString(
+                    LecturaUbicacionDto.serializer(),
+                    payload.getString("lectura")
+                )
+                when (ubicaciones.enviar(alertaIdPadre, listOf(lectura))) {
+                    ResultadoUbicaciones.ENTREGADAS,
+                    ResultadoUbicaciones.DESCARTAR,
+                    ResultadoUbicaciones.ALERTA_TERMINADA ->
+                        colaOffline.marcarSincronizadoYEliminar(pendiente.alertaId, esAlerta = true)
+                    ResultadoUbicaciones.REINTENTAR ->
+                        colaOffline.registrarFalloReintento(pendiente.alertaId, esAlerta = true)
+                }
+            }
+        }
+        programarSiguienteReintentoCola()
+        true
+    }
+
+    private suspend fun programarSiguienteReintentoCola() {
+        val esperaMs = colaOffline.tiempoHastaProximoIntentoMs(incluirTelemetria = canalUbicaciones != null)
+        if (esperaMs != null) {
+            runCatching {
+                ColaAlertaSyncWorker.programarReintento(appContext, esperaMs)
+            }.onFailure {
+                Log.e(TAG, "No se pudo programar el siguiente reintento de la cola.", it)
+            }
+        }
     }
 
     suspend fun cargarEstadoColaLocal() {
-        val pendiente = colaOffline.obtenerAlertasPendientes().lastOrNull() ?: return
+        val pendiente = colaOffline.obtenerAlertasPendientes().lastOrNull()
+        if (pendiente != null) {
+            _estadoEnvioAlerta.update { actual ->
+                if (actual == null || actual.etapa == EtapaEnvioAlerta.COLA_LOCAL) {
+                    EstadoEnvioAlerta(
+                        alertaId = pendiente.alertaId,
+                        etapa = EtapaEnvioAlerta.COLA_LOCAL,
+                        mensaje = "Alerta pendiente de sincronización local"
+                    )
+                } else actual
+            }
+            return
+        }
+
+        val aviso = AvisoMallaUsuario.leerAvisoReciente(appContext) ?: return
         _estadoEnvioAlerta.update { actual ->
-            if (actual == null || actual.etapa == EtapaEnvioAlerta.COLA_LOCAL) {
+            if (actual == null || actual.etapa == EtapaEnvioAlerta.COLA_LOCAL ||
+                actual.etapa == EtapaEnvioAlerta.REGISTRADA
+            ) {
                 EstadoEnvioAlerta(
-                    alertaId = pendiente.alertaId,
-                    etapa = EtapaEnvioAlerta.COLA_LOCAL,
-                    mensaje = "Alerta pendiente de sincronización local"
+                    alertaId = aviso.alertaId,
+                    etapa = EtapaEnvioAlerta.REGISTRADA,
+                    mensaje = mensajeConfirmacionMalla(),
+                    folio = aviso.folio,
+                    estadoServidor = aviso.estado
                 )
             } else actual
         }
@@ -439,13 +517,23 @@ class ModuloEmergencias(
 
         try {
             colaOffline.encolarAlertaFalloCascada(alerta)
-            actualizarEstadoEnvio(
-                alerta, EtapaEnvioAlerta.COLA_LOCAL,
-                "Sin confirmación del servidor ni SMS; alerta guardada en SQLite local"
-            )
         } catch (e: Exception) {
             Log.e(TAG, "No se pudo guardar la alerta ${alerta.idAlerta} en la cola local", e)
             actualizarEstadoEnvio(alerta, EtapaEnvioAlerta.ERROR, "Falló el guardado en la cola local: ${e.message}")
+            return
+        }
+        programarSincronizacionCola()
+        actualizarEstadoEnvio(
+            alerta, EtapaEnvioAlerta.COLA_LOCAL,
+            "Sin confirmación del servidor ni SMS; alerta guardada en SQLite local"
+        )
+    }
+
+    private fun programarSincronizacionCola() {
+        runCatching {
+            ColaAlertaSyncWorker.programarInmediato(appContext)
+        }.onFailure {
+            Log.e(TAG, "La alerta quedó en Room, pero no se pudo programar su sincronización.", it)
         }
     }
 
@@ -465,6 +553,12 @@ class ModuloEmergencias(
 
     private suspend fun confirmarRegistroServidor(alerta: AlertaEmergencia, resultado: ResultadoServidor.Registrada) {
         alertaResuelta = alerta.idAlerta
+        val recibidaPorMalla = resultado.canalRecepcion == "MALLA"
+        if (recibidaPorMalla) {
+            AvisoMallaUsuario.guardarYNotificar(
+                appContext, alerta.idAlerta, resultado.folio, resultado.estado
+            )
+        }
         _alertaActiva.update { actual ->
             if (actual?.idAlerta == alerta.idAlerta) actual.copy(folio = resultado.folio) else actual
         }
@@ -476,7 +570,8 @@ class ModuloEmergencias(
         )
         actualizarEstadoEnvio(
             alerta, EtapaEnvioAlerta.REGISTRADA,
-            "Registrada en servidor; consultando evento_alerta",
+            if (recibidaPorMalla) mensajeConfirmacionMalla()
+            else "Registrada en servidor; consultando evento_alerta",
             resultado.folio,
             resultado.estado
         )
@@ -491,6 +586,9 @@ class ModuloEmergencias(
             if (estado !in setOf("ENVIADA", "PENDIENTE_ENVIO")) return
         }
     }
+
+    private fun mensajeConfirmacionMalla() =
+        "Otro dispositivo retransmitió tu alerta por malla y el servidor la registró."
 
     private fun actualizarEstadoEnvio(
         alerta: AlertaEmergencia,
@@ -586,11 +684,15 @@ class ModuloEmergencias(
                 gestorMalla.ajustarEscaneoMallaPorBateria(datos.nivelBateria)
                 val alerta = _alertaActiva.value
 
-                // P6: cada lectura va al servidor; sin señal se junta y sale cuando vuelve.
-                envioUbicaciones?.agregar(datos)
                 if (!gestorMalla.hayConexionAInternet()) {
                     _colaTelemetriaOfflineP11.tryEmit(datos)
+                    alerta?.let {
+                        colaOffline.encolarTelemetria(datos, it.idAlerta)
+                        programarSincronizacionCola()
+                    }
                 } else if (alerta != null) {
+                    // P6: cada lectura va al servidor; si falla, EnvioUbicaciones la conserva en memoria.
+                    envioUbicaciones?.agregar(datos)
                     // Si se activó sin internet, la alerta sale al servidor en cuanto vuelve la señal.
                     if (alertaResuelta != alerta.idAlerta && envioAlerta?.isActive != true) {
                         when (val resultado = enviarAlServidor(alerta)) {
