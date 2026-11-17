@@ -21,8 +21,7 @@ import javax.sql.DataSource
  *
  * Puede actuar el operador de una unidad con asignación abierta en la alerta. El Administrador puede cambiar
  * estados y escalar, pero el acuse es solo del operador. Cada acción deja su renglón en `evento_alerta`.
- * Al emisor se le avisa del acuse, de los cambios y del cierre, salvo que haya cancelado con el PIN de
- * coacción: en ese caso la alerta sigue en silencio y no se le manda nada.
+ * Al emisor se le avisa del acuse, de los cambios y del cierre.
  */
 class AtencionServicio(
     private val dataSource: DataSource,
@@ -194,9 +193,9 @@ class AtencionServicio(
         put("unidadId", unidad.toString())
     }
 
-    /** Aviso al emisor. Con coacción no se manda nada: la persona debe seguir viendo la alerta como cancelada. */
+    /** Aviso al emisor. Un intento de cancelación fallido (posible coacción) no lo cambia: la alerta sigue activa. */
     private fun avisarEmisor(conn: Connection, alertaId: UUID, alerta: AlertaEnAtencion, tipo: String) {
-        if (!alerta.coaccion) Canalizacion.avisar(conn, alertaId, alerta.usuarioId, tipo)
+        Canalizacion.avisar(conn, alertaId, alerta.usuarioId, tipo)
     }
 
     private fun noEncontrada() = ApiException(HttpStatusCode.NotFound, "NO_ENCONTRADO", "La alerta no existe")

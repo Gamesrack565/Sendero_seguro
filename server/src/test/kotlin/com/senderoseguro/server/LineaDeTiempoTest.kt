@@ -76,7 +76,7 @@ class LineaDeTiempoTest : PruebaConBaseDatos() {
     }
 
     @Test
-    fun `con el PIN de coaccion quien la emitio ve que termino en CANCELADA y la consola ve la verdad`() {
+    fun `con posible coaccion quien la emitio ve su intento fallido y la alerta sigue, y solo la consola ve la marca`() {
         val id = alertaDespachada()
         sql(
             """INSERT INTO intento_cancelacion (alerta_id, usuario_id, motivo, metodo, exitoso, es_coaccion, intentado_en)
@@ -88,10 +88,10 @@ class LineaDeTiempoTest : PruebaConBaseDatos() {
         atencion.acusar(caseta, id)
 
         val deAna = linea.de(ana, id).eventos
-        assertEquals("CANCELADA", deAna.last().estadoNuevo)
-        assertFalse("ACUSADA" in deAna.estados(), "Lo que pasó después de la coacción no se le muestra")
+        assertFalse("CANCELADA" in deAna.estados())
+        assertTrue("ACUSADA" in deAna.estados(), "La alerta sigue su curso")
         val intento = deAna.single { it.tipo == "INTENTO_CANCELACION" }
-        assertEquals("true", intento.detalle["exitoso"]?.jsonPrimitive?.content)
+        assertEquals("false", intento.detalle["exitoso"]?.jsonPrimitive?.content)
         assertFalse("esCoaccion" in intento.detalle)
 
         val consola = linea.de(admin, id).eventos

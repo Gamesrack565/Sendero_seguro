@@ -57,8 +57,7 @@ data class FiltrosHistorial(
  * Historial de una persona (P13): sus alertas, sus reportes con nombre y sus trayectos, del más nuevo al más viejo.
  * Lee `v_historial_usuario`, que ya deja fuera los reportes anónimos.
  *
- * - [propio]: lo que ve cada quien en su app. Una alerta cancelada con el PIN de coacción sale como CANCELADA,
- *   igual que en el detalle y la línea de tiempo (RF-13).
+ * - [propio]: lo que ve cada quien en su app, con el estado real de cada alerta.
  * - [ajeno]: solo el Administrador, con una justificación. La consulta queda en la bitácora como
  *   CONSULTAR_HISTORIAL_AJENO en la misma transacción, así que no hay consulta sin registro.
  */
@@ -115,7 +114,7 @@ class Historial(private val dataSource: DataSource) {
                 tipo = rs.getString("tipo"),
                 id = id.toString(),
                 referencia = rs.getString("referencia")?.let(::JsonPrimitive) ?: JsonNull,
-                estado = if (vistaPropia && rs.getBoolean("coaccion")) "CANCELADA" else rs.getString("estado"),
+                estado = rs.getString("estado"),
                 ocurridoEn = ocurrido.toString(),
             )
         }

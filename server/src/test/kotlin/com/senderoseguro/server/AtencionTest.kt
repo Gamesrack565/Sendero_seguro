@@ -187,13 +187,14 @@ class AtencionTest : PruebaConBaseDatos() {
     }
 
     @Test
-    fun `con coaccion el emisor la ve cancelada y no recibe avisos`() {
+    fun `con posible coaccion la alerta sigue activa para el emisor y recibe sus avisos`() {
         val id = alertaEnCaseta()
         sql("UPDATE alerta SET coaccion_detectada = true WHERE id = ?", id)
-        assertEquals("CANCELADA", consulta.detalle(ana, id).estado)
+        assertEquals("ASIGNADA", consulta.detalle(ana, id).estado)
+        assertNull(consulta.detalle(ana, id).coaccionDetectada)
         assertEquals("ASIGNADA", consulta.detalle(caseta, id).estado)
         atencion.acusar(caseta, id)
-        assertEquals(0, numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND usuario_id = ?", id, ana.usuarioId))
+        assertEquals(1, numero("SELECT count(*) FROM notificacion WHERE alerta_id = ? AND usuario_id = ?", id, ana.usuarioId))
     }
 
     @Test

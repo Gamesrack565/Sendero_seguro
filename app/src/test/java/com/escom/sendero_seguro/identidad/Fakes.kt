@@ -60,11 +60,7 @@ class AlmacenEnMemoria : AlmacenSeguro {
     override fun borrarToken() { token = null }
     override fun guardarHashPin(hash: String) { hashPin = hash }
     override fun leerHashPin() = hashPin
-    var hashPinCoaccion: String? = null
-    override fun guardarHashPinCoaccion(hash: String) { hashPinCoaccion = hash }
-    override fun leerHashPinCoaccion() = hashPinCoaccion
-    override fun borrarHashPinCoaccion() { hashPinCoaccion = null }
-    override fun borrarTodo() { token = null; hashPin = null; hashPinCoaccion = null }
+    override fun borrarTodo() { token = null; hashPin = null }
 }
 
 class ColaEnMemoria : ColaCancelaciones {

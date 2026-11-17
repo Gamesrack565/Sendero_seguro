@@ -404,7 +404,7 @@ fun PantallaDiagnosticoModulo2(
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    modulo.desactivarAlertaEmergencia(false)
+                    modulo.desactivarAlertaEmergencia()
                     modulo.gestorMalla.reiniciarEstadoParaNuevaPrueba()
                     modulo.iniciarCuentaRegresivaYEnvioBase(TipoDetonador.BOTON_SOS, segundosCuenta = 3)
                     registrarEvento("P4 (A-05)", "Cuenta regresiva de 3s iniciada antes de envío genérico")
@@ -429,7 +429,7 @@ fun PantallaDiagnosticoModulo2(
 
             OutlinedButton(
                 onClick = {
-                    modulo.desactivarAlertaEmergencia(false)
+                    modulo.desactivarAlertaEmergencia()
                     modulo.gestorMalla.reiniciarEstadoParaNuevaPrueba()
                     ultimaAlertaMallaRecibida = null
                     registrarEvento("P8 REINICIO", "Alerta cancelada y malla lista")

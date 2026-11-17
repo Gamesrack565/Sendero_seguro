@@ -77,8 +77,7 @@ data class AlertaEmergencia(
     val canalRecepcion: CanalRecepcion = CanalRecepcion.INTERNET,
     val saltosMalla: Int = 0,
     val timestampInicio: Long = System.currentTimeMillis(),
-    val activa: Boolean = true,
-    val enModoCoaccionSilencioso: Boolean = false
+    val activa: Boolean = true
 )
 
 data class DatosPruebaAlerta(

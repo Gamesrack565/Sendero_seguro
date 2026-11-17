@@ -24,8 +24,8 @@ import javax.sql.DataSource
  * Quién ve qué:
  * - ADMINISTRADOR: todas.
  * - OPERADOR: las que tienen o tuvieron una asignación a su unidad.
- * - Emisor (INTEGRANTE o COORDINADOR): solo las suyas, sin datos de la consola. Si la canceló con el PIN
- *   de coacción, la ve como CANCELADA (la consola ve el estado real).
+ * - Emisor (INTEGRANTE o COORDINADOR): solo las suyas, sin datos de la consola. La marca de posible coacción
+ *   solo la ve la consola.
  * Lo que no puede ver responde 404, como si no existiera.
  */
 class ConsultaAlertas(private val dataSource: DataSource) {
@@ -107,8 +107,7 @@ class ConsultaAlertas(private val dataSource: DataSource) {
                 acusadaEn = rs.instante("acusada_en")?.toString(),
                 cerradaEn = rs.instante("cerrada_en")?.toString(),
                 resultadoCierre = rs.getString("resultado_cierre"),
-                canceladaEn = (rs.instante("cancelada_en")
-                    ?: if (vistaEmisor && rs.getBoolean("coaccion_detectada")) rs.instante("activada_en") else null)?.toString(),
+                canceladaEn = rs.instante("cancelada_en")?.toString(),
             )
         } ?: throw noEncontrada()
     }
@@ -128,12 +127,10 @@ class ConsultaAlertas(private val dataSource: DataSource) {
     }
 
     private fun resumen(rs: ResultSet, vistaEmisor: Boolean): AlertaResumen {
-        val coaccion = rs.getBoolean("coaccion_detectada")
         return AlertaResumen(
             id = rs.getObject("id").toString(),
             folio = rs.getString("folio"),
-            // El emisor que canceló con el PIN de coacción ve la alerta como cancelada (RF-13).
-            estado = if (vistaEmisor && coaccion) "CANCELADA" else rs.getString("estado"),
+            estado = rs.getString("estado"),
             tipoIncidente = TipoIncidenteRef(
                 rs.getInt("tipo_id"), rs.getString("tipo_nombre"), rs.getString("tipo_categoria"), rs.getBoolean("tipo_generica"),
             ),

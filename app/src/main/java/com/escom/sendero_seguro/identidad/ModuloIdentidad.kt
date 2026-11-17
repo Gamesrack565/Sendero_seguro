@@ -21,7 +21,7 @@ import com.escom.sendero_seguro.identidad.puertos.RepositorioConfigLocal
 import com.escom.sendero_seguro.identidad.puertos.ServicioRemotoIdentidad
 
 /**
- * Módulo Backend 1: Identidad, Contactos, Configuración y Control de Coacción.
+ * Módulo Backend 1: Identidad, Contactos, Configuración y Cancelación.
  *   P1 → [autenticacion]   P2 → [redApoyo]   P3 → [activacion]   P8 → [cancelacion]
  *
  * Punto de entrada para los demás módulos y para las pantallas:

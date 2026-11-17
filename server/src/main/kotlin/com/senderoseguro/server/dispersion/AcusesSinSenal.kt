@@ -114,7 +114,7 @@ class AcusesSinSenal {
                 acusadaEn, contexto.usuarioId, alertaId,
             )
             Canalizacion.registrarEvento(conn, alertaId, alerta.estado, "ACUSADA", detalle, contexto.usuarioId)
-            if (!alerta.coaccion) Canalizacion.avisar(conn, alertaId, alerta.usuarioId, "ACUSE")
+            Canalizacion.avisar(conn, alertaId, alerta.usuarioId, "ACUSE")
         } else {
             Canalizacion.registrarEvento(conn, alertaId, alerta.estado, alerta.estado, detalle, contexto.usuarioId)
         }

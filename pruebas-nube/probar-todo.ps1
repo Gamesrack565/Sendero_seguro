@@ -1,5 +1,5 @@
 # Prueba completa en la nube: cuentas (P1, P2), registro de alertas (P4), dispersion y red de apoyo (P5),
-# ubicacion en vivo (P6), cancelacion y PIN de coaccion (P8), relevo de la malla (RF-14), linea de tiempo e
+# ubicacion en vivo (P6), cancelacion y posible coaccion (P8), relevo de la malla (RF-14), linea de tiempo e
 # historial (P13), archivos (P14), sincronizacion offline (P15) y tiempo real de la consola (P16).
 #
 # Crea dos cuentas de prueba nuevas (la persona que activa las alertas y un telefono que retransmite por la malla),
@@ -294,15 +294,15 @@ if ($telefonoContacto) {
     Revisar "quitar el contacto (las demas alertas no mandan SMS)" 204 (Pedir DELETE "/contactos/$idContacto" $a.token) | Out-Null
 }
 
-# ---------------------------------------------------------------- 5. PIN de coaccion
+# ---------------------------------------------------------------- 5. PIN que no coincide (posible coaccion)
 
-Write-Host "5. PIN de coaccion (P8)"
+Write-Host "5. PIN que no coincide: posible coaccion (P8)"
 $id2 = [string][guid]::NewGuid()
 Revisar "registrar alerta" 201 (Pedir POST "/alertas" $a.token (Alerta $id2 (Ahora))) | Out-Null
-Revisar "cancelar con el PIN de coaccion" 204 (Cancelar $a.token $id2 $false $a.dispositivo.id) | Out-Null
+Revisar "cancelar con un PIN que no coincide" 204 (Cancelar $a.token $id2 $false $a.dispositivo.id) | Out-Null
 $r = Pedir GET "/alertas/$id2" $a.token
-Comprobar "la persona la ve CANCELADA" ($r.json.estado -eq "CANCELADA") $r.json.estado
-Revisar "el telefono sigue mandando la ubicacion en silencio" 200 (Pedir POST "/alertas/$id2/ubicaciones" $a.token @{ lecturas = (Lecturas 2 -1) }) | Out-Null
+Comprobar "la alerta sigue activa para la persona" ($r.json.estado -ne "CANCELADA") $r.json.estado
+Revisar "el telefono sigue mandando la ubicacion" 200 (Pedir POST "/alertas/$id2/ubicaciones" $a.token @{ lecturas = (Lecturas 2 -1) }) | Out-Null
 if ($admin -and $admin.token) {
     $r = Pedir GET "/alertas/$id2" $admin.token
     Comprobar "la consola la ve activa" ($r.json.estado -ne "CANCELADA") $r.json.estado

@@ -737,28 +737,9 @@ class ModuloEmergencias(
         }
     }
 
-    /**
-     * P8 (RF-13): se usó el PIN de coacción. La alerta se ve cancelada pero sigue: GPS, envío al servidor y malla.
-     * Si todavía iba en la cuenta regresiva, se envía en ese momento en vez de esperar.
-     */
-    fun activarModoCoaccionSilencioso() {
-        if (_alertaActiva.value?.activa != true && jobCuentaRegresivaPreEnvio?.isActive == true) {
-            jobCuentaRegresivaPreEnvio?.cancel()
-            envioAlerta?.cancel()
-            _segundosRestantesPreEnvio.value = null
-            activarAlertaEmergencia(detonadorEnCuenta)
-        }
-        _alertaActiva.update { a -> if (a?.activa == true) a.copy(enModoCoaccionSilencioso = true) else a }
-    }
-
-    fun desactivarAlertaEmergencia(simulacionCoaccion: Boolean = false) {
+    fun desactivarAlertaEmergencia() {
         jobCuentaRegresivaPreEnvio?.cancel()
         _segundosRestantesPreEnvio.value = null
-
-        if (simulacionCoaccion) {
-            _alertaActiva.value = _alertaActiva.value?.copy(enModoCoaccionSilencioso = true)
-            return
-        }
 
         _alertaActiva.value?.let {
             actualizarHistorialEventoAlerta(it.idAlerta, it.estadoActual, EstadoAlertaE01.CANCELADA, "Cancelación autenticada")

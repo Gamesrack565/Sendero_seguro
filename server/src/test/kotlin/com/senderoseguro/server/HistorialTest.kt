@@ -122,13 +122,14 @@ class HistorialTest : PruebaConBaseDatos() {
     }
 
     @Test
-    fun `con el PIN de coaccion Ana ve su alerta CANCELADA y el Administrador ve la verdad`() {
+    fun `con posible coaccion Ana y el Administrador ven el estado real de la alerta`() {
         val desde = ahoraBd()
         val id = alerta()
         sql("UPDATE alerta SET coaccion_detectada = true WHERE id = ?", id)
-        assertEquals("CANCELADA", historial.propio(ana, FiltrosHistorial(desde = desde)).elementos.single().estado)
+        val propia = historial.propio(ana, FiltrosHistorial(desde = desde)).elementos.single().estado
         val real = historial.ajeno(admin, AlertasPrueba.ANA, "Revision de una alerta con coaccion", FiltrosHistorial(desde = desde), null)
-        assertTrue(real.elementos.single().estado != "CANCELADA")
+        assertTrue(propia != "CANCELADA")
+        assertEquals(real.elementos.single().estado, propia)
     }
 
     @Test

@@ -49,8 +49,8 @@ data class LineaDeTiempoJson(val alertaId: String, val eventos: List<EventoTimel
  * Quién la ve es lo mismo que `GET /alertas/{id}`: el Administrador, el operador cuya unidad tuvo la alerta y quien
  * la emitió. La consola ve todo, con nombres. Quien la emitió ve una versión para la app: sus cambios de estado,
  * la unidad asignada, sus intentos de cancelación y los avisos a su red de apoyo, sin nombres de operadores ni
- * datos internos. Si canceló con el PIN de coacción, su línea termina en CANCELADA en ese momento (RF-13), igual
- * que lo que ve en el detalle, aunque la alerta siga activa en silencio.
+ * datos internos. Un intento de cancelación fallido (posible coacción) le aparece como no exitoso y la alerta
+ * sigue su curso; la marca de coacción solo la ve la consola.
  */
 class LineaDeTiempo(private val dataSource: DataSource, private val consulta: ConsultaAlertas) {
 
@@ -58,28 +58,14 @@ class LineaDeTiempo(private val dataSource: DataSource, private val consulta: Co
         // Mismas reglas de visibilidad que el detalle: si no la puede ver, 404.
         consulta.detalle(conn, usuario, alertaId)
         val vistaEmisor = usuario.rol !in setOf(Rol.ADMINISTRADOR, Rol.OPERADOR)
-        val alerta = conn.consultarUno(
-            "SELECT usuario_id, coaccion_detectada, activada_en FROM alerta WHERE id = ?", alertaId,
-        ) { Triple(it.uuid("usuario_id"), it.getBoolean("coaccion_detectada"), it.instante("activada_en")!!) }!!
-        val (emisorId, coaccion, activadaEn) = alerta
+        val emisorId = conn.consultarUno("SELECT usuario_id FROM alerta WHERE id = ?", alertaId) { it.uuid("usuario_id") }!!
 
         val eventos = (estados(conn, alertaId, vistaEmisor, emisorId) + asignaciones(conn, alertaId) +
             escalamientos(conn, alertaId, vistaEmisor) + avisos(conn, alertaId, vistaEmisor) +
             cancelaciones(conn, alertaId, vistaEmisor))
             .sortedWith(compareBy<Pair<Instant, EventoTimeline>> { it.first }.thenBy { ORDEN.indexOf(it.second.tipo) })
 
-        val visibles = if (vistaEmisor && coaccion) {
-            // Lo que pasó después de la coacción no se le muestra; en su lugar, la cancelación que la app simuló.
-            val corte = conn.consultarUno(
-                "SELECT min(intentado_en) AS t FROM intento_cancelacion WHERE alerta_id = ? AND es_coaccion", alertaId,
-            ) { it.instante("t") } ?: activadaEn
-            val antes = eventos.filter { !it.first.isAfter(corte) }
-            val ultimoEstado = antes.lastOrNull { it.second.tipo == "CAMBIO_ESTADO" }?.second?.estadoNuevo
-            antes + (corte to EventoTimeline("CAMBIO_ESTADO", corte.toString(), estadoAnterior = ultimoEstado, estadoNuevo = "CANCELADA"))
-        } else {
-            eventos
-        }
-        LineaDeTiempoJson(alertaId.toString(), visibles.map { it.second })
+        LineaDeTiempoJson(alertaId.toString(), eventos.map { it.second })
     }
 
     private fun estados(conn: Connection, alertaId: UUID, vistaEmisor: Boolean, emisorId: UUID) = conn.consultar(
@@ -189,8 +175,7 @@ class LineaDeTiempo(private val dataSource: DataSource, private val consulta: Co
             detalle = buildJsonObject {
                 rs.getString("motivo")?.let { put("motivo", it) }
                 put("metodo", rs.getString("metodo"))
-                // Con coacción, la app le mostró a la persona que sí se canceló.
-                put("exitoso", rs.getBoolean("exitoso") || (vistaEmisor && coaccion))
+                put("exitoso", rs.getBoolean("exitoso"))
                 if (!vistaEmisor) put("esCoaccion", coaccion)
             },
         )

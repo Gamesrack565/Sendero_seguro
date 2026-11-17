@@ -155,17 +155,13 @@ class SenderoApp : Application() {
         }
 
         // P8 → P4: al cancelar con PIN o huella (Módulo 1) se detiene la alerta del Módulo 2: GPS, envío y malla.
-        // Un PIN que no coincide no detiene nada: la alerta sigue y el servidor lo marca como posible coacción.
-        // El PIN de coacción la muestra como cancelada y la deja activa.
+        // Un PIN que no coincide no detiene nada: la alerta sigue y el servidor lo marca como posible coacción
+        // (flujo 3a de CU-21). La pantalla solo muestra un mensaje neutro.
         scope.launch(Dispatchers.Main) {
             identidad.cancelacion.eventos.collect { e ->
                 val activa = emergencias.alertaActiva.value?.idAlerta
-                when {
-                    e is EventoCancelacion.AlertaCancelada && activa == e.alertaId ->
-                        emergencias.desactivarAlertaEmergencia(false)
-                    // PIN de coacción: se ve cancelada, pero sigue con GPS, envío y malla (también en la cuenta regresiva).
-                    e is EventoCancelacion.CoaccionSilenciosa && (activa == null || activa == e.alertaId) ->
-                        emergencias.activarModoCoaccionSilencioso()
+                if (e is EventoCancelacion.AlertaCancelada && activa == e.alertaId) {
+                    emergencias.desactivarAlertaEmergencia()
                 }
             }
         }

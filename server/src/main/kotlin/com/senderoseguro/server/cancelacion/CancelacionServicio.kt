@@ -40,7 +40,8 @@ data class CancelacionEntrada(
  * - `exitoso = true` (PIN o huella correctos): la alerta pasa a CANCELADA y [Dispersion.cancelada] avisa a la
  *   unidad y a la red de apoyo, libera la unidad y apaga el enlace.
  * - `exitoso = false` (PIN que no coincide): se toma como posible coacción. La alerta SIGUE ACTIVA, queda
- *   `coaccion_detectada` y la consola lo ve en tiempo real. A quien la envió se le muestra como cancelada.
+ *   `coaccion_detectada` y la consola lo ve en tiempo real. A quien la envió no se le muestra nada distinto
+ *   (flujo 3a de CU-21): sigue viendo su alerta activa y recibiendo sus avisos.
  * - Es idempotente: la app reintenta desde su cola sin señal, y el mismo intento (misma alerta y misma hora del
  *   teléfono) no se guarda dos veces. Si la alerta ya terminó, el intento se guarda y no cambia nada.
  */
