@@ -7,12 +7,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PhoneAndroid
@@ -20,27 +17,13 @@ import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.escom.sendero_seguro.emergencias.DatosPruebaAlerta
-import com.escom.sendero_seguro.emergencias.EstadoEnvioAlerta
-import com.escom.sendero_seguro.emergencias.EtapaEnvioAlerta
 import com.escom.sendero_seguro.ui.componentes.BotonPanico
 import com.escom.sendero_seguro.ui.componentes.ChipCanal
 import com.escom.sendero_seguro.ui.componentes.Tarjeta
@@ -57,7 +40,9 @@ data class EstadoInicio(
     val canal: CanalEnvio,
     val contactos: Int,
     val circulo: String?,
-    val integrantesCirculo: Int
+    val integrantesCirculo: Int,
+    /** config_local.cuenta_regresiva_seg (A-12). */
+    val segundosCuenta: Int = 5
 )
 
 /** A-04 · Inicio: botón de pánico (CU-11, CU-27). */
@@ -69,11 +54,8 @@ fun PantallaInicio(
     onRutaSegura: () -> Unit,
     onReportar: () -> Unit,
     onRedApoyo: () -> Unit,
-    modifier: Modifier = Modifier,
-    onEnviarAlertaPrueba: ((DatosPruebaAlerta) -> Unit)? = null,
-    estadoEnvioAlerta: EstadoEnvioAlerta? = null
+    modifier: Modifier = Modifier
 ) {
-    var mostrarFormulario by remember { mutableStateOf(false) }
     Column(
         modifier
             .fillMaxSize()
@@ -90,15 +72,10 @@ fun PantallaInicio(
         }
 
         Spacer(Modifier.weight(1f))
-        BotonPanico(
-            onClick = {
-                if (onEnviarAlertaPrueba != null) mostrarFormulario = true else onPedirAyuda()
-            },
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
+        BotonPanico(onPedirAyuda, Modifier.align(Alignment.CenterHorizontally))
         Spacer(Modifier.size(20.dp))
         Text(
-            "Un toque. Tendrás 5 segundos para cancelar o elegir qué pasa.",
+            "Un toque. Tendrás ${estado.segundosCuenta} segundos para cancelar o elegir qué pasa.",
             style = MaterialTheme.typography.bodyLarge,
             color = Tinta,
             textAlign = TextAlign.Center,
@@ -129,127 +106,7 @@ fun PantallaInicio(
             if (estado.circulo != null) append(" · Círculo ${estado.circulo} (${estado.integrantesCirculo} integrantes)")
         }
         TarjetaAcceso("Mi red de apoyo", Icons.Outlined.Groups, onRedApoyo, subtitulo = red, destacada = true)
-
-        estadoEnvioAlerta?.let { estado ->
-            Spacer(Modifier.size(12.dp))
-            Tarjeta {
-                Text(
-                    "Prueba de transmisión: ${estado.etapa.etiqueta()}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = Tinta
-                )
-                Text(estado.mensaje, style = MaterialTheme.typography.bodySmall, color = TextoSecundario)
-                estado.folio?.let { Text("Folio: $it", style = MaterialTheme.typography.bodySmall, color = Tinta) }
-                estado.estadoServidor?.let {
-                    Text("Estado en evento_alerta: $it", style = MaterialTheme.typography.bodySmall, color = Tinta)
-                }
-                if (estado.alertaId.isNotBlank()) {
-                    Text("ID: ${estado.alertaId}", style = MaterialTheme.typography.labelSmall, color = TextoSecundario)
-                }
-            }
-        }
     }
-
-    if (mostrarFormulario) {
-        FormularioPruebaAlerta(
-            alEnviar = { datos ->
-                mostrarFormulario = false
-                onEnviarAlertaPrueba?.invoke(datos)
-            },
-            alCerrar = { mostrarFormulario = false }
-        )
-    }
-}
-
-@Composable
-private fun FormularioPruebaAlerta(
-    alEnviar: (DatosPruebaAlerta) -> Unit,
-    alCerrar: () -> Unit
-) {
-    var tipoId by remember { mutableStateOf("1") }
-    var descripcion by remember { mutableStateOf("") }
-    var latitud by remember { mutableStateOf("19.504507") }
-    var longitud by remember { mutableStateOf("-99.146911") }
-    var precision by remember { mutableStateOf("10") }
-    var bateria by remember { mutableStateOf("80") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = alCerrar,
-        title = { Text("Prueba rápida de alerta") },
-        text = {
-            Column(
-                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("Tipo 1 = Genérica del catálogo local.", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(
-                    tipoId, { tipoId = it }, label = { Text("ID del tipo de incidente") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true
-                )
-                OutlinedTextField(
-                    descripcion, { descripcion = it }, label = { Text("Descripción (opcional)") },
-                    minLines = 2, maxLines = 3
-                )
-                OutlinedTextField(
-                    latitud, { latitud = it }, label = { Text("Latitud") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true
-                )
-                OutlinedTextField(
-                    longitud, { longitud = it }, label = { Text("Longitud") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true
-                )
-                OutlinedTextField(
-                    precision, { precision = it }, label = { Text("Precisión en metros") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true
-                )
-                OutlinedTextField(
-                    bateria, { bateria = it }, label = { Text("Batería (0-100)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true
-                )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                val datos = runCatching {
-                    DatosPruebaAlerta(
-                        tipoIncidenteId = tipoId.toInt(),
-                        descripcion = descripcion,
-                        latitud = latitud.toDouble(),
-                        longitud = longitud.toDouble(),
-                        precisionMetros = precision.toFloat(),
-                        nivelBateria = bateria.toInt()
-                    ).also {
-                        require(it.tipoIncidenteId >= 0) { "El tipo no puede ser negativo" }
-                        require(it.latitud in -90.0..90.0 && it.longitud in -180.0..180.0) {
-                            "Latitud o longitud fuera de rango"
-                        }
-                        require(it.precisionMetros.isFinite() && it.precisionMetros >= 0f) {
-                            "La precisión debe ser válida"
-                        }
-                        require(it.nivelBateria in 0..100) { "La batería debe estar entre 0 y 100" }
-                    }
-                }.getOrElse {
-                    error = it.message ?: "Revisa los datos del formulario"
-                    null
-                }
-                if (datos != null) alEnviar(datos)
-            }) { Text("Enviar") }
-        },
-        dismissButton = { TextButton(onClick = alCerrar) { Text("Cancelar") } }
-    )
-}
-
-private fun EtapaEnvioAlerta.etiqueta(): String = when (this) {
-    EtapaEnvioAlerta.PREPARANDO -> "Preparando"
-    EtapaEnvioAlerta.INTERNET -> "Internet"
-    EtapaEnvioAlerta.MALLA -> "Malla P5.1"
-    EtapaEnvioAlerta.SMS -> "SMS"
-    EtapaEnvioAlerta.COLA_LOCAL -> "Cola local P11"
-    EtapaEnvioAlerta.REGISTRADA -> "Registrada en servidor"
-    EtapaEnvioAlerta.RECHAZADA -> "Rechazada"
-    EtapaEnvioAlerta.ERROR -> "Error"
 }
 
 @Preview(showBackground = true, backgroundColor = 0xFFF2EDEB, widthDp = 360, heightDp = 760)

@@ -24,6 +24,14 @@ enum class Pantalla(val id: String, val titulo: String, val cu: String, val conB
     A17("A-17", "Mapa de calor con pronóstico", "CU-33, CU-34, CU-36 · RF-22, RF-25", conBarra = true),
     A18("A-18", "Ruta segura", "CU-35 · RF-23, RF-24, RF-25"),
     A19("A-19", "Conectividad y pendientes", "CU-26, CU-14 · RF-14, RF-16, RF-17"),
+    /** Crear el PIN al iniciar sesión en un teléfono que no lo tiene (paso 2 de A-02). */
+    PIN_NUEVO("A-02", "PIN de cancelación", "CU-01 · RF-13"),
+
+    // Herramientas de prueba del equipo: solo en debug.
+    HERRAMIENTAS("DEV", "Herramientas de prueba", "—"),
+    DIAGNOSTICO("DEV", "Diagnóstico P5.1 / P6 / P7", "—"),
+    MAPA_P12("DEV", "Mapa P12 provisional", "—"),
+    REPORTE_P10("DEV", "Reporte P10 provisional", "—"),
     GALERIA("DEV", "Galería de componentes", "—");
 
     val ruta: String get() = name

@@ -250,9 +250,14 @@ class ModuloEmergencias(
         val hayInternet = gestorMalla.hayConexionAInternet()
         val canalElegido = if (hayInternet) CanalRecepcion.INTERNET else CanalRecepcion.MALLA
 
+        val tipo = tipoElegidoPreEnvio
+        tipoElegidoPreEnvio = null
         val nuevaAlerta = AlertaEmergencia(
             detonador = detonador,
             estadoActual = EstadoAlertaE01.ENVIADA,
+            tipoIncidenteId = tipo?.first ?: 0,
+            nombreTipoIncidente = tipo?.second ?: "Genérica",
+            esGenerica = tipo == null,
             latitudInicial = telemetriaInicial.latitud,
             longitudInicial = telemetriaInicial.longitud,
             precisionMetros = telemetriaInicial.precision,
@@ -737,7 +742,29 @@ class ModuloEmergencias(
         }
     }
 
+    @Volatile private var tipoElegidoPreEnvio: Pair<Int, String>? = null
+
+    /**
+     * A-05 y A-06: tipo de incidente elegido por la persona (o la sugerencia de IA-1 que aceptó).
+     * Durante la cuenta regresiva se guarda y sale con la alerta; si la alerta ya salió como genérica,
+     * se agrega a la alerta activa en el teléfono (CU-13, «no retrasa el envío»).
+     */
+    fun elegirTipoIncidente(tipoId: Int, nombre: String, descripcion: String? = null) {
+        val activa = _alertaActiva.value
+        if (activa == null || !activa.activa) {
+            tipoElegidoPreEnvio = tipoId to nombre
+            return
+        }
+        _alertaActiva.value = activa.copy(
+            tipoIncidenteId = tipoId,
+            nombreTipoIncidente = nombre,
+            esGenerica = false,
+            descripcionRelato = descripcion ?: activa.descripcionRelato
+        )
+    }
+
     fun desactivarAlertaEmergencia() {
+        tipoElegidoPreEnvio = null
         jobCuentaRegresivaPreEnvio?.cancel()
         _segundosRestantesPreEnvio.value = null
 
