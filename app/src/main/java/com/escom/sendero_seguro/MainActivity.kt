@@ -1,6 +1,7 @@
 package com.escom.sendero_seguro
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -10,18 +11,43 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.fragment.app.FragmentActivity
 import com.escom.sendero_seguro.emergencias.AvisoMallaUsuario
 import com.escom.sendero_seguro.ui.mapa.ConfiguracionMapaOffline
 import com.escom.sendero_seguro.ui.navegacion.NavegacionApp
+import com.escom.sendero_seguro.ui.pantallas.red.AvisoRedApoyo
 import com.escom.sendero_seguro.ui.theme.Sendero_seguroTheme
 import retrofit2.HttpException
 import java.io.IOException
 
 // FragmentActivity (hereda de ComponentActivity) para poder mostrar BiometricPrompt en A-05 y A-08.
 class MainActivity : FragmentActivity() {
+    /** A-13: aviso de la red de apoyo con el que se abrió la app (push o enlace de ubicación). */
+    private var avisoEntrante by mutableStateOf<AvisoRedApoyo?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        avisoDe(intent)?.let { avisoEntrante = it }
+    }
+
+    private fun avisoDe(intent: Intent?): AvisoRedApoyo? {
+        intent ?: return null
+        val enlace = intent.getStringExtra("enlace") ?: intent.data?.toString()?.takeIf { "/enlace/" in it } ?: return null
+        return AvisoRedApoyo(
+            enlace = enlace,
+            nombre = intent.getStringExtra("nombre"),
+            tipo = intent.getStringExtra("tipo"),
+            folio = intent.getStringExtra("folio"),
+            telefono = intent.getStringExtra("telefono")
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        avisoEntrante = avisoDe(intent)
 
         ConfiguracionMapaOffline.inicializar(applicationContext)
 
@@ -70,7 +96,7 @@ class MainActivity : FragmentActivity() {
                     if (permisos.isNotEmpty()) permisosLauncher.launch(permisos.toTypedArray())
                 }
 
-                NavegacionApp()
+                NavegacionApp(avisoEntrante = avisoEntrante)
             }
         }
     }

@@ -63,7 +63,7 @@ fun PantallaInicio(
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "Hola, ${estado.nombre}",
+                if (estado.nombre.isBlank()) "Hola" else "Hola, ${estado.nombre}",
                 style = MaterialTheme.typography.headlineSmall,
                 color = Tinta,
                 modifier = Modifier.weight(1f)

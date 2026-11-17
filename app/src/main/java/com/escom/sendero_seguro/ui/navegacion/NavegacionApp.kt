@@ -44,6 +44,7 @@ import com.escom.sendero_seguro.emergencias.EstadoRedYMalla
 import com.escom.sendero_seguro.PantallaDiagnosticoModulo2
 import com.escom.sendero_seguro.emergencias.TipoDetonador
 import com.escom.sendero_seguro.identidad.dominio.MiembroEstado
+import com.escom.sendero_seguro.identidad.dominio.UsuarioRol
 import com.escom.sendero_seguro.identidad.dominio.ResultadoCancelacion
 import com.escom.sendero_seguro.reportes.TipoReporteDto
 import com.escom.sendero_seguro.ui.mapa.Punto
@@ -68,11 +69,22 @@ import com.escom.sendero_seguro.ui.pantallas.acceso.PantallaInicioSesion
 import com.escom.sendero_seguro.ui.pantallas.acceso.PantallaRegistro
 import com.escom.sendero_seguro.ui.pantallas.acceso.PasoCrearPin
 import com.escom.sendero_seguro.ui.pantallas.desarrollo.PantallaHerramientas
+import com.escom.sendero_seguro.ui.pantallas.red.AvisoRedApoyo
+import com.escom.sendero_seguro.ui.pantallas.red.DescargaMapas
+import com.escom.sendero_seguro.ui.pantallas.red.PantallaActivacionEnergia
+import com.escom.sendero_seguro.ui.pantallas.red.PantallaAvisoRedApoyo
+import com.escom.sendero_seguro.ui.pantallas.red.PantallaCirculo
+import com.escom.sendero_seguro.ui.pantallas.red.PantallaContactos
+import com.escom.sendero_seguro.ui.pantallas.red.PantallaPerfil
+import com.escom.sendero_seguro.ui.pantallas.red.ResumenPerfil
 import com.escom.sendero_seguro.ui.pantallas.inicio.EstadoInicio
 import com.escom.sendero_seguro.ui.pantallas.inicio.PantallaInicio
 import com.escom.sendero_seguro.ui.pantallas.mapa.PantallaMapaP12
 import com.escom.sendero_seguro.ui.pantallas.reporte.PantallaReporteComunitario
 import com.escom.sendero_seguro.ui.theme.Fondo
+import com.escom.sendero_seguro.ui.theme.Rojo
+import com.escom.sendero_seguro.ui.theme.RojoOscuro
+import com.escom.sendero_seguro.ui.theme.Tinta
 import com.escom.sendero_seguro.ui.theme.RojoTexto
 import com.escom.sendero_seguro.ui.theme.Superficie
 import com.escom.sendero_seguro.ui.theme.TextoSecundario
@@ -101,7 +113,11 @@ internal fun EstadoRedYMalla.canal(): CanalEnvio = when {
  * Sin sesión arranca en A-03; con sesión guardada (aunque no haya internet) arranca en A-04.
  */
 @Composable
-fun NavegacionApp(nav: NavHostController = rememberNavController()) {
+fun NavegacionApp(
+    nav: NavHostController = rememberNavController(),
+    /** Aviso de alerta de la red de apoyo que abrió la app (push o enlace): abre A-13. */
+    avisoEntrante: AvisoRedApoyo? = null
+) {
     val context = LocalContext.current
     val app = context.applicationContext as SenderoApp
     val esDesarrollo = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
@@ -129,6 +145,13 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
     // Catálogo local de tipos para la alerta (A-05, A-06); sin señal usa el guardado.
     val tiposAlerta by produceState(emptyList<TipoReporteDto>()) { value = app.reportes.cargarCatalogoAlertas() }
 
+    var avisoRed by remember { mutableStateOf<AvisoRedApoyo?>(null) }
+    LaunchedEffect(avisoEntrante) { if (avisoEntrante != null) { avisoRed = avisoEntrante; nav.navigate(Pantalla.A13.ruta) } }
+
+    // P3 → P4: la cuenta regresiva elegida en A-12 también la usan el atajo y el widget del Módulo 2.
+    val configActivacion by activacion.config.collectAsState()
+    LaunchedEffect(configActivacion.cuentaRegresivaSeg) { modulo2.segundosCuentaRegresivaConfig = configActivacion.cuentaRegresivaSeg }
+
     // A-08 siempre empieza limpio: sin motivo ni el resultado de una cancelación anterior.
     val irACancelar = { cancelacion.reiniciar(); nav.navigate(Pantalla.A08.ruta) }
 
@@ -136,7 +159,13 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
     LaunchedEffect(estadoAuth.salirDeLaApp) { if (estadoAuth.salirDeLaApp) (context as? Activity)?.finish() }
 
     Scaffold(
-        containerColor = Fondo,
+        // La franja de la barra de estado toma el color de la pantalla (roja en la alerta, oscura en A-03 y A-13).
+        containerColor = when (actual) {
+            Pantalla.A05, Pantalla.A06 -> RojoOscuro
+            Pantalla.A07 -> Rojo
+            Pantalla.A03, Pantalla.A13 -> Tinta
+            else -> Fondo
+        },
         // Las pantallas de alerta no tienen barra inferior, para evitar toques accidentales.
         bottomBar = { if (actual?.conBarra == true) BarraInferior(actual) { nav.irAPestana(it) } }
     ) { relleno ->
@@ -145,12 +174,14 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
             // ---------------------------------------------------------------- Bloque 1 · Acceso
             composable(Pantalla.A03.ruta) {
                 var olvide by remember { mutableStateOf(false) }
-                LaunchedEffect(estadoAuth.usuario, estadoAuth.requiereCrearPin) {
-                    if (estadoAuth.usuario != null) nav.irA(if (estadoAuth.requiereCrearPin) Pantalla.PIN_NUEVO else Pantalla.A04)
+                // Solo se avanza tras pulsar «Iniciar sesión»: al cerrar sesión el estado anterior tarda en limpiarse.
+                var intento by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(intento, estadoAuth.usuario, estadoAuth.requiereCrearPin) {
+                    if (intento && estadoAuth.usuario != null) nav.irA(if (estadoAuth.requiereCrearPin) Pantalla.PIN_NUEVO else Pantalla.A04)
                 }
                 PantallaInicioSesion(
                     estado = estadoAuth,
-                    onIniciar = auth::iniciarSesion,
+                    onIniciar = { u, c -> intento = true; auth.iniciarSesion(u, c) },
                     onCrearCuenta = { auth.limpiarRetro(); nav.navigate(Pantalla.A01.ruta) },
                     onOlvide = { olvide = true }
                 )
@@ -168,13 +199,14 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
                 )
             }
             composable(Pantalla.A02.ruta) {
-                LaunchedEffect(estadoAuth.usuario) { if (estadoAuth.usuario != null) nav.irA(Pantalla.A04) }
+                var intento by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(intento, estadoAuth.usuario) { if (intento && estadoAuth.usuario != null) nav.irA(Pantalla.A04) }
                 PantallaRegistro(
                     estado = estadoAuth,
                     onCargarInstituciones = auth::cargarInstituciones,
                     onElegirInstitucion = auth::seleccionarInstitucion,
                     onValidarDatos = auth::validarPasoDatos,
-                    onRegistrar = auth::registrar,
+                    onRegistrar = { d, pin, conf -> intento = true; auth.registrar(d, pin, conf) },
                     onYaTengoCuenta = { auth.limpiarRetro(); nav.navigate(Pantalla.A03.ruta) { popUpTo(0) { inclusive = true } } },
                     onVolver = { nav.popBackStack() },
                     onLimpiarRetro = auth::limpiarRetro
@@ -330,6 +362,95 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
                 )
             }
 
+            // ---------------------------------------------------------------- Bloque 3 · Red de apoyo y perfil
+            composable(Pantalla.A09.ruta) {
+                val contactos by red.contactos.collectAsState()
+                val estadoRed by red.estado.collectAsState()
+                PantallaContactos(
+                    contactos = contactos,
+                    estado = estadoRed,
+                    onSincronizar = red::sincronizar,
+                    onGuardar = { id, nombre, telefono, prioridad ->
+                        if (id == null) red.agregarContacto(nombre, telefono, prioridad) else red.editarContacto(id, nombre, telefono)
+                    },
+                    onEliminar = red::eliminarContacto,
+                    onReordenar = red::reordenar,
+                    onCirculo = { nav.navigate(Pantalla.A10.ruta) },
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+            composable(Pantalla.A10.ruta) {
+                val estadoRed by red.estado.collectAsState()
+                PantallaCirculo(
+                    estado = estadoRed,
+                    usuarioId = estadoAuth.usuario?.id,
+                    puedeCoordinar = estadoAuth.usuario?.rol == UsuarioRol.COORDINADOR,
+                    escuela = null,
+                    onCargar = red::cargarCirculo,
+                    onUnirse = red::unirse,
+                    onCrear = red::crearCirculo,
+                    onRegenerar = red::regenerarCodigo,
+                    onDarDeBaja = red::darDeBaja,
+                    onRetirarme = red::retirarme,
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+            composable(Pantalla.A11.ruta) {
+                val contactos by red.contactos.collectAsState()
+                val estadoRed by red.estado.collectAsState()
+                LaunchedEffect(Unit) { if (estadoAuth.aviso == null) auth.cargarAviso() }
+                PantallaPerfil(
+                    estado = estadoAuth,
+                    resumen = ResumenPerfil(
+                        contactos = contactos.size,
+                        circulo = estadoRed.circulo?.nombreGrupo,
+                        coordinaCirculo = estadoRed.circulo?.coordinadorId == estadoAuth.usuario?.id,
+                        activacionSinDesbloquear = configActivacion.atajoActivo || configActivacion.widgetActivo,
+                        escuela = null
+                    ),
+                    esDesarrollo = esDesarrollo,
+                    onCargar = { auth.cargarPerfil(); red.cargarCirculo() },
+                    onActualizar = auth::actualizarPerfil,
+                    onCambiarPin = auth::cambiarPin,
+                    onSolicitarBaja = auth::solicitarBaja,
+                    onActivacion = { nav.navigate(Pantalla.A12.ruta) },
+                    onContactos = { nav.navigate(Pantalla.A09.ruta) },
+                    onCerrarSesion = { auth.cerrarSesion(); nav.navigate(Pantalla.A03.ruta) { popUpTo(0) { inclusive = true } } },
+                    onHerramientas = { nav.navigate(Pantalla.HERRAMIENTAS.ruta) },
+                    onLimpiarRetro = auth::limpiarRetro
+                )
+                // Baja solicitada: la sesión se cerró en el teléfono.
+                LaunchedEffect(estadoAuth.sesion) {
+                    if (estadoAuth.sesion == null && !estadoAuth.retro.cargando && estadoAuth.usuario == null && estadoAuth.retro.mensaje == null) {
+                        if (app.identidad.autenticacion.sesionLocal() == null) nav.navigate(Pantalla.A03.ruta) { popUpTo(0) { inclusive = true } }
+                    }
+                }
+            }
+            composable(Pantalla.A12.ruta) {
+                val politica by activacion.politica.collectAsState()
+                val errorActivacion by activacion.error.collectAsState()
+                val mapas by app.mapas.estado.collectAsState()
+                PantallaActivacionEnergia(
+                    config = configActivacion,
+                    politica = politica,
+                    error = errorActivacion,
+                    descarga = DescargaMapas(mapas.descargadaCapaEn, mapas.tamanoTotalBytes),
+                    requiereExclusion = remember { activacion.requiereExclusionAhorroEnergia() },
+                    onAtajo = { activacion.atajoBotonEncendido(it) },
+                    onWidget = { activacion.widget(it) },
+                    onCuenta = { activacion.cuentaRegresiva(it) },
+                    onRetransmitir = { activacion.retransmitirMalla(it) },
+                    onAhorro = { activacion.escaneoSegunBateria(it) },
+                    onMapasWifi = { activacion.mapasSoloWifi(it) },
+                    onSolicitarExclusion = { runCatching { context.startActivity(app.identidad.gestorEnergia.intentSolicitarExclusion()) } },
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+            composable(Pantalla.A13.ruta) {
+                val aviso = avisoRed
+                if (aviso == null) LaunchedEffect(Unit) { nav.popBackStack() } else PantallaAvisoRedApoyo(aviso)
+            }
+
             // ---------------------------------------------------------------- Herramientas de prueba (debug)
             composable(Pantalla.HERRAMIENTAS.ruta) {
                 val estadoEnvio by modulo2.estadoEnvioAlerta.collectAsState()
@@ -346,6 +467,7 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
                     onMapaP12 = { nav.navigate(Pantalla.MAPA_P12.ruta) },
                     onReporteP10 = { nav.navigate(Pantalla.REPORTE_P10.ruta) },
                     onGaleria = { nav.navigate(Pantalla.GALERIA.ruta) },
+                    onAvisoRed = { enlace -> avisoRed = AvisoRedApoyo(enlace); nav.navigate(Pantalla.A13.ruta) },
                     onVolver = { nav.popBackStack() }
                 )
             }
@@ -371,14 +493,12 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
             val hechas = setOf(
                 Pantalla.A01, Pantalla.A02, Pantalla.A03, Pantalla.A04, Pantalla.PIN_NUEVO,
                 Pantalla.A05, Pantalla.A06, Pantalla.A07, Pantalla.A08,
+                Pantalla.A09, Pantalla.A10, Pantalla.A11, Pantalla.A12, Pantalla.A13,
                 Pantalla.HERRAMIENTAS, Pantalla.DIAGNOSTICO, Pantalla.MAPA_P12, Pantalla.REPORTE_P10, Pantalla.GALERIA
             )
             Pantalla.entries.filter { it !in hechas }.forEach { p ->
                 composable(p.ruta) {
-                    val extra = buildList {
-                        if (p == Pantalla.A11 && esDesarrollo) add("Herramientas de prueba" to { nav.navigate(Pantalla.HERRAMIENTAS.ruta) })
-                        if (p == Pantalla.A11) add("Cerrar sesión" to { auth.cerrarSesion(); nav.navigate(Pantalla.A03.ruta) { popUpTo(0) { inclusive = true } } })
-                    }
+                    val extra = emptyList<Pair<String, () -> Unit>>()
                     PantallaEnConstruccion(
                         pantalla = p,
                         siguientes = SiguientesPantallas[p].orEmpty(),

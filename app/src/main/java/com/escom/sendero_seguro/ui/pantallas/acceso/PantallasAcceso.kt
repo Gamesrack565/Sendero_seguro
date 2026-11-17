@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -93,7 +92,7 @@ fun PantallaAvisoPrivacidad(
     LaunchedEffect(Unit) { if (estado.aviso == null) onCargar() }
     var acepto by rememberSaveable { mutableStateOf(false) }
     var verCompleto by rememberSaveable { mutableStateOf(false) }
-    val version = estado.aviso?.version ?: "v3.1"
+    val version = estado.aviso?.version?.let { if (it.startsWith("v")) it else "v$it" } ?: "v3.1"
 
     PantallaConPie(
         titulo = null,
@@ -381,7 +380,7 @@ fun PantallaInicioSesion(
 
     Column(Modifier.fillMaxSize().background(Fondo).imePadding()) {
         Column(
-            Modifier.fillMaxWidth().background(Tinta).statusBarsPadding().padding(horizontal = 28.dp, vertical = 28.dp)
+            Modifier.fillMaxWidth().background(Tinta).padding(horizontal = 28.dp, vertical = 28.dp)
         ) {
             Box(Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)).background(Rojo), contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.Shield, contentDescription = null, tint = Blanco, modifier = Modifier.size(34.dp))

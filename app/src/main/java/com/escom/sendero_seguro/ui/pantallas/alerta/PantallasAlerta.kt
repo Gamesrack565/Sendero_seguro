@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -157,7 +156,7 @@ fun PantallaCuentaRegresiva(
     onEnviarYa: () -> Unit,
     onCancelar: () -> Unit
 ) {
-    Column(Modifier.fillMaxSize().background(RojoOscuro).statusBarsPadding().padding(horizontal = 20.dp)) {
+    Column(Modifier.fillMaxSize().background(RojoOscuro).padding(horizontal = 20.dp)) {
         Row(Modifier.padding(top = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.size(84.dp).border(5.dp, Blanco, CircleShape).semantics { contentDescription = "Faltan ${segundos ?: 0} segundos" },
@@ -308,7 +307,7 @@ fun PantallaDescribirVoz(
     }
 
     Column(Modifier.fillMaxSize().background(Fondo)) {
-        Column(Modifier.fillMaxWidth().background(RojoOscuro).statusBarsPadding().padding(20.dp)) {
+        Column(Modifier.fillMaxWidth().background(RojoOscuro).padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Alerta enviada", style = MaterialTheme.typography.titleLarge, color = Blanco, modifier = Modifier.weight(1f))
                 ChipCanal(canal)
@@ -492,7 +491,7 @@ fun PantallaAlertaActiva(
     val estado = (seguimiento?.estadoActual ?: alerta.estadoActual).aUi()
     val punto = ubicacion ?: Punto(alerta.latitudInicial, alerta.longitudInicial)
     Column(Modifier.fillMaxSize().background(Fondo)) {
-        Column(Modifier.fillMaxWidth().background(Rojo).statusBarsPadding().padding(20.dp)) {
+        Column(Modifier.fillMaxWidth().background(Rojo).padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(12.dp).clip(CircleShape).background(Blanco))
                 Spacer(Modifier.width(8.dp))
