@@ -66,6 +66,10 @@ data class TipoReporteDto(
     val nombre: String,
     val aplicaA: String,
     val activo: Boolean = true,
+    /** FISICO, SOCIAL o DIGITAL; null en la genérica. A-05 agrupa los botones por categoría. */
+    val categoria: String? = null,
+    val prioridad: Int? = null,
+    val esGenerica: Boolean = false,
 )
 
 @Serializable
@@ -259,6 +263,32 @@ class ModuloReportes(
         }
         return CatalogoReportesDisponible(catalogo, desdeCache = false)
     }
+
+    /**
+     * Tipos para la alerta (A-05): activos con aplica_a ALERTA o AMBOS. Se guardan en el teléfono para que la
+     * cuenta regresiva muestre los botones aunque no haya señal. Sin catálogo guardado regresa una lista vacía
+     * y la alerta sale como genérica (flujo 3a de CU-11).
+     */
+    suspend fun cargarCatalogoAlertas(): List<TipoReporteDto> {
+        val catalogo = try {
+            api.catalogo("ALERTA").also { remoto ->
+                val contenido = ClienteHttp.json.encodeToString(CatalogoReportesDto.serializer(), remoto)
+                withContext(Dispatchers.IO) { preferenciasCatalogo.edit().putString(CLAVE_CATALOGO_ALERTAS, contenido).commit() }
+            }
+        } catch (e: IOException) {
+            catalogoAlertasGuardado()
+        } catch (e: HttpException) {
+            catalogoAlertasGuardado()
+        } catch (e: SerializationException) {
+            catalogoAlertasGuardado()
+        }
+        return catalogo?.tipos.orEmpty().filter { it.activo && (it.aplicaA == "ALERTA" || it.aplicaA == "AMBOS") }
+    }
+
+    private fun catalogoAlertasGuardado(): CatalogoReportesDto? =
+        preferenciasCatalogo.getString(CLAVE_CATALOGO_ALERTAS, null)?.let {
+            runCatching { ClienteHttp.json.decodeFromString(CatalogoReportesDto.serializer(), it) }.getOrNull()
+        }
 
     private fun catalogoGuardado(errorServidor: Exception): CatalogoReportesDisponible {
         val contenido = preferenciasCatalogo.getString(CLAVE_CATALOGO, null) ?: throw errorServidor
@@ -593,6 +623,7 @@ class ModuloReportes(
         private const val DIRECTORIO_EVIDENCIA = "reportes_evidencia"
         private const val PREFERENCIAS_CATALOGO = "catalogo_reportes_offline"
         private const val CLAVE_CATALOGO = "ultimo_catalogo"
+        private const val CLAVE_CATALOGO_ALERTAS = "ultimo_catalogo_alertas"
         private const val PREFERENCIAS_FEED = "feed_reportes_offline"
         private const val CLAVE_FEED = "reportes_30_dias"
     }

@@ -76,6 +76,7 @@ class SenderoApp : Application() {
     }
 
     suspend fun prepararSesionPruebaLocal(): String? {
+        if (tokenSesion() != null) return null
         if (usaServidorLocalDeDesarrollo()) {
             tokenDesarrolloLocalUsuarioId = tokenDesarrolloLocalUsuarioId ?: USUARIO_PRUEBA_LOCAL_ID
             tokenDesarrolloLocalDispositivoId = tokenDesarrolloLocalDispositivoId ?: DISPOSITIVO_PRUEBA_LOCAL_ID
@@ -106,24 +107,29 @@ class SenderoApp : Application() {
         return "Inicia sesión antes de enviar una alerta al servidor configurado"
     }
 
+    /** Token de la sesión iniciada en A-03/A-02 si sigue vigente. */
+    private fun tokenSesion(): String? =
+        identidad.almacen.leerToken()?.takeIf { it.expiraEnMs > System.currentTimeMillis() }?.token
+
+    // Con sesión iniciada todos los módulos usan la cuenta real, también contra el servidor local. El usuario de
+    // prueba del servidor local solo se usa cuando no hay sesión (herramientas de prueba en debug).
     private fun tokenActualServidor(): String? {
+        tokenSesion()?.let { return it }
         if (usaServidorLocalDeDesarrollo()) {
             return tokenDesarrolloLocal.takeIf { tokenDesarrolloLocalExpiraEnMs > System.currentTimeMillis() }
         }
-        val guardado = identidad.almacen.leerToken()
-        if (guardado != null && guardado.expiraEnMs > System.currentTimeMillis()) return guardado.token
         return null
     }
 
     private suspend fun dispositivoIdActualServidor(): String? =
-        if (usaServidorLocalDeDesarrollo()) {
+        if (tokenSesion() == null && usaServidorLocalDeDesarrollo()) {
             tokenDesarrolloLocalDispositivoId
         } else {
             identidad.config.leer(ClavesConfig.DISPOSITIVO_ID)
         }
 
     private suspend fun usuarioIdActualServidor(): String? =
-        if (usaServidorLocalDeDesarrollo()) {
+        if (tokenSesion() == null && usaServidorLocalDeDesarrollo()) {
             tokenDesarrolloLocalUsuarioId
         } else {
             identidad.config.leer(ClavesConfig.USUARIO_ID)

@@ -208,6 +208,8 @@ class ModuloEmergencias(
     ) {
         jobCuentaRegresivaPreEnvio?.cancel()
         _alertaActiva.value = null // Aún NO está activa hasta que termine la cuenta regresiva
+        // El id se fija desde ahora: si se cancela durante la cuenta regresiva (A-08), el intento queda ligado a esta alerta.
+        idAlertaEnCuenta = java.util.UUID.randomUUID().toString()
         gestorTelemetria.emitirUbicacionGNSSPeriodica()
 
         if (omitirCuentaEnviarYa || segundosCuenta <= 0) {
@@ -217,7 +219,7 @@ class ModuloEmergencias(
         }
 
         detonadorEnCuenta = detonador
-        val idTemporal = java.util.UUID.randomUUID().toString()
+        val idTemporal = idAlertaEnCuenta ?: java.util.UUID.randomUUID().toString()
         _historialEventosAlerta.value = emptyList()
         actualizarHistorialEventoAlerta(idTemporal, null, EstadoAlertaE01.CREADA, "Botón presionado ($detonador)")
         actualizarHistorialEventoAlerta(idTemporal, EstadoAlertaE01.CREADA, EstadoAlertaE01.EN_CUENTA_REGRESIVA, "Esperando ${segundosCuenta}s antes de enviar")
@@ -253,6 +255,7 @@ class ModuloEmergencias(
         val tipo = tipoElegidoPreEnvio
         tipoElegidoPreEnvio = null
         val nuevaAlerta = AlertaEmergencia(
+            idAlerta = idAlertaEnCuenta ?: java.util.UUID.randomUUID().toString(),
             detonador = detonador,
             estadoActual = EstadoAlertaE01.ENVIADA,
             tipoIncidenteId = tipo?.first ?: 0,
@@ -267,6 +270,7 @@ class ModuloEmergencias(
             activa = true
         )
 
+        idAlertaEnCuenta = null
         _alertaActiva.value = nuevaAlerta
         actualizarHistorialEventoAlerta(
             alertaId = nuevaAlerta.idAlerta,
@@ -743,6 +747,81 @@ class ModuloEmergencias(
     }
 
     @Volatile private var tipoElegidoPreEnvio: Pair<Int, String>? = null
+    @Volatile private var idAlertaEnCuenta: String? = null
+
+    private val _avisosRedApoyo = MutableStateFlow<Pair<Int, Int>?>(null)
+
+    /** A-07: avisos a la red de apoyo según el servidor (entregados, total). Null mientras no se consulta. */
+    val avisosRedApoyo: StateFlow<Pair<Int, Int>?> = _avisosRedApoyo.asStateFlow()
+
+    /**
+     * A-07 (CU-22): lee la línea de tiempo del servidor y actualiza los estados con su hora, la unidad asignada
+     * con su distancia y los avisos entregados a la red de apoyo. Si la alerta ya se cerró o se canceló en el
+     * servidor, la termina también en el teléfono.
+     */
+    suspend fun actualizarSeguimientoDesdeServidor() {
+        val alerta = _alertaActiva.value?.takeIf { it.activa } ?: return
+        val linea = servidor?.consultarLineaTiempo(alerta.idAlerta) ?: return
+        val registrados = _historialEventosAlerta.value.filter { it.alertaId == alerta.idAlerta }.map { it.estadoNuevo }.toMutableSet()
+        var unidad: String? = null
+        var corporacion: String? = null
+        var distancia: Double? = null
+        var acuse: Long? = null
+        var ultimo: EstadoAlertaE01? = null
+        var entregados = 0
+        var total = 0
+        fun ms(iso: String?) = iso?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+        fun texto(o: kotlinx.serialization.json.JsonObject?, k: String) =
+            (o?.get(k) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+        linea.eventos.forEach { e ->
+            when (e.tipo) {
+                "CAMBIO_ESTADO" -> {
+                    val estado = e.estadoNuevo?.let { runCatching { EstadoAlertaE01.valueOf(it) }.getOrNull() } ?: return@forEach
+                    ultimo = estado
+                    if (estado == EstadoAlertaE01.ACUSADA) acuse = ms(e.ocurridoEn)
+                    if (registrados.add(estado)) {
+                        _historialEventosAlerta.value = _historialEventosAlerta.value + EventoHistorialAlerta(
+                            alertaId = alerta.idAlerta, estadoAnterior = null, estadoNuevo = estado,
+                            ocurridoEnMs = ms(e.ocurridoEn) ?: System.currentTimeMillis(), detalle = "Servidor"
+                        )
+                    }
+                }
+                "ASIGNACION" -> {
+                    unidad = texto(e.detalle, "unidad") ?: unidad
+                    corporacion = texto(e.detalle, "corporacion") ?: corporacion
+                    distancia = (e.detalle?.get("distanciaM") as? kotlinx.serialization.json.JsonPrimitive)?.content?.toDoubleOrNull() ?: distancia
+                }
+                "NOTIFICACION" -> if (texto(e.detalle, "tipo") == "RED_APOYO") {
+                    total++
+                    if (texto(e.detalle, "estado") in setOf("ENVIADA", "ENTREGADA", "LEIDA")) entregados++
+                }
+            }
+        }
+        if (total > 0) _avisosRedApoyo.value = entregados to total
+        val estadoFinal = ultimo ?: alerta.estadoActual
+        _alertaActiva.update { a -> if (a?.idAlerta == alerta.idAlerta) a.copy(estadoActual = estadoFinal) else a }
+        _vistaSincronizadaAtencion.value = EstadoSeguimientoAtencion(
+            alertaId = alerta.idAlerta,
+            folio = _alertaActiva.value?.folio ?: alerta.folio,
+            estadoActual = estadoFinal,
+            unidadAsignadaClave = unidad,
+            corporacionNombre = corporacion,
+            distanciaUnidadMetros = distancia,
+            horaAcuseMs = acuse,
+            contactosNotificados = entregados,
+            totalContactos = total,
+            circuloNotificado = null
+        )
+        if (estadoFinal == EstadoAlertaE01.CERRADA || estadoFinal == EstadoAlertaE01.CANCELADA) desactivarAlertaEmergencia()
+    }
+
+    /** A-08: id de la alerta activa o, durante la cuenta regresiva, el que tendrá al enviarse. */
+    fun idAlertaEnCurso(): String? = _alertaActiva.value?.idAlerta ?: idAlertaEnCuenta
+
+    /** A-06 «Solo enviar texto»: agrega el relato a la alerta activa sin cambiar su tipo. */
+    fun agregarDescripcion(texto: String) {
+        _alertaActiva.value?.let { _alertaActiva.value = it.copy(descripcionRelato = texto.take(500)) }
+    }
 
     /**
      * A-05 y A-06: tipo de incidente elegido por la persona (o la sugerencia de IA-1 que aceptó).
@@ -764,7 +843,9 @@ class ModuloEmergencias(
     }
 
     fun desactivarAlertaEmergencia() {
+        _avisosRedApoyo.value = null
         tipoElegidoPreEnvio = null
+        idAlertaEnCuenta = null
         jobCuentaRegresivaPreEnvio?.cancel()
         _segundosRestantesPreEnvio.value = null
 

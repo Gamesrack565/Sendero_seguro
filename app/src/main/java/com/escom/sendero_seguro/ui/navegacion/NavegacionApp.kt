@@ -2,6 +2,7 @@ package com.escom.sendero_seguro.ui.navegacion
 
 import android.app.Activity
 import android.content.pm.ApplicationInfo
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -42,6 +44,16 @@ import com.escom.sendero_seguro.emergencias.EstadoRedYMalla
 import com.escom.sendero_seguro.PantallaDiagnosticoModulo2
 import com.escom.sendero_seguro.emergencias.TipoDetonador
 import com.escom.sendero_seguro.identidad.dominio.MiembroEstado
+import com.escom.sendero_seguro.identidad.dominio.ResultadoCancelacion
+import com.escom.sendero_seguro.reportes.TipoReporteDto
+import com.escom.sendero_seguro.ui.mapa.Punto
+import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaAlertaActiva
+import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaCancelarAlerta
+import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaCuentaRegresiva
+import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaDescribirVoz
+import com.escom.sendero_seguro.ui.pantallas.alerta.RedAvisada
+import com.escom.sendero_seguro.ui.pantallas.alerta.aCanal
+import com.escom.sendero_seguro.ui.pantallas.alerta.marcar
 import com.escom.sendero_seguro.identidad.ui.ActivacionViewModel
 import com.escom.sendero_seguro.identidad.ui.AutenticacionViewModel
 import com.escom.sendero_seguro.identidad.ui.CancelacionViewModel
@@ -64,6 +76,7 @@ import com.escom.sendero_seguro.ui.theme.Fondo
 import com.escom.sendero_seguro.ui.theme.RojoTexto
 import com.escom.sendero_seguro.ui.theme.Superficie
 import com.escom.sendero_seguro.ui.theme.TextoSecundario
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private data class Pestana(val pantalla: Pantalla, val etiqueta: String, val icono: ImageVector)
@@ -113,6 +126,11 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
     val estadoAuth by auth.estado.collectAsState()
     val modulo2 = app.emergencias
     val scope = rememberCoroutineScope()
+    // Catálogo local de tipos para la alerta (A-05, A-06); sin señal usa el guardado.
+    val tiposAlerta by produceState(emptyList<TipoReporteDto>()) { value = app.reportes.cargarCatalogoAlertas() }
+
+    // A-08 siempre empieza limpio: sin motivo ni el resultado de una cancelación anterior.
+    val irACancelar = { cancelacion.reiniciar(); nav.navigate(Pantalla.A08.ruta) }
 
     // Cerrar la app desde A-01 («No acepto»).
     LaunchedEffect(estadoAuth.salirDeLaApp) { if (estadoAuth.salirDeLaApp) (context as? Activity)?.finish() }
@@ -207,6 +225,111 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
                 )
             }
 
+            // ---------------------------------------------------------------- Bloque 2 · Alerta (sin barra inferior)
+            composable(Pantalla.A05.ruta) {
+                val segundos by modulo2.segundosRestantesPreEnvio.collectAsState()
+                val alerta by modulo2.alertaActiva.collectAsState()
+                val telemetria by modulo2.flujoTelemetria.collectAsState()
+                var elegido by rememberSaveable { mutableStateOf<Int?>(null) }
+                var aVoz by remember { mutableStateOf(false) }
+                LaunchedEffect(alerta) {
+                    if (alerta?.activa == true) {
+                        nav.navigate((if (aVoz) Pantalla.A06 else Pantalla.A07).ruta) { popUpTo(Pantalla.A04.ruta) }
+                    }
+                }
+                // Atrás no apaga la cuenta regresiva: cancelar requiere PIN o huella (A-08).
+                BackHandler { irACancelar() }
+                PantallaCuentaRegresiva(
+                    segundos = segundos,
+                    precisionM = telemetria?.precision,
+                    tipos = tiposAlerta,
+                    tipoElegido = elegido,
+                    onElegirTipo = { t -> elegido = t.id; modulo2.elegirTipoIncidente(t.id, t.nombre) },
+                    onVoz = {
+                        aVoz = true
+                        modulo2.iniciarCuentaRegresivaYEnvioBase(TipoDetonador.BOTON_SOS, omitirCuentaEnviarYa = true)
+                    },
+                    onEnviarYa = { modulo2.iniciarCuentaRegresivaYEnvioBase(TipoDetonador.BOTON_SOS, omitirCuentaEnviarYa = true) },
+                    onCancelar = { irACancelar() }
+                )
+            }
+            composable(Pantalla.A06.ruta) {
+                val alerta by modulo2.alertaActiva.collectAsState()
+                val irA07 = { nav.navigate(Pantalla.A07.ruta) { popUpTo(Pantalla.A04.ruta) } }
+                BackHandler { irA07() }
+                PantallaDescribirVoz(
+                    canal = alerta?.canalRecepcion?.aCanal() ?: CanalEnvio.EN_COLA,
+                    clasificar = { modulo2.gestorVozPanico.clasificarIncidenteConIA1Local(it) },
+                    tipos = tiposAlerta,
+                    onUsar = { id, nombre, texto -> modulo2.elegirTipoIncidente(id, nombre, texto.ifBlank { null }); irA07() },
+                    onSoloTexto = { texto -> modulo2.agregarDescripcion(texto); irA07() },
+                    onOmitir = { irA07() }
+                )
+            }
+            composable(Pantalla.A07.ruta) {
+                val alerta by modulo2.alertaActiva.collectAsState()
+                val seguimiento by modulo2.vistaSincronizadaAtencion.collectAsState()
+                val historial by modulo2.historialEventosAlerta.collectAsState()
+                val telemetria by modulo2.flujoTelemetria.collectAsState()
+                val contactos by red.contactos.collectAsState()
+                val estadoRed by red.estado.collectAsState()
+                val avisos by modulo2.avisosRedApoyo.collectAsState()
+                BackHandler { irACancelar() }
+                // Estados, unidad y avisos del servidor cada 10 s (CU-22).
+                LaunchedEffect(Unit) {
+                    while (true) { modulo2.actualizarSeguimientoDesdeServidor(); delay(10_000) }
+                }
+                val a = alerta
+                if (a == null || !a.activa) {
+                    LaunchedEffect(Unit) { nav.irA(Pantalla.A04) }
+                } else {
+                    PantallaAlertaActiva(
+                        alerta = a,
+                        seguimiento = seguimiento,
+                        historial = historial,
+                        ubicacion = telemetria?.let { Punto(it.latitud, it.longitud) },
+                        precisionM = telemetria?.precision,
+                        red = RedAvisada(contactos.size, estadoRed.circulo?.nombreGrupo, avisos),
+                        onLlamar911 = { marcar(context, "911") },
+                        onYaEstoyASalvo = { irACancelar() }
+                    )
+                }
+            }
+            composable(Pantalla.A08.ruta) {
+                val estadoCancelacion by cancelacion.estado.collectAsState()
+                LaunchedEffect(estadoCancelacion.resultado) {
+                    when (estadoCancelacion.resultado) {
+                        is ResultadoCancelacion.Cancelada -> {
+                            // Con la alerta enviada SenderoApp ya la detuvo; en la cuenta regresiva se detiene aquí.
+                            modulo2.desactivarAlertaEmergencia()
+                            cancelacion.reiniciar()
+                            nav.irA(Pantalla.A04)
+                        }
+                        is ResultadoCancelacion.NoCancelada -> {
+                            // Mensaje neutro y de vuelta: la alerta sigue (flujo 3a de CU-21).
+                            delay(2500)
+                            cancelacion.reiniciar()
+                            nav.popBackStack()
+                        }
+                        null -> Unit
+                    }
+                }
+                PantallaCancelarAlerta(
+                    estado = estadoCancelacion,
+                    motivos = cancelacion.motivos,
+                    onMotivo = cancelacion::elegirMotivo,
+                    onConfirmarPin = { pin ->
+                        val enviada = modulo2.alertaActiva.value?.activa == true
+                        cancelacion.confirmarConPin(modulo2.idAlertaEnCurso() ?: "", pin, alertaYaEnviada = enviada)
+                    },
+                    onHuella = { ok ->
+                        val enviada = modulo2.alertaActiva.value?.activa == true
+                        cancelacion.confirmarConBiometria(modulo2.idAlertaEnCurso() ?: "", ok, alertaYaEnviada = enviada)
+                    },
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+
             // ---------------------------------------------------------------- Herramientas de prueba (debug)
             composable(Pantalla.HERRAMIENTAS.ruta) {
                 val estadoEnvio by modulo2.estadoEnvioAlerta.collectAsState()
@@ -247,6 +370,7 @@ fun NavegacionApp(nav: NavHostController = rememberNavController()) {
             // Pantallas de los siguientes bloques.
             val hechas = setOf(
                 Pantalla.A01, Pantalla.A02, Pantalla.A03, Pantalla.A04, Pantalla.PIN_NUEVO,
+                Pantalla.A05, Pantalla.A06, Pantalla.A07, Pantalla.A08,
                 Pantalla.HERRAMIENTAS, Pantalla.DIAGNOSTICO, Pantalla.MAPA_P12, Pantalla.REPORTE_P10, Pantalla.GALERIA
             )
             Pantalla.entries.filter { it !in hechas }.forEach { p ->

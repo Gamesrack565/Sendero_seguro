@@ -275,6 +275,9 @@ class CancelacionViewModel(private val p8: ProcesoCancelacion) : ViewModel() {
 
     fun elegirMotivo(m: CancelacionMotivo) = _estado.update { it.copy(motivo = m, retro = Retro()) }
 
+    /** Al abrir A-08 de nuevo se empieza sin motivo ni resultado anterior. */
+    fun reiniciar() { _estado.value = EstadoCancelacion() }
+
     fun confirmarConPin(alertaId: String, pin: String, alertaYaEnviada: Boolean = true) =
         procesar { p8.cancelarConPin(alertaId, _estado.value.motivo, pin, alertaYaEnviada) }
 

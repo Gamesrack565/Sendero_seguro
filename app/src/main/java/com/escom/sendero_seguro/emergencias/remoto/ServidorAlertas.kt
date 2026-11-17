@@ -8,6 +8,7 @@ import com.escom.sendero_seguro.emergencias.TipoDetonador
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -97,7 +98,10 @@ data class LineaTiempoAlertaDto(val alertaId: String, val eventos: List<EventoTi
 @Serializable
 data class EventoTimelineAlertaDto(
     val tipo: String,
-    val estadoNuevo: String? = null
+    val estadoNuevo: String? = null,
+    val ocurridoEn: String? = null,
+    /** ASIGNACION: unidad, corporacion, distanciaM. NOTIFICACION: tipo, canal, estado. */
+    val detalle: JsonObject? = null
 )
 
 interface EmergenciasApi {
@@ -135,6 +139,9 @@ fun interface CanalServidorAlertas {
     suspend fun enviar(alerta: AlertaEmergencia): ResultadoServidor
 
     suspend fun consultarEstado(alertaId: String): String? = null
+
+    /** Línea de tiempo de la alerta vista por quien la emitió (A-07). */
+    suspend fun consultarLineaTiempo(alertaId: String): LineaTiempoAlertaDto? = null
 
     suspend fun reenviarPendiente(payloadJson: String): ResultadoServidor =
         ResultadoServidor.Fallo(null, reintentar = true)
@@ -182,6 +189,12 @@ class ServidorAlertasRetrofit(private val api: EmergenciasApi) : CanalServidorAl
         resultadoRegistro(r)
     } catch (_: IOException) {
         ResultadoServidor.Fallo(null, reintentar = true)
+    }
+
+    override suspend fun consultarLineaTiempo(alertaId: String): LineaTiempoAlertaDto? = try {
+        api.consultarLineaTiempo(alertaId).takeIf { it.isSuccessful }?.body()
+    } catch (_: IOException) {
+        null
     }
 
     override suspend fun consultarEstado(alertaId: String): String? = try {
