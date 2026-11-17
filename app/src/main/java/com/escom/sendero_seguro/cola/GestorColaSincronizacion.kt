@@ -299,6 +299,11 @@ class GestorColaSincronizacion(
             .filter { it.tipoElemento == TipoElementoAlerta.ALERTA_SOS.valor }
     }
 
+    /** A-19: todo lo vigente en cola_alerta (alertas, ubicaciones, cancelaciones…), con su vencimiento. */
+    suspend fun obtenerTodosPendientes(): List<ColaAlertaEntity> = withContext(Dispatchers.IO) {
+        colaAlertaDao.obtenerAlertasPendientes(System.currentTimeMillis())
+    }
+
     suspend fun hayAlertasOTelemetriasPendientes(): Boolean = withContext(Dispatchers.IO) {
         colaAlertaDao.obtenerAlertasPendientes(System.currentTimeMillis()).any {
             it.tipoElemento == TipoElementoAlerta.ALERTA_SOS.valor ||

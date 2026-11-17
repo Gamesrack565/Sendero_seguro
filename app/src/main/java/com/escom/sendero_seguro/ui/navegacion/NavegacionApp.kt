@@ -61,7 +61,6 @@ import com.escom.sendero_seguro.identidad.ui.CancelacionViewModel
 import com.escom.sendero_seguro.identidad.ui.RedApoyoViewModel
 import com.escom.sendero_seguro.identidad.ui.fabricaViewModels
 import com.escom.sendero_seguro.ui.modelo.CanalEnvio
-import com.escom.sendero_seguro.ui.pantallas.PantallaEnConstruccion
 import com.escom.sendero_seguro.ui.pantallas.PantallaGaleria
 import com.escom.sendero_seguro.ui.pantallas.acceso.DialogoOlvide
 import com.escom.sendero_seguro.ui.pantallas.acceso.PantallaAvisoPrivacidad
@@ -101,7 +100,19 @@ import com.escom.sendero_seguro.ui.pantallas.comunidad.PantallaRutaSegura
 import com.escom.sendero_seguro.ui.util.UbicacionLeida
 import com.escom.sendero_seguro.ui.util.distanciaMetros
 import com.escom.sendero_seguro.ui.util.leerUbicacionActual
+import com.escom.sendero_seguro.BuildConfig
+import com.escom.sendero_seguro.cola.ColaAlertaSyncWorker
+import com.escom.sendero_seguro.cola.GestorColaSincronizacion
+import com.escom.sendero_seguro.emergencias.GestorColaLocalSQLiteER06
+import com.escom.sendero_seguro.emergencias.PaqueteMalla
+import com.escom.sendero_seguro.ui.pantallas.operacion.Pendiente
+import com.escom.sendero_seguro.ui.pantallas.operacion.PantallaConectividad
+import com.escom.sendero_seguro.ui.pantallas.operacion.PantallaModoOperador
+import com.escom.sendero_seguro.ui.pantallas.operacion.detalleReporte
 import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import retrofit2.HttpException
@@ -171,6 +182,19 @@ fun NavegacionApp(
     val configActivacion by activacion.config.collectAsState()
     LaunchedEffect(configActivacion.cuentaRegresivaSeg) { modulo2.segundosCuentaRegresivaConfig = configActivacion.cuentaRegresivaSeg }
 
+    // A-14: si quien usa la app es Operador y llega un paquete de la malla sin internet, se abre el modo operador.
+    val colaMalla = remember { GestorColaLocalSQLiteER06(context) }
+    LaunchedEffect(estadoAuth.usuario?.rol) {
+        if (estadoAuth.usuario?.rol != UsuarioRol.OPERADOR) return@LaunchedEffect
+        modulo2.flujoPaquetesMalla.collect { pkt ->
+            if (pkt.esAcuseOperador || modulo2.estadoRedYMalla.value.conectadoAInternet) return@collect
+            if (pkt.emisorId == estadoAuth.usuario?.id) return@collect
+            val u = leerUbicacionActual(context)?.punto ?: return@collect
+            modulo2.gestorMalla.mostrarAlertaAdHocModoOperador(pkt, u.latitud, u.longitud)
+            nav.navigate(Pantalla.A14.ruta) { launchSingleTop = true }
+        }
+    }
+
     // A-08 siempre empieza limpio: sin motivo ni el resultado de una cancelación anterior.
     val irACancelar = { cancelacion.reiniciar(); nav.navigate(Pantalla.A08.ruta) }
 
@@ -182,7 +206,7 @@ fun NavegacionApp(
         containerColor = when (actual) {
             Pantalla.A05, Pantalla.A06 -> RojoOscuro
             Pantalla.A07 -> Rojo
-            Pantalla.A03, Pantalla.A13 -> Tinta
+            Pantalla.A03, Pantalla.A13, Pantalla.A14 -> Tinta
             else -> Fondo
         },
         // Las pantallas de alerta no tienen barra inferior, para evitar toques accidentales.
@@ -614,6 +638,72 @@ fun NavegacionApp(
                 )
             }
 
+            // ---------------------------------------------------------------- Bloque 5 · Operación y conectividad
+            composable(Pantalla.A14.ruta) {
+                val vista by modulo2.gestorMalla.alertaModoOperadorAdHoc.collectAsState()
+                val redMalla by modulo2.estadoRedYMalla.collectAsState()
+                val v = vista
+                if (v == null) {
+                    LaunchedEffect(Unit) { nav.popBackStack() }
+                } else {
+                    PantallaModoOperador(
+                        vista = v,
+                        unidad = null,
+                        hayInternet = redMalla.conectadoAInternet,
+                        onAcusar = {
+                            // Acuse por la malla y en cola_alerta (vigencia 2 h) para sincronizarlo al recuperar señal.
+                            val acuse = modulo2.gestorMalla.acusarYAcudirOfflinePorMalla(v.paquete, estadoAuth.usuario?.id ?: "OPERADOR")
+                            colaMalla.encolarPendienteConVigencia(acuse.packetId, acuse.packetId.toByteArray(), tipoElemento = "ACUSE", ultimoCanal = "MALLA")
+                        },
+                        onVolver = { nav.popBackStack() }
+                    )
+                }
+            }
+            composable(Pantalla.A19.ruta) {
+                val redMalla by modulo2.estadoRedYMalla.collectAsState()
+                val pendMalla by colaMalla.pendientesCola.collectAsState()
+                val colaRoom = remember { GestorColaSincronizacion(context) }
+                var pendientes by remember { mutableStateOf<List<Pendiente>>(emptyList()) }
+                var reintentando by remember { mutableStateOf(false) }
+                val cargar: suspend () -> Unit = {
+                    colaMalla.refrescarFlujoPendientes()
+                    val alertas = colaRoom.obtenerTodosPendientes().map {
+                        Pendiente(it.tipoElemento, tituloPendiente(it.tipoElemento), it.alertaId.take(8) + " · ${it.reintentos} reintentos", it.expiraEn)
+                    }
+                    val reportes = colaRoom.obtenerReportesPendientes().map { r ->
+                        val desc = runCatching {
+                            (Json.parseToJsonElement(r.datos).jsonObject["descripcion"] as? JsonPrimitive)?.content
+                        }.getOrNull().orEmpty()
+                        val fotos = r.rutasEvidencia?.split(';', ',')?.count { it.isNotBlank() } ?: 0
+                        Pendiente("REPORTE", "Reporte «${desc.take(28)}${if (desc.length > 28) "…" else ""}»", detalleReporte(fotos, r.tamanoBytes, r.reintentos), r.expiraEn)
+                    }
+                    pendientes = alertas + reportes
+                }
+                LaunchedEffect(Unit) { cargar() }
+                val todos = pendientes + pendMalla.filter { m -> pendientes.none { it.detalle.startsWith(m.alertaId.take(8)) } }.map {
+                    Pendiente(it.tipoElemento, tituloPendiente(it.tipoElemento), it.alertaId.take(14) + " · ${it.reintentos} reintentos", it.expiraEn)
+                }
+                PantallaConectividad(
+                    red = redMalla,
+                    canal = redMalla.canal(),
+                    smsDisponible = BuildConfig.SMS_GATEWAY_NUMBER.isNotBlank(),
+                    pendientes = todos,
+                    reintentando = reintentando,
+                    onReintentar = {
+                        scope.launch {
+                            reintentando = true
+                            ColaAlertaSyncWorker.programarInmediato(context)
+                            runCatching { modulo2.sincronizarAlertasEnCola() }
+                            runCatching { app.reportes.sincronizarColaOffline() }
+                            runCatching { app.identidad.sincronizarPendientes() }
+                            cargar()
+                            reintentando = false
+                        }
+                    },
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+
             // ---------------------------------------------------------------- Herramientas de prueba (debug)
             composable(Pantalla.HERRAMIENTAS.ruta) {
                 val estadoEnvio by modulo2.estadoEnvioAlerta.collectAsState()
@@ -631,6 +721,19 @@ fun NavegacionApp(
                     onReporteP10 = { nav.navigate(Pantalla.REPORTE_P10.ruta) },
                     onGaleria = { nav.navigate(Pantalla.GALERIA.ruta) },
                     onAvisoRed = { enlace -> avisoRed = AvisoRedApoyo(enlace); nav.navigate(Pantalla.A13.ruta) },
+                    onSimularOperador = {
+                        // Paquete de prueba a ~180 m al noreste para revisar A-14 sin dos teléfonos.
+                        scope.launch {
+                            val u = leerUbicacionActual(context)?.punto ?: Punto(19.5045, -99.1469)
+                            val pkt = PaqueteMalla(
+                                emisorId = "prueba", nombreEmisor = "Persona de prueba", tipoIncidenteNombre = "Persona sospechosa siguiéndome",
+                                descripcionCorta = "Paquete de prueba (herramientas)", latitud = u.latitud + 0.0011, longitud = u.longitud + 0.0011,
+                                nivelBateria = 64, saltosRecorridos = 3
+                            )
+                            modulo2.gestorMalla.mostrarAlertaAdHocModoOperador(pkt, u.latitud, u.longitud)
+                            nav.navigate(Pantalla.A14.ruta)
+                        }
+                    },
                     onVolver = { nav.popBackStack() }
                 )
             }
@@ -651,27 +754,6 @@ fun NavegacionApp(
                 )
             }
             composable(Pantalla.GALERIA.ruta) { PantallaGaleria(onVolver = { nav.popBackStack() }) }
-
-            // Pantallas de los siguientes bloques.
-            val hechas = setOf(
-                Pantalla.A01, Pantalla.A02, Pantalla.A03, Pantalla.A04, Pantalla.PIN_NUEVO,
-                Pantalla.A05, Pantalla.A06, Pantalla.A07, Pantalla.A08,
-                Pantalla.A09, Pantalla.A10, Pantalla.A11, Pantalla.A12, Pantalla.A13,
-                Pantalla.A15, Pantalla.A16, Pantalla.A17, Pantalla.A18,
-                Pantalla.HERRAMIENTAS, Pantalla.DIAGNOSTICO, Pantalla.MAPA_P12, Pantalla.REPORTE_P10, Pantalla.GALERIA
-            )
-            Pantalla.entries.filter { it !in hechas }.forEach { p ->
-                composable(p.ruta) {
-                    val extra = emptyList<Pair<String, () -> Unit>>()
-                    PantallaEnConstruccion(
-                        pantalla = p,
-                        siguientes = SiguientesPantallas[p].orEmpty(),
-                        onIr = { destino -> nav.irA(destino) },
-                        onVolver = if (p.conBarra) null else ({ nav.popBackStack() }),
-                        extra = extra
-                    )
-                }
-            }
         }
     }
 }
@@ -683,6 +765,15 @@ internal fun NavHostController.irA(destino: Pantalla) {
     } else {
         navigate(destino.ruta)
     }
+}
+
+private fun tituloPendiente(tipo: String): String = when (tipo) {
+    "ALERTA", "ALERTA_SOS" -> "Alerta"
+    "UBICACION", "TELEMETRIA" -> "Ubicación de la alerta"
+    "CANCELACION" -> "Cancelación de alerta"
+    "ACUSE" -> "Acuse de alerta"
+    "MALLA" -> "Paquete de la malla"
+    else -> tipo.lowercase().replaceFirstChar { it.uppercase() }
 }
 
 private val PuntoSaver = androidx.compose.runtime.saveable.Saver<Punto?, DoubleArray>(

@@ -564,7 +564,8 @@ private fun LineaEstados(historial: List<EventoHistorialAlerta>, seguimiento: Es
     pasos.forEach { (estado, texto) ->
         val hora = horas[estado] ?: if (estado == EstadoAlertaE01.ACUSADA) seguimiento?.horaAcuseMs else null
         val detalle = when (estado) {
-            EstadoAlertaE01.ENVIADA -> seguimiento?.corporacionNombre?.let { " a $it" }
+            // La corporación solo se muestra cuando la confirma el servidor (asignación recibida).
+            EstadoAlertaE01.ENVIADA -> seguimiento?.takeIf { it.unidadAsignadaClave != null }?.corporacionNombre?.let { " a $it" }
             EstadoAlertaE01.ASIGNADA -> seguimiento?.unidadAsignadaClave?.let { u ->
                 " $u" + (seguimiento.distanciaUnidadMetros?.let { " (${distanciaTexto(it)})" } ?: "")
             }

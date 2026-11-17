@@ -103,7 +103,7 @@ fun PantallaInicio(
         Spacer(Modifier.size(12.dp))
         val red = buildString {
             append("${estado.contactos} contactos")
-            if (estado.circulo != null) append(" · Círculo ${estado.circulo} (${estado.integrantesCirculo} integrantes)")
+            if (estado.circulo != null) append(" · Círculo ${estado.circulo} (${estado.integrantesCirculo} integrante${if (estado.integrantesCirculo == 1) "" else "s"})")
         }
         TarjetaAcceso("Mi red de apoyo", Icons.Outlined.Groups, onRedApoyo, subtitulo = red, destacada = true)
     }

@@ -40,18 +40,3 @@ enum class Pantalla(val id: String, val titulo: String, val cu: String, val conB
         fun deRuta(ruta: String?): Pantalla? = entries.firstOrNull { it.ruta == ruta }
     }
 }
-
-/** Siguientes pantallas según el mapa de navegación de la app. */
-val SiguientesPantallas: Map<Pantalla, List<Pantalla>> = mapOf(
-    Pantalla.A03 to listOf(Pantalla.A04, Pantalla.A01),
-    Pantalla.A01 to listOf(Pantalla.A02),
-    Pantalla.A02 to listOf(Pantalla.A04),
-    Pantalla.A05 to listOf(Pantalla.A06, Pantalla.A07),
-    Pantalla.A06 to listOf(Pantalla.A07),
-    Pantalla.A07 to listOf(Pantalla.A08),
-    Pantalla.A08 to listOf(Pantalla.A04),
-    Pantalla.A09 to listOf(Pantalla.A10),
-    Pantalla.A11 to listOf(Pantalla.A12),
-    Pantalla.A16 to listOf(Pantalla.A15),
-    Pantalla.A17 to listOf(Pantalla.A18)
-)

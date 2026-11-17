@@ -39,6 +39,7 @@ fun PantallaHerramientas(
     onReporteP10: () -> Unit,
     onGaleria: () -> Unit,
     onAvisoRed: (enlace: String) -> Unit,
+    onSimularOperador: () -> Unit,
     onVolver: () -> Unit
 ) {
     var formulario by remember { mutableStateOf(false) }
@@ -57,6 +58,7 @@ fun PantallaHerramientas(
             }
         }
         TarjetaAcceso("Diagnóstico P5.1 / P6 / P7", Icons.Outlined.BugReport, onDiagnostico)
+        TarjetaAcceso("A-14 con un paquete de malla simulado", Icons.Outlined.Send, onSimularOperador, subtitulo = "Modo operador sin dos teléfonos")
         TituloSeccion("Red de apoyo")
         Text(
             "A-13 se abre con el push del servidor. Para probarla, pega el enlace de ubicación de una alerta (POST /dev/alertas lo devuelve).",
