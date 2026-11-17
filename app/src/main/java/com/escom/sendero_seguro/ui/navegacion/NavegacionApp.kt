@@ -88,7 +88,26 @@ import com.escom.sendero_seguro.ui.theme.Tinta
 import com.escom.sendero_seguro.ui.theme.RojoTexto
 import com.escom.sendero_seguro.ui.theme.Superficie
 import com.escom.sendero_seguro.ui.theme.TextoSecundario
+import com.escom.sendero_seguro.emergencias.ComparativaRutasP7
+import com.escom.sendero_seguro.emergencias.PuntoRuta
+import com.escom.sendero_seguro.reportes.ReporteEntradaDto
+import com.escom.sendero_seguro.reportes.ResultadoEnvioReporte
+import com.escom.sendero_seguro.reportes.guardarEvidenciaReporte
+import com.escom.sendero_seguro.ui.pantallas.comunidad.EnvioReporte
+import com.escom.sendero_seguro.ui.pantallas.comunidad.PantallaFeed
+import com.escom.sendero_seguro.ui.pantallas.comunidad.PantallaLevantarReporte
+import com.escom.sendero_seguro.ui.pantallas.comunidad.PantallaMapaCalor
+import com.escom.sendero_seguro.ui.pantallas.comunidad.PantallaRutaSegura
+import com.escom.sendero_seguro.ui.util.UbicacionLeida
+import com.escom.sendero_seguro.ui.util.distanciaMetros
+import com.escom.sendero_seguro.ui.util.leerUbicacionActual
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import retrofit2.HttpException
+import java.io.IOException
+import java.time.Instant
+import java.util.UUID
 import kotlinx.coroutines.launch
 
 private data class Pestana(val pantalla: Pantalla, val etiqueta: String, val icono: ImageVector)
@@ -451,6 +470,150 @@ fun NavegacionApp(
                 if (aviso == null) LaunchedEffect(Unit) { nav.popBackStack() } else PantallaAvisoRedApoyo(aviso)
             }
 
+            // ---------------------------------------------------------------- Bloque 4 · Comunidad
+            composable(Pantalla.A15.ruta) {
+                var tipos by remember { mutableStateOf<List<TipoReporteDto>>(emptyList()) }
+                var version by remember { mutableStateOf<Int?>(null) }
+                var ubicacion by remember { mutableStateOf<UbicacionLeida?>(null) }
+                LaunchedEffect(Unit) {
+                    runCatching { app.reportes.cargarCatalogo() }.getOrNull()?.let { d ->
+                        version = d.catalogo.versionCatalogoId
+                        tipos = d.catalogo.tipos.filter { it.activo && (it.aplicaA == "REPORTE" || it.aplicaA == "AMBOS") }
+                    }
+                    ubicacion = leerUbicacionActual(context)
+                }
+                PantallaLevantarReporte(
+                    tipos = tipos,
+                    ubicacion = ubicacion?.punto,
+                    precisionM = ubicacion?.precisionM,
+                    clasificar = { modulo2.gestorVozPanico.clasificarIncidenteConIA1Local(it) },
+                    guardarFoto = { uri -> withContext(Dispatchers.IO) { guardarEvidenciaReporte(context, uri) } },
+                    onEnviar = { tipoId, descripcion, anonimo, fotos ->
+                        val u = ubicacion
+                        val v = version
+                        if (u == null || v == null) EnvioReporte.Error("Falta tu ubicación o el catálogo; revisa el permiso de ubicación.")
+                        else try {
+                            val reporte = ReporteEntradaDto(
+                                id = UUID.randomUUID().toString(), tipoIncidenteId = tipoId, versionCatalogoId = v,
+                                descripcion = descripcion, latitud = u.punto.latitud, longitud = u.punto.longitud,
+                                precisionM = u.precisionM?.toDouble(), esAnonimo = anonimo, creadoEn = Instant.now().toString()
+                            )
+                            when (val r = app.reportes.enviarOEncolar(reporte, fotos)) {
+                                is ResultadoEnvioReporte.Recibido -> EnvioReporte.Recibido(r.reporte.folio, r.reporte.estado)
+                                is ResultadoEnvioReporte.EnCola -> EnvioReporte.EnCola
+                            }
+                        } catch (e: HttpException) {
+                            EnvioReporte.Error("El servidor no aceptó el reporte (${e.code()}). Revisa la descripción y el tipo.")
+                        } catch (e: IOException) {
+                            EnvioReporte.Error(e.localizedMessage ?: "No se pudo guardar el reporte.")
+                        }
+                    },
+                    onListo = {
+                        // Si se abrió desde el feed se regresa a él; desde A-04 se abre la pestaña Reportes.
+                        if (!nav.popBackStack(Pantalla.A16.ruta, inclusive = false)) {
+                            nav.navigate(Pantalla.A16.ruta) { popUpTo(Pantalla.A04.ruta); launchSingleTop = true }
+                        }
+                    },
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+            composable(Pantalla.A16.ruta) {
+                val feed by app.reportes.feedPublico.collectAsState()
+                var cargando by remember { mutableStateOf(false) }
+                var error by remember { mutableStateOf<String?>(null) }
+                var ubicacion by remember { mutableStateOf<UbicacionLeida?>(null) }
+                PantallaFeed(
+                    reportes = feed?.reportes.orEmpty(),
+                    desdeCache = feed?.desdeCache == true,
+                    guardadoEnMs = feed?.guardadoEn,
+                    cargando = cargando,
+                    error = error,
+                    miUbicacion = ubicacion?.punto,
+                    onCargar = {
+                        scope.launch {
+                            cargando = true; error = null
+                            try { app.reportes.cargarFeedPublico() } catch (e: Exception) { error = "No se pudieron cargar los reportes." }
+                            cargando = false
+                            ubicacion = leerUbicacionActual(context)
+                        }
+                    },
+                    onNuevo = { nav.navigate(Pantalla.A15.ruta) }
+                )
+            }
+            composable(Pantalla.A17.ruta) {
+                val mapas by app.mapas.estado.collectAsState()
+                var ubicacion by remember { mutableStateOf<UbicacionLeida?>(null) }
+                PantallaMapaCalor(
+                    capa = mapas.capaRiesgo,
+                    desdeCacheEnMs = mapas.descargadaCapaEn,
+                    miUbicacion = ubicacion?.punto,
+                    actualizando = mapas.sincronizando,
+                    onActualizar = {
+                        scope.launch {
+                            app.mapas.cargarCacheLocal()
+                            ubicacion = leerUbicacionActual(context)
+                            runCatching { app.mapas.sincronizar() }
+                        }
+                    },
+                    onEvitar = { nav.navigate(Pantalla.A18.ruta) }
+                )
+            }
+            composable(Pantalla.A18.ruta) {
+                var origen by remember { mutableStateOf<UbicacionLeida?>(null) }
+                var destino by rememberSaveable(stateSaver = PuntoSaver) { mutableStateOf<Punto?>(null) }
+                var nombreDestino by rememberSaveable { mutableStateOf("") }
+                var rutas by remember { mutableStateOf<ComparativaRutasP7?>(null) }
+                var calculando by remember { mutableStateOf(false) }
+                var error by remember { mutableStateOf<String?>(null) }
+                var siguiendo by remember { mutableStateOf(false) }
+                var restante by remember { mutableStateOf<Double?>(null) }
+                LaunchedEffect(Unit) {
+                    app.mapas.cargarCacheLocal()
+                    origen = leerUbicacionActual(context)
+                    if (origen == null) error = "Activa la ubicación para calcular la ruta."
+                }
+                // Al elegir destino se calculan las dos rutas en el teléfono: peso = distancia·(1+α·riesgo).
+                LaunchedEffect(destino, origen) {
+                    val o = origen?.punto ?: return@LaunchedEffect
+                    val d = destino ?: return@LaunchedEffect
+                    calculando = true; error = null
+                    val grafo = runCatching { app.mapas.obtenerGrafoOfflineP7() }.getOrNull()
+                    rutas = runCatching {
+                        withContext(Dispatchers.Default) {
+                            val gestor = modulo2.gestorCaminataSegura
+                            if (grafo != null) gestor.calcularRutasEnDispositivoOffline(PuntoRuta(o.latitud, o.longitud), PuntoRuta(d.latitud, d.longitud), grafo.aristas, grafo.versionCapaRiesgo)
+                            else gestor.calcularRutasEnDispositivoOffline(PuntoRuta(o.latitud, o.longitud), PuntoRuta(d.latitud, d.longitud))
+                        }
+                    }.onFailure { error = "No hay ruta en el grafo de calles de esta zona." }.getOrNull()
+                    calculando = false
+                }
+                LaunchedEffect(siguiendo) {
+                    while (siguiendo) {
+                        leerUbicacionActual(context)?.let { u ->
+                            origen = u
+                            destino?.let { d -> restante = distanciaMetros(u.punto, d) }
+                        }
+                        delay(5_000)
+                    }
+                }
+                PantallaRutaSegura(
+                    origen = origen?.punto,
+                    precisionM = origen?.precisionM,
+                    destino = destino,
+                    nombreDestino = nombreDestino,
+                    rutas = rutas,
+                    calculando = calculando,
+                    error = error,
+                    siguiendo = siguiendo,
+                    restanteM = restante,
+                    onNombreDestino = { nombreDestino = it },
+                    onDestino = { destino = it; if (nombreDestino.isBlank()) nombreDestino = "Punto en el mapa" },
+                    onIniciar = { siguiendo = true },
+                    onTerminar = { siguiendo = false; restante = null },
+                    onVolver = { nav.popBackStack() }
+                )
+            }
+
             // ---------------------------------------------------------------- Herramientas de prueba (debug)
             composable(Pantalla.HERRAMIENTAS.ruta) {
                 val estadoEnvio by modulo2.estadoEnvioAlerta.collectAsState()
@@ -494,6 +657,7 @@ fun NavegacionApp(
                 Pantalla.A01, Pantalla.A02, Pantalla.A03, Pantalla.A04, Pantalla.PIN_NUEVO,
                 Pantalla.A05, Pantalla.A06, Pantalla.A07, Pantalla.A08,
                 Pantalla.A09, Pantalla.A10, Pantalla.A11, Pantalla.A12, Pantalla.A13,
+                Pantalla.A15, Pantalla.A16, Pantalla.A17, Pantalla.A18,
                 Pantalla.HERRAMIENTAS, Pantalla.DIAGNOSTICO, Pantalla.MAPA_P12, Pantalla.REPORTE_P10, Pantalla.GALERIA
             )
             Pantalla.entries.filter { it !in hechas }.forEach { p ->
@@ -520,6 +684,11 @@ internal fun NavHostController.irA(destino: Pantalla) {
         navigate(destino.ruta)
     }
 }
+
+private val PuntoSaver = androidx.compose.runtime.saveable.Saver<Punto?, DoubleArray>(
+    save = { it?.let { p -> doubleArrayOf(p.latitud, p.longitud) } },
+    restore = { Punto(it[0], it[1]) }
+)
 
 private fun NavHostController.irAPestana(destino: Pantalla) {
     navigate(destino.ruta) {
