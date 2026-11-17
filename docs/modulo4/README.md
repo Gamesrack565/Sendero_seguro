@@ -38,7 +38,7 @@ Lo que hace el servidor con una alerta, paso por paso. Todo esto ya está implem
 3. **Se avisa.** El operador de esa unidad recibe un push prioritario y los demás operadores de la corporación uno informativo. Al mismo tiempo, la red de apoyo de la persona (contactos de confianza y círculo) recibe un push o un SMS con el enlace de ubicación.
 4. **La consola lo ve en vivo.** Por WebSocket llegan la alerta nueva, su ubicación y cada cambio. La red de apoyo sigue la ubicación con su enlace, sin cuenta.
 5. **Acuse o escalamiento.** Si el operador acusa a tiempo, se detiene el plazo. Sin señal, el teléfono del operador guarda el acuse y lo manda en `/sync/lote` al volver internet, con la hora en que lo dio. Si no, cada 5 segundos el servidor revisa los plazos vencidos y manda la alerta al siguiente nivel de su regla (otra corporación, otro operador o el coordinador del círculo), y avisa a los Administradores.
-6. **Atención y cierre.** El operador la pasa a `EN_ATENCION`, `ATENDIDA` y `CERRADA`. La persona recibe un aviso en cada paso; al cerrar se liberan las unidades, se apaga el enlace y la red de apoyo recibe el aviso de cierre. Si la persona cancela, pasa lo mismo, salvo con el PIN de coacción, donde la alerta sigue activa en silencio.
+6. **Atención y cierre.** El operador la pasa a `EN_ATENCION`, `ATENDIDA` y `CERRADA`. La persona recibe un aviso en cada paso; al cerrar se liberan las unidades, se apaga el enlace y la red de apoyo recibe el aviso de cierre. Si la persona cancela, pasa lo mismo. Un PIN que no coincide no cancela: la alerta sigue activa y se marca como posible coacción.
 7. **Queda el registro.** Cada paso queda en la historia de la alerta y en la bitácora encadenada. De ahí salen la línea de tiempo, el historial de cada persona y las estadísticas del tablero.
 
 Si un aviso no se puede entregar, el servidor lo reintenta con esperas cada vez más largas. Si aun así falla, avisa a los Administradores y la consola lo muestra.
@@ -136,7 +136,7 @@ https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v
 - **Ya está todo configurado:** base de datos, llaves, push con Firebase, SMS con el celular pasarela y almacén de archivos en Azure Blob Storage. El deploy ya está hecho y se actualiza a mano, solo después de que pasan las pruebas (`:server:test`).
 - **Es igual que en local, con estas diferencias:** no hay rutas `/dev` ni cuentas de prueba (no hay `POST /dev/token`; las cuentas se crean con `POST /auth/registro`); los avisos salen de verdad (push por Firebase y SMS por el celular pasarela); y el WebSocket va con `wss://` en vez de `ws://`.
 - **Las pruebas del día a día se hacen en local**, no en la nube: en la nube cada alerta manda SMS y push reales.
-- **Prueba completa en la nube:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1`. Crea cuentas de prueba y recorre cuentas, alertas por internet, ubicación en vivo, cancelación, PIN de coacción, relevo de la malla, cola sin señal, historial, archivos y, si se le da la contraseña de la base, la consola (lista, detalle, línea de tiempo, estadísticas, bitácora y tiempo real). Al final cancela las alertas y da de baja las cuentas. Si se le da un número, ese número recibe los SMS de la red de apoyo de la primera alerta. `pruebas-nube\probar-cuentas.ps1` prueba solo las cuentas.
+- **Prueba completa en la nube:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1`. Crea cuentas de prueba y recorre cuentas, alertas por internet, ubicación en vivo, cancelación, posible coacción, relevo de la malla, cola sin señal, historial, archivos y, si se le da la contraseña de la base, la consola (lista, detalle, línea de tiempo, estadísticas, bitácora y tiempo real). Al final cancela las alertas y da de baja las cuentas. Si se le da un número, ese número recibe los SMS de la red de apoyo de la primera alerta. `pruebas-nube\probar-cuentas.ps1` prueba solo las cuentas.
 - **Prueba de la administración y la comunidad:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-unidades-y-comunidad.ps1`. Pide la contraseña de la base. Crea una unidad de prueba y un operador, y recorre usuarios, turno, acuse y atención de punta a punta, el acuse y la cancelación por la cola sin señal, el catálogo (con un borrador que descarta), trayectos, reportes, moderación, identidad protegida, feed, mapa de calor, ruta segura y mapas. Al final da de baja la unidad y las cuentas y retira los reportes.
 - **Primer Administrador:** `pruebas-nube\crear-administrador.ps1` (ver [Administración](#administración)).
 - **Las llaves de la nube no están en el repo** (base de datos, JWT, enlaces, autor de los reportes anónimos, Firebase, SMS y el token SAS del almacén de archivos). Viven en las variables de entorno de Azure. Un `.json` de Firebase, una contraseña o un token que se suba al repo queda expuesto en el historial de Git.
@@ -183,7 +183,7 @@ Lo que la plataforma ofrece para usarse desde otras partes del sistema, qué hac
 
 **Dispersión**
 - `dispersion.despachar(alertaId)`: para una alerta ya guardada. Canaliza, asigna la unidad más cercana, avisa a la red de apoyo y crea el enlace de ubicación. Regresa de inmediato y corre aparte (detalle en [Dispersión](#dispersión)). Si una alerta se queda `ENVIADA` sin despachar, la revisión periódica la despacha.
-- `dispersion.cancelada(alertaId)`: para una alerta que ya quedó `CANCELADA`. Avisa a los operadores asignados y a la red de apoyo, libera las unidades y apaga el enlace. Con el PIN de coacción no aplica, porque la alerta sigue activa en silencio.
+- `dispersion.cancelada(alertaId)`: para una alerta que ya quedó `CANCELADA`. Avisa a los operadores asignados y a la red de apoyo, libera las unidades y apaga el enlace. Con un PIN que no coincide no aplica, porque la alerta sigue activa.
 
 **Alertas por SMS**
 - `RegistroAlertasSms` (`pasarela/RecepcionSms.kt`) es la interfaz por la que la pasarela entrega una alerta que llegó por SMS y todavía no existe. La implementa `RegistroAlertas.registroSms` (`alertas/`): inserta la alerta con `canal_recepcion = SMS` y un id que empieza con el id corto del SMS, y no despacha (la pasarela despacha después).
@@ -262,7 +262,7 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 **Cancelación (P8)**
 - `POST /alertas/{id}/cancelaciones`, solo de quien envió la alerta. El PIN se revisa en el teléfono.
 - `exitoso: true`: la alerta pasa a `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`.
-- `exitoso: false` (el PIN no coincidió): se toma como posible coacción. La alerta sigue activa, la consola ve la marca y a la persona se le muestra como cancelada.
+- `exitoso: false` (el PIN no coincidió): se toma como posible coacción. La alerta sigue activa, la consola ve la marca y la persona sigue viendo su alerta activa (flujo 3a de CU-21).
 - Reenviar el mismo intento no lo duplica, y si la alerta ya terminó, el intento se guarda sin cambiar nada.
 - Si la alerta llegó antes por la malla o por SMS (en el servidor tiene otro UUID con el mismo id corto), se cancela igual con el id del teléfono.
 
@@ -270,9 +270,8 @@ Qué trae cada push y qué debe abrir la app: [Qué trae cada push](#qué-trae-c
 - La pantalla A-08 usa `CancelacionViewModel` con el `idAlerta` de `SenderoApp.emergencias.alertaActiva`.
 - Al cancelar con PIN o huella, `SenderoApp` detiene la alerta del Módulo 2 (GPS, envío de ubicaciones y malla). Un PIN que no coincide no la detiene.
 - Sin señal, la cancelación queda en `cola_alerta` (tipo `CANCELACION`) y el intento fallido en `config_local`. `SenderoApp` los manda al abrir la app y cada vez que vuelve internet (`ModuloIdentidad.sincronizarPendientes`). Si el servidor responde que la alerta no existe, la cancelación se conserva hasta que vence (72 h), porque la alerta puede venir en camino.
-- PIN de coacción (P8): la persona puede crear un segundo PIN, distinto al de cancelación (`ProcesoAutenticacion.crearPinCoaccion`, `quitarPinCoaccion`, `tienePinCoaccion`). Su hash se guarda en el Keystore (`pin_coaccion_hash`).
-- Si se escribe el PIN de coacción, la pantalla muestra la alerta como cancelada, pero se manda al servidor un intento con `exitoso: false`. `SenderoApp` recibe `CoaccionSilenciosa` y `ModuloEmergencias.activarModoCoaccionSilencioso()` deja la alerta activa en modo silencioso. Si estaba en la cuenta regresiva, la alerta se activa en ese momento. Sin señal, el intento se guarda y se manda después.
-- `app/src/test/.../identidad/ProcesosTest.kt` prueba la cola sin señal y el PIN de coacción.
+- Un PIN que no coincide manda al servidor un intento con `exitoso: false`; la pantalla muestra un mensaje neutro y la alerta sigue activa.
+- `app/src/test/.../identidad/ProcesosTest.kt` prueba la cola sin señal y el intento fallido (posible coacción).
 
 ## Registro de alertas
 
@@ -322,7 +321,7 @@ Al asignar, el operador de la unidad recibe un aviso `ALERTA_PRIORITARIA` y los 
 - los contactos de confianza activos y confirmados, por su canal preferido (si el canal es push, a su cuenta);
 - los integrantes y el coordinador de los círculos de la persona, por push.
 
-Cada persona recibe un solo aviso. Los contactos `SOLO_AVISO` no reciben el enlace. Al cerrar la alerta, el enlace se apaga y la red de apoyo recibe un aviso `CIERRE`. Cuando una alerta se marca como `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`, se avisa a los operadores asignados y a la red de apoyo, se liberan las unidades y se apaga el enlace. Con el PIN de coacción no se llama, porque la alerta sigue en silencio.
+Cada persona recibe un solo aviso. Los contactos `SOLO_AVISO` no reciben el enlace. Al cerrar la alerta, el enlace se apaga y la red de apoyo recibe un aviso `CIERRE`. Cuando una alerta se marca como `CANCELADA` y se llama a `dispersion.cancelada(alertaId)`, se avisa a los operadores asignados y a la red de apoyo, se liberan las unidades y se apaga el enlace. Con un PIN que no coincide no se llama, porque la alerta sigue activa.
 
 **Enlace de ubicación.** `GET /api/v1/enlace/{token}` no pide sesión. Muestra el primer nombre, el estado en palabras y la última ubicación (con velocidad, rumbo y batería), sin datos del perfil. Si la alerta ya terminó responde `410`. La base solo guarda el SHA-256 del token; el token se calcula con `ENLACE_SECRETO`, así que una copia de la base no basta para abrir enlaces.
 
@@ -345,12 +344,12 @@ Necesitan `Authorization: Bearer <JWT>`. En local el token sale de `POST /api/v1
 | Ruta | Quién | Qué hace |
 |---|---|---|
 | `GET /alertas` | Operador, Administrador | Lista con `estado` (por ejemplo `ACTIVAS` o `ASIGNADA,ESCALADA`), `desde`, `hasta`, `limite` y `cursor`. El operador solo ve las alertas que tuvieron asignada a su unidad. |
-| `GET /alertas/{id}` | Operador, Administrador y el emisor | Detalle. El emisor no recibe los datos de la consola y, si canceló con el PIN de coacción, la ve como `CANCELADA`. |
+| `GET /alertas/{id}` | Operador, Administrador y el emisor | Detalle. El emisor no recibe los datos de la consola, ni la marca de posible coacción. |
 | `POST /alertas/{id}/acuse` | Operador de la unidad asignada | Acuse: la alerta pasa a `ACUSADA` y se detiene el plazo. Si llega cuando la alerta ya se escaló a otra unidad, se registra y responde `409 VENCIDO`. |
 | `PATCH /alertas/{id}/estado` | Operador de la unidad asignada, Administrador | `ACUSADA → EN_ATENCION → ATENDIDA → CERRADA`. Para cerrar se pide `resultadoCierre`. Al cerrar se liberan las unidades. |
 | `POST /alertas/{id}/escalar` | Operador de la unidad asignada, Administrador | Escala a mano al siguiente nivel. Sin acuse, igual que el automático. Con la alerta acusada o en atención, la unidad que atiende se queda y el siguiente nivel llega de apoyo. |
 
-Al emisor se le avisa del acuse, de cada cambio de estado y del cierre, salvo que haya cancelado con el PIN de coacción.
+Al emisor se le avisa del acuse, de cada cambio de estado y del cierre.
 
 ## Administración
 
@@ -575,13 +574,13 @@ Las pruebas automáticas escriben registros `PRUEBA_…` y `CONSULTAR_HISTORIAL_
 
 `GET /api/v1/alertas/{id}/timeline` junta en orden los cambios de estado, las asignaciones, los escalamientos, los avisos y los intentos de cancelación. La ven las mismas personas que `GET /alertas/{id}`:
 - **El Administrador y el operador cuya unidad tuvo la alerta** ven todo, con nombres y a quién se mandó cada aviso.
-- **Quien emitió la alerta** ve su versión. Incluye sus estados, la unidad asignada, sus intentos de cancelación y los avisos a su red de apoyo. No ve nombres de operadores, ni escalamientos ni datos internos. Si canceló con el PIN de coacción, su línea termina en `CANCELADA` en ese momento, aunque la alerta siga activa en silencio.
+- **Quien emitió la alerta** ve su versión. Incluye sus estados, la unidad asignada, sus intentos de cancelación y los avisos a su red de apoyo. No ve nombres de operadores, ni escalamientos ni datos internos. Un intento con un PIN que no coincide le aparece como no exitoso y la alerta sigue su curso; la marca de posible coacción solo la ve la consola.
 
 
 ## Historial
 
 Lee `v_historial_usuario`: alertas, reportes con nombre y trayectos, del más nuevo al más viejo. Los reportes anónimos no aparecen. Filtros `tipo` (`ALERTA`, `REPORTE` o `TRAYECTO`), `desde`, `hasta`, `limite` (1 a 200) y `cursor`.
-- `GET /api/v1/historial`: el de la persona del token. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`, igual que en el detalle y la línea de tiempo.
+- `GET /api/v1/historial`: el de la persona del token. Cada alerta sale con su estado real.
 - `GET /api/v1/usuarios/{id}/historial`: el de otra persona, solo para el Administrador. Pide el encabezado `X-Justificacion` (10 a 500 caracteres) y cada consulta queda en la bitácora como `CONSULTAR_HISTORIAL_AJENO`, con la justificación y la IP. Muestra el estado real de cada alerta.
 
 ## Archivos
@@ -790,7 +789,7 @@ El detalle de cada punto está en `docs/api/README.md`.
 | Proveedor | Quién entrega el aviso: `simulado`, `fcm` (push), `smsgate` (celular pasarela) o `twilio` (SMS). |
 | Pasarela | Lo que conecta el servidor con los SMS: el celular Android o Twilio. |
 | `SS1` / id corto | El SMS de contingencia de 46 caracteres, y los primeros 8 caracteres del UUID de la alerta que lleva adentro. |
-| PIN de coacción | PIN que parece cancelar la alerta pero la deja activa en silencio. |
+| Posible coacción | Intento de cancelación con un PIN que no coincide: la alerta sigue activa y la consola ve la marca. |
 | Bitácora | Registro de auditoría encadenado con hash; no se puede cambiar ni borrar. |
 | Lote offline | Lo que el teléfono guardó sin internet y manda junto a `/sync/lote`. |
 | Catálogo | Los tipos de incidente con sus reglas y su escalamiento. Se edita por versiones; la app usa la publicada. |

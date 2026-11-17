@@ -15,7 +15,7 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 | [`docs/modulo4/README.md`](docs/modulo4/README.md) | **Backend en la nube (Módulo 4).** Servidor, base de datos, rutas de la API, cómo correrlo en local, el servidor en Azure, avisos, SMS, bitácora y configuración |
 | [`docs/api/openapi.yaml`](docs/api/openapi.yaml) | Contrato de la API: cada ruta con su JSON de entrada, respuestas y errores |
 | [`docs/api/README.md`](docs/api/README.md) | Mensajes del WebSocket, formato del SMS de contingencia `SS1` y puntos de conexión de la plataforma |
-| [`docs/modulo1/README.md`](docs/modulo1/README.md) | **App, Módulo 1 (identidad).** Registro, sesión, contactos, círculo, activación rápida, cancelación y PIN de coacción |
+| [`docs/modulo1/README.md`](docs/modulo1/README.md) | **App, Módulo 1 (identidad).** Registro, sesión, contactos, círculo, activación rápida, cancelación y posible coacción |
 | [`docs/modulo1/modulo1_identidad.md`](docs/modulo1/modulo1_identidad.md) | Resumen de los paquetes del Módulo 1 |
 | [`docs/modulo1/modulo1_contrato_api.md`](docs/modulo1/modulo1_contrato_api.md) | Contrato que se usó al empezar el Módulo 1. El vigente es `docs/api/openapi.yaml` |
 | [`docs/modulo2/README.md`](docs/modulo2/README.md) | **App, Módulo 2 (emergencias).** Detonadores, IA-1, telemetría, malla BLE, ruta segura y conexión con el servidor |
@@ -32,14 +32,14 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 |---|---|---|
 | P1 Registro y autenticación | 1 | Listo en la app y en el servidor |
 | P2 Contactos de confianza y círculo | 1 | Listo en la app y en el servidor. El contacto recibe SMS reales |
-| P3 Parámetros de seguridad | 1 y 4 | Listo en la app (atajo, widget, cuenta regresiva, energía y PIN de coacción). El catálogo de incidentes, sus reglas y el escalamiento se editan, validan y publican en el servidor |
+| P3 Parámetros de seguridad | 1 y 4 | Listo en la app (atajo, widget, cuenta regresiva y energía, en A-12). El catálogo de incidentes, sus reglas y el escalamiento se editan, validan y publican en el servidor |
 | P4 Activación de la alerta | 2 | Listo. La app incluye un formulario de prueba local para recorrer internet → malla → SMS → cola |
 | P5 Dispersión | 4 | Listo en Azure: asignación de la unidad más cercana, escalamiento y avisos a la red de apoyo. Corporaciones, unidades, operadores y turnos se administran con la API |
 | P5.1 Retransmisión por malla | 2 | Listo. Paquete BLE de 24 bytes; el teléfono con internet lo entrega al servidor |
 | P6 Telemetría en tiempo real | 2 | Listo. La ubicación en vivo llega al servidor y al enlace de la red de apoyo |
 | P7 Caminata segura | 2 | Funciona en el teléfono (ruta segura offline y check-in) |
 | P11 Trayectos | 4 | Listo en el servidor: guarda trayectos y check-ins, por internet o por la cola sin señal, y avisa a la red de apoyo si se comparte |
-| P8 Cancelación | 1 | Listo. Cancelar detiene la alerta en el teléfono y en el servidor. El PIN de coacción la muestra cancelada y la deja activa |
+| P8 Cancelación | 1 | Listo. Cancelar detiene la alerta en el teléfono y en el servidor. Un PIN que no coincide deja la alerta activa, con mensaje neutro, y el servidor lo marca como posible coacción (flujo 3a de CU-21) |
 | P9 Mapa comunitario | 3 | Pantalla provisional: muestra reportes públicos recientes con filtros y conserva el último feed para consulta sin conexión |
 | P10 Reportes comunitarios | 3 | Formulario provisional con fotos o grabación de audio y cola P11; aprobación automática únicamente en el servidor local |
 | P12 Ruta segura y mapas offline | 3 | Pantalla provisional para probar la descarga versionada de capa, grafo y paquetes y su caché local |
@@ -51,9 +51,10 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 ### Lo que sigue
 
 **En la app**
-- **Pantallas.** La app abre un inicio de prueba con formulario para alertas locales; el diagnóstico P5.1/P6/P7 sigue disponible desde esa pantalla. Faltan las de registro e inicio de sesión, contactos y círculo, configuración (incluido crear el PIN de cancelación y el de coacción), cancelación (A-08) y cuenta regresiva (A-05). Los ViewModels del Módulo 1 ya están listos para conectarlas.
+- **Pantallas.** Las 19 pantallas del E3 (A-01 a A-19) están en `app/.../ui/pantallas`, por bloques (acceso, alerta, red, comunidad, operación), y `NavegacionApp` sigue el mapa de navegación G-02. Las herramientas de prueba del equipo (prueba local de alerta, diagnóstico P5.1/P6/P7, prototipos P10 y P12, galería) quedan en Perfil › Herramientas de prueba, solo en debug.
+- **Tipo y relato después de enviar (A-06).** El servidor no tiene una ruta para cambiar el tipo o la descripción de una alerta ya registrada; el tipo elegido en A-05 sí sale con la alerta, pero lo de A-06 solo se guarda en el teléfono.
 - **Token de push.** Después del login, la app tiene que pedir su token de Firebase y mandarlo a `PUT /dispositivos/{id}/push`. El servidor ya manda push y ya recibe el token; los pasos están en [docs/modulo4/README.md](docs/modulo4/README.md#cuentas-red-de-apoyo-y-cancelación). Mientras no lo mande, los avisos a esa persona le llegan por SMS.
-- **Configuración de activación (P3) hacia el Módulo 2.** La cuenta regresiva elegida, el atajo del botón de encendido, el widget y el escaneo según la batería se guardan en el Módulo 1, pero el Módulo 2 todavía usa sus propios valores.
+- **Configuración de activación (P3) hacia el Módulo 2.** La cuenta regresiva de A-12 ya la usa el Módulo 2. El atajo del botón de encendido, el widget y el escaneo según la batería se guardan en el Módulo 1, pero el Módulo 2 todavía usa sus propios valores.
 - **SMS de contingencia.** El envío `SS1` desde la app está habilitado únicamente en debug y solo con número de pasarela configurado; no se habilita en release.
 - **Modo operador (A-14).** El servidor ya recibe el acuse por la cola sin señal (`ACUSE` en `/sync/lote`) y el turno de la unidad (`/unidades/mia`); falta la pantalla del operador en la app que los mande. Mientras tanto el operador acusa con internet.
 - **Trayectos (P7 con P11).** El servidor ya guarda trayectos y check-ins (`/trayectos`, y `TRAYECTO` y `CHECKIN` en `/sync/lote`); falta que la app los mande. Mientras tanto se quedan en el teléfono.
@@ -76,19 +77,19 @@ Esta rama junta el backend en la nube (Módulo 4) con los módulos de la app And
 | Parte | Cómo funciona |
 |---|---|
 | Cuentas y contactos (P1, P2) | El cliente de red del Módulo 1 usa las rutas y el JSON del servidor (`docs/api/openapi.yaml`). La versión debug usa `10.0.2.2:8080` en emulador; en teléfono físico lee `senderoApiUrl` de `local.properties` (o acepta `-PsenderoApiUrl=...`). La release usa Azure. |
-| Módulo 1 con Módulo 2 | En `SenderoApp`. El Módulo 2 usa la sesión y el id de la cuenta del Módulo 1. Los eventos de cancelación del Módulo 1 detienen la alerta del Módulo 2, o la dejan en modo silencioso con el PIN de coacción. |
+| Módulo 1 con Módulo 2 | En `SenderoApp`. El Módulo 2 usa la sesión y el id de la cuenta del Módulo 1 (también contra el servidor local; el usuario de prueba solo se usa sin sesión). Los eventos de cancelación del Módulo 1 detienen la alerta del Módulo 2. |
 | Alerta por internet (P4) | `ModuloEmergencias` manda la alerta a `POST /alertas` en cuanto hay internet y toma el folio del servidor. Hay un solo `ModuloEmergencias` para toda la app, en `SenderoApp`. Los detonadores de la app se traducen a los del servidor (`BOTON_SOS` → `BOTON`, etc.). |
 | Malla (P5.1, RF-14) | El paquete BLE es de 24 bytes, con ids cortos de la alerta y de la persona. El teléfono con internet que lo recibe lo entrega a `POST /malla/relevos`, también en el último salto. El servidor reconoce a la persona por su id corto y no duplica la alerta si llega por varios teléfonos. |
 | Ubicación en vivo (P6) | Cada lectura del GPS se persiste en la cola P11 antes de enviarse a `POST /alertas/{id}/ubicaciones`. WorkManager reintenta los fallos al recuperar la red; primero sincroniza la alerta y después sus lecturas, con la vigencia de 2 horas de la cola de alertas. |
 | Cancelación (P8) | Las cancelaciones guardadas sin señal se mandan al abrir la app y al volver internet. El servidor encuentra la alerta con el id del teléfono aunque haya llegado antes por la malla o por SMS. |
-| PIN de coacción (P8) | Segundo PIN, distinto al de cancelación. Al usarlo la pantalla muestra la alerta cancelada, el servidor recibe el intento como coacción y la alerta sigue activa en silencio. |
+| Posible coacción (P8) | Un PIN que no coincide no cancela: la pantalla muestra un mensaje neutro, la alerta sigue activa y el servidor recibe el intento con `exitoso = false` y lo marca como posible coacción. Solo la consola ve la marca. |
 | Bases del teléfono | El Módulo 1 usa `sendero_seguro_local.db` (Room) y el Módulo 2, `sendero_seguro_malla.db` (SQLite). |
 
 ## Cómo se probó
 
 - **Servidor:** `.\gradlew :server:test` (pruebas contra PostgreSQL en Docker).
-- **App:** `.\gradlew :app:testDebugUnitTest` con el servidor local corriendo (`.\gradlew :server:run`). Prueban el código real de la app contra el servidor: registro y cancelación de alertas, ubicación en vivo, relevo de la malla, cola sin señal y PIN de coacción. Para ejecutar la nueva prueba manual, sigue [`docs/prueba-alerta-local.md`](docs/prueba-alerta-local.md).
-- **Nube:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1`. Recorre cuentas, alertas, malla, cola sin señal, cancelación, coacción, consola, tiempo real, historial, archivos y bitácora contra Azure, y al final limpia lo que creó. `probar-unidades-y-comunidad.ps1` recorre usuarios, unidades, turno, acuse y atención, la cola sin señal del operador, el catálogo, trayectos, reportes, moderación, feed, mapa de calor y mapas, y también limpia. El detalle está en [docs/modulo4/README.md](docs/modulo4/README.md#servidor-en-la-nube).
+- **App:** `.\gradlew :app:testDebugUnitTest` con el servidor local corriendo (`.\gradlew :server:run`). Prueban el código real de la app contra el servidor: registro y cancelación de alertas, ubicación en vivo, relevo de la malla, cola sin señal y posible coacción. Para ejecutar la nueva prueba manual, sigue [`docs/prueba-alerta-local.md`](docs/prueba-alerta-local.md).
+- **Nube:** `powershell -ExecutionPolicy Bypass -File pruebas-nube\probar-todo.ps1`. Recorre cuentas, alertas, malla, cola sin señal, cancelación, posible coacción, consola, tiempo real, historial, archivos y bitácora contra Azure, y al final limpia lo que creó. `probar-unidades-y-comunidad.ps1` recorre usuarios, unidades, turno, acuse y atención, la cola sin señal del operador, el catálogo, trayectos, reportes, moderación, feed, mapa de calor y mapas, y también limpia. El detalle está en [docs/modulo4/README.md](docs/modulo4/README.md#servidor-en-la-nube).
 
 ## Cambios recientes: pantallas provisionales de comunidad, mapas y colas
 

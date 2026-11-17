@@ -24,7 +24,6 @@ Corresponde a los procesos **P1, P2, P3 y P8** del documento de Diseño (E3). Es
 | Escaneo de la malla según la batería | P3 | `ProcesoActivacionEnergia` |
 | Cancelación con PIN o huella y registro del motivo | P8 | `ProcesoCancelacion` |
 | Registro de intentos fallidos (posible coacción) | P8 | `ProcesoCancelacion` |
-| PIN de coacción (simula la cancelación y la alerta sigue) | P8 | `ProcesoAutenticacion` y `ProcesoCancelacion` |
 | Validaciones de formularios | — | `Validaciones` |
 | Hash del PIN de cancelación | — | `HashPin` |
 | Token y PIN cifrados | — | `AlmacenSeguroKeystore` |
@@ -727,21 +726,9 @@ En ese caso no se avisa al servidor (la alerta nunca llegó), pero sí se emite 
 
 `SenderoApp` llama a `ModuloIdentidad.sincronizarPendientes()` al abrir la app y cada vez que vuelve internet. Ahí se mandan las cancelaciones de `cola_alerta` y los intentos fallidos. Si el servidor responde que la alerta no existe, la cancelación se conserva hasta que vence (72 h), porque la alerta puede venir en camino por la malla o por SMS.
 
-### 10.6 PIN de coacción
+### 10.6 Posible coacción
 
-La persona puede crear un segundo PIN, distinto al de cancelación. Su hash se guarda en el Keystore (`pin_coaccion_hash`).
-
-```kotlin
-identidad.autenticacion.crearPinCoaccion(pin = "9876", confirmacion = "9876")
-identidad.autenticacion.tienePinCoaccion()
-identidad.autenticacion.quitarPinCoaccion()
-```
-
-- Necesita sesión y un PIN de cancelación ya creado. Si es igual al de cancelación, se rechaza; `cambiarPin` tampoco acepta un PIN nuevo igual al de coacción.
-- Si en A-08 se escribe el PIN de coacción, la pantalla muestra la alerta como cancelada (`ResultadoCancelacion.Cancelada`), pero al servidor se manda un intento con `exitoso = false` y se emite `EventoCancelacion.CoaccionSilenciosa`.
-- `SenderoApp` recibe ese evento y llama a `ModuloEmergencias.activarModoCoaccionSilencioso()`: la alerta sigue activa en modo silencioso (GPS, envío de ubicaciones y malla). Si estaba en la cuenta regresiva (A-05), la alerta se activa en ese momento.
-- Sin internet, el intento se guarda y se manda después, igual que un intento fallido.
-- En el servidor, la consola ve la alerta activa con la marca de coacción, y la persona la ve cancelada en su detalle y en su línea de tiempo.
+No hay un segundo PIN. Como dice el E3 (A-08, flujo 3a de CU-21): si el PIN no coincide, la alerta sigue activa, la pantalla muestra un mensaje neutro (`ResultadoCancelacion.NoCancelada`) y al servidor se manda el intento con `exitoso = false`, que lo marca como posible coacción. Solo la consola ve la marca; la persona sigue viendo su alerta activa. Sin internet, el intento se guarda y se manda después.
 
 ---
 
@@ -811,7 +798,7 @@ identidad.redApoyo.observarContactos().first()
 | Tema del Módulo 2 | Situación en el Módulo 1 |
 |---|---|
 | `actualizarParametrosSeguridad(palabrasVoz, sensibilidadCaidaG, intervaloCheckIn)` | El diseño E3 (A-12) no incluye palabras de voz, sensibilidad de caída ni check-in, por lo que el Módulo 1 no los guarda. Si el equipo decide agregarlos, van como claves nuevas en `config_local` dentro de P3 |
-| `desactivarAlertaEmergencia(simulacionCoaccion = true)` | La coacción se cubre de dos formas: el PIN incorrecto se registra como intento fallido, y el PIN de coacción (10.6) simula la cancelación y pide al Módulo 2 `activarModoCoaccionSilencioso()` |
+| `desactivarAlertaEmergencia(simulacionCoaccion = true)` | Se quitó. La coacción se cubre con el PIN que no coincide (10.6): la alerta sigue activa y el servidor la marca |
 
 ### 11.2 Módulo 3 — Offline y caché
 

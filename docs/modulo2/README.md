@@ -1274,7 +1274,7 @@ moduloEmergencias.gestorMalla.tokenServidor = { identidad.almacen.leerToken()?.t
 | Ubicación en vivo (P6) | Cada lectura del GPS va a `POST /alertas/{id}/ubicaciones`. Sin señal se juntan hasta 500 y se mandan en grupos de 100 al volver internet; si la alerta se activó sin señal, primero se manda la alerta. |
 | Alerta por la malla (RF-14) | El teléfono con internet que recibe el paquete lo entrega a `POST /malla/relevos`. |
 | Cancelación (P8) | La hace el Módulo 1. `SenderoApp` detiene la alerta con `desactivarAlertaEmergencia(false)` cuando llega `AlertaCancelada`. |
-| PIN de coacción (P8) | `SenderoApp` llama a `activarModoCoaccionSilencioso()`: la alerta sigue con GPS, ubicaciones y malla. Si estaba en la cuenta regresiva, se activa en ese momento. |
+| Posible coacción (P8) | Un PIN que no coincide no detiene nada: la alerta sigue con GPS, ubicaciones y malla, y el servidor la marca como posible coacción. |
 
 La base SQLite del Módulo 2 es `sendero_seguro_malla.db`, separada de la base Room del Módulo 1 (`sendero_seguro_local.db`). Las rutas del servidor están en [docs/modulo4/README.md](../modulo4/README.md).
 

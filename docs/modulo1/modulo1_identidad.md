@@ -1,4 +1,4 @@
-# Módulo 1 · Identidad, Contactos, Configuración y Control de Coacción
+# Módulo 1 · Identidad, Contactos, Configuración y Cancelación
 
 Paquete `com.escom.sendero_seguro.identidad`. Procesos del E3: **P1, P2, P3 y P8**.
 

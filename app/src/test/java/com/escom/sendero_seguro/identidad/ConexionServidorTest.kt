@@ -162,11 +162,12 @@ class ConexionServidorTest {
     }
 
     @Test
-    fun unOperadorNoPuedeEntrarDesdeLaApp() = runBlocking<Unit> {
+    fun unOperadorPuedeEntrarDesdeLaApp() = runBlocking<Unit> {
+        // El Operador usa la app para el modo operador sin internet (A-14, CU-24). El Administrador solo entra
+        // por la consola web; eso lo revisa ProcesoAutenticacion con ROLES_PERMITIDOS_EN_APP.
         // Cuenta de prueba del servidor local (R__datos_prueba): operador 5510000011 / sendero123.
-        val e = error(remoto.iniciarSesion("5510000011", "sendero123", dispositivo))
-        assertTrue("Llegó $e", e is ErrorIdentidad.PerfilNoPermitido)
-        assertEquals(UsuarioRol.OPERADOR, (e as ErrorIdentidad.PerfilNoPermitido).rol)
+        val r = ok(remoto.iniciarSesion("5510000011", "sendero123", dispositivo))
+        assertEquals(UsuarioRol.OPERADOR, r.usuario.rol)
     }
 
     // ------------------------------------------------------------------ P2
@@ -312,7 +313,8 @@ class ConexionServidorTest {
         val (ana, disp) = anaConSesion()
         val alerta = alertaDeAna()
         ok(ana.registrarCancelacion(solicitud(alerta, disp, exitoso = false)))
-        assertEquals("Ana la ve cancelada", "CANCELADA", estadoComoLoVe("ana", alerta))
+        // Flujo 3a de CU-21: la alerta sigue activa para todos; la marca de posible coacción solo la ve la consola.
+        assertNotEquals("Ana ve que sigue activa", "CANCELADA", estadoComoLoVe("ana", alerta))
         assertNotEquals("La consola ve que sigue activa", "CANCELADA", estadoComoLoVe("admin", alerta))
     }
 }

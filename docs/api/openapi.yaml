@@ -645,7 +645,7 @@ paths:
     get:
       tags: [Auditoría]
       summary: Historial propio (alertas, reportes con nombre y trayectos)
-      description: Lee `v_historial_usuario` de la persona del token. Los reportes anónimos no aparecen. Una alerta cancelada con el PIN de coacción sale como `CANCELADA`.
+      description: Lee `v_historial_usuario` de la persona del token. Los reportes anónimos no aparecen. Cada alerta sale con su estado real.
       x-proceso: P13
       parameters:
         - name: tipo
