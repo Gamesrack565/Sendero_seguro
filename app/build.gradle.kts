@@ -17,8 +17,8 @@ android {
         applicationId = "com.escom.sendero_seguro"
         minSdk = 26 // Android 8.0 (RNF14, dispositivo.android_api >= 26)
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SMS_GATEWAY_NUMBER", "\"\"")
@@ -37,6 +37,20 @@ android {
     val urlNube = "https://sendero-seguro-bse3efh5ddexczcx.mexicocentral-01.azurewebsites.net/api/v1/"
     val urlForzada = providers.gradleProperty("senderoApiUrl").orNull
 
+    // Firma del APK release. La llave y su contraseña viven fuera del repo y se leen de local.properties
+    // (senderoFirmaArchivo, senderoFirmaAlias, senderoFirmaClave). Sin ellas el release sale sin firmar.
+    val firmaArchivo = propiedadesLocales.getProperty("senderoFirmaArchivo")?.let { file(it) }?.takeIf { it.isFile }
+    signingConfigs {
+        if (firmaArchivo != null) {
+            create("release") {
+                storeFile = firmaArchivo
+                storePassword = propiedadesLocales.getProperty("senderoFirmaClave")
+                keyAlias = propiedadesLocales.getProperty("senderoFirmaAlias")
+                keyPassword = propiedadesLocales.getProperty("senderoFirmaClave")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlLocalTelefono ?: urlLocal}\"")
@@ -47,6 +61,7 @@ android {
             buildConfigField("String", "SMS_GATEWAY_NUMBER", "\"$smsGatewayNumber\"")
         }
         release {
+            if (firmaArchivo != null) signingConfig = signingConfigs.getByName("release")
             buildConfigField("String", "API_BASE_URL", "\"${urlForzada ?: urlNube}\"")
             buildConfigField("String", "SMS_GATEWAY_NUMBER", "\"\"")
             optimization {
