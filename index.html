@@ -22,7 +22,8 @@
   :root[data-theme="dark"] { --fondo: #1E1218; --tinta: #F6EEF2; --texto2: #CDB0BF; --lila-tinte: #3A2533; --halo: #4A1F2A; }
 
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
+  /* Una sola pantalla, sin desplazamiento: todo se ajusta al alto disponible */
+  html, body { height: 100%; overflow: hidden; }
   body {
     margin: 0;
     background:
@@ -30,14 +31,15 @@
       var(--fondo);
     color: var(--tinta);
     font: 17px/1.5 "Atkinson Hyperlegible", system-ui, sans-serif;
-    overflow-x: hidden;
   }
   main {
-    min-height: 100%;
+    --boton: min(228px, 27vh, 60vw);
+    height: 100vh; height: 100dvh;
+    overflow: hidden;
     display: grid;
     grid-template-rows: 1fr auto 1fr;
     justify-items: center;
-    padding: 40px 16px 28px;
+    padding: clamp(16px, 4vh, 40px) 16px clamp(12px, 3vh, 28px);
     position: relative;
   }
 
@@ -45,22 +47,22 @@
   .marca {
     display: inline-flex; align-items: center; gap: 8px;
     font: 500 12px/1 "JetBrains Mono", monospace; letter-spacing: .14em; text-transform: uppercase;
-    color: var(--malva); margin-bottom: 18px;
+    color: var(--malva); margin-bottom: clamp(8px, 2vh, 18px);
   }
   .marca svg { width: 16px; height: 16px; }
   h1 {
     margin: 0;
     font-family: "Archivo", sans-serif; font-weight: 800; font-stretch: 125%;
-    font-size: clamp(44px, 9vw, 104px); line-height: .92; letter-spacing: -.02em;
+    font-size: clamp(36px, min(9vw, 10vh), 104px); line-height: .92; letter-spacing: -.02em;
   }
   h1 span { color: var(--rojo); }
-  .lema { margin: 18px auto 0; max-width: 30ch; font-size: clamp(17px, 2vw, 20px); color: var(--texto2); }
+  .lema { margin: clamp(8px, 2vh, 18px) auto 0; max-width: 30ch; font-size: clamp(17px, 2vw, 20px); color: var(--texto2); }
 
   /* Firma: el botón de descarga es el botón de pánico de la app, con la señal de la malla saliendo de él */
-  .escena { position: relative; width: min(980px, 100%); display: grid; place-items: center; margin: clamp(28px, 6vh, 56px) 0; }
-  .boton-zona { position: relative; width: 300px; height: 300px; display: grid; place-items: center; }
+  .escena { position: relative; width: min(980px, 100%); display: grid; place-items: center; margin: clamp(10px, 4vh, 48px) 0; }
+  .boton-zona { position: relative; width: calc(var(--boton) * 1.32); height: calc(var(--boton) * 1.32); display: grid; place-items: center; }
   .onda {
-    position: absolute; inset: 0; margin: auto; width: 228px; height: 228px; border-radius: 50%;
+    position: absolute; inset: 0; margin: auto; width: var(--boton); height: var(--boton); border-radius: 50%;
     border: 2px solid var(--rojo); opacity: 0; pointer-events: none;
     animation: onda 3.6s cubic-bezier(.2,.6,.3,1) infinite;
   }
@@ -70,25 +72,25 @@
 
   .descargar {
     position: relative; z-index: 2;
-    width: 228px; height: 228px; border-radius: 50%;
+    width: var(--boton); height: var(--boton); border-radius: 50%;
     display: grid; place-content: center; gap: 6px; text-align: center; text-decoration: none;
     background: var(--rojo); color: #fff;
-    box-shadow: 0 0 0 16px var(--halo), 0 24px 50px rgba(158, 27, 43, .35);
+    box-shadow: 0 0 0 calc(var(--boton) * .07) var(--halo), 0 24px 50px rgba(158, 27, 43, .35);
     transition: transform .25s ease, background .25s ease;
   }
   .descargar:hover { transform: scale(1.04); background: #C92A3C; }
   .descargar:active { transform: scale(.97); background: var(--rojo-osc); }
   .descargar:focus-visible { outline: 3px solid var(--tinta); outline-offset: 22px; }
-  .descargar svg { width: 34px; height: 34px; justify-self: center; }
+  .descargar svg { width: calc(var(--boton) * .15); height: calc(var(--boton) * .15); justify-self: center; }
   .descargar strong {
     font-family: "Archivo", sans-serif; font-weight: 800; font-stretch: 125%;
-    font-size: 22px; line-height: 1; letter-spacing: .02em;
+    font-size: calc(var(--boton) * .096); line-height: 1; letter-spacing: .02em;
   }
-  .descargar small { font-size: 14px; opacity: .9; }
+  .descargar small { font-size: max(12px, calc(var(--boton) * .061)); opacity: .9; }
 
   /* Pantallas reales de la app, a los lados del botón */
   .pantalla {
-    position: absolute; top: 50%; width: 190px; border-radius: 26px;
+    position: absolute; top: 50%; width: min(190px, 26vh); border-radius: 26px;
     border: 6px solid #281620; background: #281620;
     box-shadow: 0 30px 60px rgba(40, 22, 32, .25);
     overflow: hidden;
@@ -100,15 +102,13 @@
   .pie { align-self: start; text-align: center; color: var(--texto2); font-size: 15px; }
   .datos { font: 500 13px/1.6 "JetBrains Mono", monospace; letter-spacing: .03em; }
   .datos b { color: var(--tinta); font-weight: 500; }
-  .pie p { margin: 10px auto 0; max-width: 42ch; }
+  .pie p { margin: clamp(4px, 1vh, 10px) auto 0; max-width: 42ch; }
 
   @media (max-width: 860px) {
     .pantalla { display: none; }
   }
-  @media (max-width: 420px) {
-    .boton-zona { width: 260px; height: 260px; }
-    .descargar, .onda { width: 200px; height: 200px; }
-    .descargar strong { font-size: 19px; }
+  @media (max-height: 560px) {
+    .pie p { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
     .onda { animation: none; opacity: .18; transform: scale(1.35); }
