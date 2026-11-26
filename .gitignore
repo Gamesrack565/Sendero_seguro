@@ -19,3 +19,7 @@ local.properties
 *.log
 server/bin/
 
+
+# Modelo de voz Vosk descargado por la tarea descargarModeloVoz
+/.modelos/
+*.apk

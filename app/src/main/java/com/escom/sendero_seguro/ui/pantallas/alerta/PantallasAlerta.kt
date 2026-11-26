@@ -5,10 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -39,6 +35,7 @@ import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -255,6 +252,78 @@ private fun BotonVoz(onClick: () -> Unit, modifier: Modifier) {
     }
 }
 
+// ================================================================ A-05 · Caída detectada
+
+/**
+ * Variante de A-05 cuando el detonador es la caída del teléfono. Pregunta «¿Estás bien?» con una cuenta
+ * regresiva más larga: si la persona no responde, la alerta sale sola con su ubicación (CU-11, detonador CAIDA).
+ * «Estoy bien» pide PIN o huella (A-08), igual que cancelar desde A-05, para que nadie más la apague.
+ */
+@Composable
+fun PantallaCaidaDetectada(
+    segundos: Int?,
+    segundosTotales: Int,
+    precisionM: Float?,
+    onPedirAyudaYa: () -> Unit,
+    onEstoyBien: () -> Unit
+) {
+    val restantes = segundos ?: 0
+    Column(
+        Modifier.fillMaxSize().background(RojoOscuro).padding(horizontal = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.weight(0.6f))
+        Text(
+            "¿Estás bien?", style = MaterialTheme.typography.headlineLarge, color = Blanco,
+            fontFamily = Archivo, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center
+        )
+        Text(
+            "Detectamos que tu teléfono se cayó con fuerza.",
+            style = MaterialTheme.typography.bodyLarge, color = Blanco.copy(alpha = 0.9f),
+            textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp)
+        )
+        Spacer(Modifier.height(32.dp))
+        Box(
+            Modifier.size(180.dp).semantics { contentDescription = "La alerta se envía en $restantes segundos" },
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                progress = { if (segundosTotales > 0) restantes.toFloat() / segundosTotales else 0f },
+                modifier = Modifier.fillMaxSize(),
+                color = Blanco,
+                trackColor = Blanco.copy(alpha = 0.25f),
+                strokeWidth = 8.dp
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("$restantes", color = Blanco, fontFamily = Archivo, fontWeight = FontWeight.ExtraBold, fontSize = 64.sp)
+                Text("segundos", style = MaterialTheme.typography.bodyMedium, color = Blanco.copy(alpha = 0.85f))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "Si no respondes, pediremos ayuda y compartiremos tu ubicación" +
+                (precisionM?.let { " (±${it.toInt()} m)." } ?: "."),
+            style = MaterialTheme.typography.bodyMedium, color = Blanco.copy(alpha = 0.85f), textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.weight(1f))
+        Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = onPedirAyudaYa,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Superficie, contentColor = RojoTexto)
+            ) { Text("NECESITO AYUDA", fontFamily = Archivo, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp) }
+            OutlinedButton(
+                onClick = onEstoyBien,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(2.dp, Blanco),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Blanco)
+            ) { Text("Estoy bien (PIN o huella)", style = MaterialTheme.typography.labelLarge) }
+        }
+    }
+}
+
 // ================================================================ A-06
 
 /**
@@ -264,46 +333,46 @@ private fun BotonVoz(onClick: () -> Unit, modifier: Modifier) {
 @Composable
 fun PantallaDescribirVoz(
     canal: CanalEnvio,
-    clasificar: (String) -> ResultadoClasificacionIA1,
+    /** Relato dictado o escrito (Módulo 2, GestorVozPanico en modo dictado). */
+    texto: String,
+    escuchando: Boolean,
+    /** Sugerencia de IA-1 sobre el relato; null mientras no se clasifica. */
+    sugerencia: ResultadoClasificacionIA1?,
+    errorVoz: String?,
+    /** Qué motor transcribe (en el teléfono o con internet); null si no está escuchando. */
+    notaMotor: String? = null,
     tipos: List<TipoReporteDto>,
+    onTexto: (String) -> Unit,
+    onIniciarVoz: () -> Unit,
+    onDetenerVoz: () -> Unit,
+    onAnalizar: () -> Unit,
     onUsar: (tipoId: Int, nombre: String, texto: String) -> Unit,
     onSoloTexto: (String) -> Unit,
     onOmitir: () -> Unit
 ) {
     val context = LocalContext.current
-    var texto by rememberSaveable { mutableStateOf("") }
-    var escuchando by remember { mutableStateOf(false) }
     var segundos by remember { mutableIntStateOf(0) }
-    var sugerencia by remember { mutableStateOf<ResultadoClasificacionIA1?>(null) }
     var eligiendoOtro by rememberSaveable { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val reconocedor = remember { ReconocedorRelato(context) }
+    var errorPermiso by remember { mutableStateOf<String?>(null) }
+    val error = errorPermiso ?: errorVoz
 
-    DisposableEffect(Unit) { onDispose { reconocedor.detener(); reconocedor.liberar() } }
+    // Máximo 60 s de grabación; al salir de la pantalla se apaga el micrófono.
+    DisposableEffect(Unit) { onDispose { onDetenerVoz() } }
     LaunchedEffect(escuchando) {
         segundos = 0
         while (escuchando && segundos < 60) {
             kotlinx.coroutines.delay(1000); segundos++
         }
-        if (escuchando) { reconocedor.detener(); escuchando = false }
+        if (escuchando) onDetenerVoz()
     }
 
     fun iniciar() {
-        error = null
-        reconocedor.iniciar(
-            onParcial = { texto = it.take(500) },
-            onFinal = { final ->
-                texto = final.take(500)
-                escuchando = false
-                if (texto.length >= 10) sugerencia = clasificar(texto)
-            },
-            onError = { escuchando = false; error = it }
-        )
-        escuchando = true
+        errorPermiso = null
+        onIniciarVoz()
     }
 
     val permiso = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) iniciar() else error = "Sin permiso de micrófono. Puedes escribirlo."
+        if (ok) iniciar() else errorPermiso = "Sin permiso de micrófono. Puedes escribirlo."
     }
 
     Column(Modifier.fillMaxSize().background(Fondo)) {
@@ -324,7 +393,7 @@ fun PantallaDescribirVoz(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier.size(72.dp).clip(CircleShape).background(Malva).clickable(role = Role.Button) {
-                        if (escuchando) { reconocedor.detener(); escuchando = false }
+                        if (escuchando) onDetenerVoz()
                         else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) iniciar()
                         else permiso.launch(Manifest.permission.RECORD_AUDIO)
                     },
@@ -341,12 +410,13 @@ fun PantallaDescribirVoz(
                         if (escuchando) "Escuchando… 0:%02d".format(segundos) else "Toca para hablar (máx. 60 s)",
                         style = MaterialTheme.typography.titleSmall, color = Tinta
                     )
-                    Text("Voz a texto en el teléfono; funciona sin internet.", style = MaterialTheme.typography.bodySmall, color = TextoSecundario)
+                    Text(notaMotor ?: "Funciona con y sin internet.", style = MaterialTheme.typography.bodySmall, color = TextoSecundario)
                 }
             }
             OutlinedTextField(
                 value = texto,
-                onValueChange = { texto = it.take(500); sugerencia = null },
+                onValueChange = { onTexto(it.take(500)) },
+                readOnly = escuchando,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 110.dp),
                 placeholder = { Text("Lo que digas aparece aquí; también puedes escribirlo.") },
                 textStyle = MaterialTheme.typography.bodyLarge,
@@ -359,7 +429,7 @@ fun PantallaDescribirVoz(
             )
             MensajeError(error)
             if (sugerencia == null && texto.length >= 10 && !escuchando) {
-                BotonSendero("Analizar con IA", { sugerencia = clasificar(texto) }, tipo = TipoBoton.SECUNDARIO)
+                BotonSendero("Analizar con IA", onAnalizar, tipo = TipoBoton.SECUNDARIO)
             }
             sugerencia?.let { s ->
                 if (s.superaUmbral) TarjetaSugerencia(s)
@@ -418,49 +488,6 @@ private fun TarjetaSugerencia(s: ResultadoClasificacionIA1) {
                 FilaDato(e, v)
             }
     }
-}
-
-/** Reconocimiento de voz del sistema, preferentemente en el teléfono. No busca palabras clave: solo transcribe. */
-private class ReconocedorRelato(private val context: Context) {
-    private var sr: SpeechRecognizer? = null
-    private var acumulado = ""
-
-    fun iniciar(onParcial: (String) -> Unit, onFinal: (String) -> Unit, onError: (String) -> Unit) {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) { onError("Este teléfono no tiene reconocimiento de voz. Escríbelo."); return }
-        liberar()
-        acumulado = ""
-        sr = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-                override fun onPartialResults(partialResults: Bundle?) {
-                    partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let(onParcial)
-                }
-                override fun onResults(results: Bundle?) {
-                    onFinal(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty())
-                }
-                override fun onError(error: Int) {
-                    onError(
-                        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) "No se entendió. Intenta otra vez o escríbelo."
-                        else "No se pudo usar el micrófono. Puedes escribirlo."
-                    )
-                }
-            })
-            startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            })
-        }
-    }
-
-    fun detener() { runCatching { sr?.stopListening() } }
-    fun liberar() { runCatching { sr?.destroy() }; sr = null }
 }
 
 // ================================================================ A-07

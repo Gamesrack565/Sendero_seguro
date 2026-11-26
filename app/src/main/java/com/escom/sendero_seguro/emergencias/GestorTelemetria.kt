@@ -27,12 +27,27 @@ class GestorTelemetria(
 
     companion object {
         private const val TAG = "MODULO2_TELEMETRIA_P6"
+        private const val PERIODO_MUESTREO_US = 5_000
     }
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-    var umbralImpactoG: Float = 2.8f
+    private val detectorCaidas = DetectorCaidas()
+
+    /** Golpe aislado (g) que activa la vista de caída por sí solo (ver DetectorCaidas). Por defecto 3.0 g. */
+    var umbralImpactoG: Float
+        get() = detectorCaidas.umbralGolpeG
+        set(value) { detectorCaidas.umbralGolpeG = value.coerceIn(2.0f, 6.0f) }
+
+    // Las lecturas a 200 Hz se procesan fuera del hilo principal; el aviso de caída sí llega en el principal.
+    private val hiloSensor = android.os.HandlerThread("SenderoAcelerometro").apply { start() }
+    private val manejadorSensor = android.os.Handler(hiloSensor.looper)
+    private val principal = android.os.Handler(Looper.getMainLooper())
+    private var picoActualG = 0f
+
+    private var ultimaPublicacionAceleracionNs = 0L
+    private var vigilandoImpactos = false
 
     private var ultimaUbicacion: Location? = null
     private var ultimaAceleracionG: Float = 1.0f
@@ -41,16 +56,28 @@ class GestorTelemetria(
     private val _flujoTelemetria = MutableStateFlow<DatosTelemetria?>(null)
     val flujoTelemetria: StateFlow<DatosTelemetria?> = _flujoTelemetria.asStateFlow()
 
+    /**
+     * Acelerómetro a 200 Hz (cada 5 ms, el máximo sin permiso especial): un golpe dura 5-15 ms y a 50 Hz
+     * casi siempre caía entre dos lecturas. Si existe la versión «wake-up» del sensor se usa con entrega
+     * en lote, para que siga detectando con la pantalla apagada sin un wake lock permanente.
+     */
     fun iniciarVigilanciaImpactos() {
-        val acelerometro = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        acelerometro?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        if (vigilandoImpactos) return
+        val acelerometro = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            ?: return
+        vigilandoImpactos = if (acelerometro.isWakeUpSensor) {
+            sensorManager.registerListener(this, acelerometro, PERIODO_MUESTREO_US, 2_000_000, manejadorSensor)
+        } else {
+            sensorManager.registerListener(this, acelerometro, PERIODO_MUESTREO_US, manejadorSensor)
         }
     }
 
     fun detenerVigilanciaImpactos() {
         if (!monitoreandoTelemetria) {
             sensorManager.unregisterListener(this)
+            vigilandoImpactos = false
+            detectorCaidas.reiniciar()
         }
     }
 
@@ -127,10 +154,24 @@ class GestorTelemetria(
             val magnitudG = sqrt((x * x + y * y + z * z).toDouble()).toFloat() / SensorManager.GRAVITY_EARTH
             ultimaAceleracionG = magnitudG
 
-            _flujoTelemetria.value = _flujoTelemetria.value?.copy(aceleracionG = magnitudG)
+            // Pico de cada sacudida en el log, para calibrar el umbral en un teléfono real:
+            //   adb logcat -s MODULO2_TELEMETRIA_P6
+            if (magnitudG >= 1.8f) {
+                picoActualG = maxOf(picoActualG, magnitudG)
+            } else if (picoActualG > 0f) {
+                Log.d(TAG, "Pico de ${"%.2f".format(picoActualG)} g (golpe ≥ ${"%.1f".format(umbralImpactoG)} g)")
+                picoActualG = 0f
+            }
 
-            if (magnitudG >= umbralImpactoG) {
-                onCaidaDetectada()
+            // A 200 Hz no se publica cada lectura: recompondría las pantallas que observan la telemetría.
+            if (event.timestamp - ultimaPublicacionAceleracionNs >= 500_000_000L) {
+                ultimaPublicacionAceleracionNs = event.timestamp
+                _flujoTelemetria.value = _flujoTelemetria.value?.copy(aceleracionG = magnitudG)
+            }
+
+            if (detectorCaidas.procesar(magnitudG, event.timestamp)) {
+                Log.w(TAG, "Golpe o caída detectada (${"%.2f".format(magnitudG)} g)")
+                principal.post { onCaidaDetectada() }
             }
         }
     }

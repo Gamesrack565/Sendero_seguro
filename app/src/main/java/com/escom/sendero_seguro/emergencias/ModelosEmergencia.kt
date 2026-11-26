@@ -56,7 +56,9 @@ data class ResultadoClasificacionIA1(
     val donde: String,
     val quien: String,
     val cuando: String,
-    val latenciaMs: Long
+    val latenciaMs: Long,
+    /** tipo_incidente.codigo (PERSONA_SOSPECHOSA, ASALTO_ROBO…) para resolver el id contra el catálogo descargado. */
+    val codigoTipo: String = ""
 )
 
 // P4 y P6: Estado e información completa de la Alerta de Emergencia

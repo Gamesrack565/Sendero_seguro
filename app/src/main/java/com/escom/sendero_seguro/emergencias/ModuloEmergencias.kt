@@ -47,6 +47,9 @@ class ModuloEmergencias(
     companion object {
         private const val TAG = "MODULO2_MOTOR_P4_P6"
         private const val UBICACIONES_POR_ENVIO = 100
+
+        /** Tras una caída se da más tiempo que en el botón: la persona puede estar aturdida o el teléfono lejos. */
+        const val SEGUNDOS_CUENTA_CAIDA = 15
     }
 
     private val appContext = context.applicationContext
@@ -65,6 +68,23 @@ class ModuloEmergencias(
 
     // Configurable desde P3 (A-12): 3, 5 o 10 segundos antes de enviar la alerta
     var segundosCuentaRegresivaConfig: Int = 5
+
+    /**
+     * Detonadores automáticos (caída, 5 presiones, palabra clave). Solo con sesión iniciada: sin ella no hay
+     * quien vea la cuenta regresiva ni a quién ligar la alerta. La pone NavegacionApp.
+     */
+    @Volatile var deteccionAutomaticaHabilitada: Boolean = false
+        set(value) {
+            field = value
+            if (value) iniciarProteccionSegundoPlano() else if (_alertaActiva.value?.activa != true) ServicioEmergencias.detener(appContext)
+        }
+
+    private val _detonadorCuentaRegresiva = MutableStateFlow<TipoDetonador?>(null)
+    /** Qué disparó la cuenta regresiva en curso (null si no hay). La UI abre A-05 o la vista de caída. */
+    val detonadorCuentaRegresiva: StateFlow<TipoDetonador?> = _detonadorCuentaRegresiva.asStateFlow()
+
+    /** La app está en pantalla; si no, la cuenta regresiva se avisa con notificación de pantalla completa. */
+    @Volatile var uiVisible: Boolean = false
 
     private val _segundosRestantesPreEnvio = MutableStateFlow<Int?>(null)
     val segundosRestantesPreEnvio: StateFlow<Int?> = _segundosRestantesPreEnvio.asStateFlow()
@@ -93,43 +113,48 @@ class ModuloEmergencias(
         context = appContext,
         onCaidaDetectada = {
             val ahora = System.currentTimeMillis()
-            if (_alertaActiva.value == null && (ahora - ultimoDisparoCaidaMs) > 2000L) {
+            if (deteccionAutomaticaHabilitada && !hayAlertaEnCurso() && (ahora - ultimoDisparoCaidaMs) > 2000L) {
                 ultimoDisparoCaidaMs = ahora
-                activarAlertaEmergencia(TipoDetonador.CAIDA_IMPACTO)
+                Log.w(TAG, "Caída detectada: cuenta regresiva de ${SEGUNDOS_CUENTA_CAIDA}s («¿Estás bien?»)")
+                iniciarCuentaRegresivaYEnvioBase(TipoDetonador.CAIDA_IMPACTO, SEGUNDOS_CUENTA_CAIDA)
             }
         }
     )
 
-    // Agregar dentro de ModuloEmergencias.kt:
-    var atajoCincoToquesEncendidoActivo: Boolean = true // Configurable desde P3 (A-12)
-    private val marcasToquesEncendido = mutableListOf<Long>()
+    // Configurable desde P3 (A-12): NavegacionApp lo sincroniza con config_local.atajo_activo.
+    @Volatile var atajoCincoToquesEncendidoActivo: Boolean = true
+        set(value) {
+            field = value
+            contadorEncendido.reiniciar()
+        }
+    private val contadorEncendido = ContadorPulsacionesEncendido()
 
+    // Cada presión del botón de encendido apaga o enciende la pantalla. Solo llega mientras el proceso vive,
+    // por eso ServicioEmergencias se mantiene en modo protección (ACTION_SCREEN_* no se puede declarar en el manifiesto).
     private val receptorBotonEncendido5x = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (!atajoCincoToquesEncendidoActivo) return
-            if (intent?.action == Intent.ACTION_SCREEN_OFF || intent?.action == Intent.ACTION_SCREEN_ON) {
-                val ahora = System.currentTimeMillis()
-                marcasToquesEncendido.add(ahora)
-                // Conservar solo las presiones ocurridas en los últimos 4 segundos
-                marcasToquesEncendido.removeAll { (ahora - it) > 4000L }
-
-                if (marcasToquesEncendido.size >= 5) {
-                    marcasToquesEncendido.clear()
-                    Log.e(TAG, "¡5 PRESIONES DE BOTÓN DE ENCENDIDO DETECTADAS! Disparando P4...")
-                    iniciarCuentaRegresivaYEnvioBase(TipoDetonador.ATAJO_FISICO)
-                }
+            if (!atajoCincoToquesEncendidoActivo || !deteccionAutomaticaHabilitada) return
+            if (intent?.action != Intent.ACTION_SCREEN_OFF && intent?.action != Intent.ACTION_SCREEN_ON) return
+            if (!contadorEncendido.registrar(android.os.SystemClock.elapsedRealtime())) return
+            if (hayAlertaEnCurso()) {
+                Log.i(TAG, "5 presiones del botón de encendido con una alerta ya en curso; se ignoran")
+                return
             }
+            Log.w(TAG, "5 presiones del botón de encendido: inicia la cuenta regresiva P4")
+            iniciarCuentaRegresivaYEnvioBase(TipoDetonador.ATAJO_FISICO)
         }
     }
 
     val gestorVozPanico = GestorVozPanico(
         context = appContext,
         onDetonadorVozActivado = { motivo ->
-            Log.w(TAG, "Activando P4 por comando de voz: $motivo")
-            // Limpiamos el estado previo para que cada nuevo comando de voz emita una nueva alerta y paquete BLE
-            _alertaActiva.value = null
-            gestorMalla.reiniciarEstadoParaNuevaPrueba()
-            activarAlertaEmergencia(TipoDetonador.COMANDO_VOZ)
+            // Antes borraba la alerta activa y creaba otra: la primera quedaba sin cancelar y sin telemetría.
+            if (hayAlertaEnCurso()) {
+                Log.i(TAG, "Palabra clave ($motivo) con una alerta ya en curso; se ignora")
+            } else {
+                Log.w(TAG, "Activando P4 por comando de voz: $motivo")
+                iniciarCuentaRegresivaYEnvioBase(TipoDetonador.COMANDO_VOZ)
+            }
         },
         onRelatoTranscritoYClasificado = { relato, clasificacion ->
             _alertaActiva.value?.let { alerta ->
@@ -141,7 +166,8 @@ class ModuloEmergencias(
                     esGenerica = !clasificacion.superaUmbral
                 )
             }
-        }
+        },
+        hayInternet = { gestorMalla.hayConexionAInternet() }
     )
 
     val gestorCaminataSegura = GestorCaminataSegura(
@@ -157,11 +183,12 @@ class ModuloEmergencias(
         }
     )
 
+    // Si el teléfono se apaga durante la cuenta regresiva, la alerta sale de inmediato (pudieron quitárselo).
+    // Antes cualquier apagado del teléfono, sin alerta de por medio, enviaba una alerta SOS.
     private val receptorApagadoSistema = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SHUTDOWN) {
-                _alertaActiva.value = null
-                activarAlertaEmergencia(TipoDetonador.BOTON_SOS, modoSinRedMallaActivo = true)
+            if (intent?.action == Intent.ACTION_SHUTDOWN && _segundosRestantesPreEnvio.value != null) {
+                enviarAlertaYa()
             }
         }
     }
@@ -185,7 +212,7 @@ class ModuloEmergencias(
     }
 
     fun iniciarProteccionSegundoPlano() {
-        ServicioEmergencias.iniciar(appContext)
+        ServicioEmergencias.iniciar(appContext, modoAlerta = _alertaActiva.value?.activa == true)
         gestorTelemetria.iniciarVigilanciaImpactos()
         gestorMalla.asegurarEscaneoMallaActivo()
     }
@@ -206,35 +233,67 @@ class ModuloEmergencias(
         segundosCuenta: Int = segundosCuentaRegresivaConfig,
         omitirCuentaEnviarYa: Boolean = false
     ) {
-        jobCuentaRegresivaPreEnvio?.cancel()
-        _alertaActiva.value = null // Aún NO está activa hasta que termine la cuenta regresiva
+        // Una alerta enviada no se reemplaza: antes se borraba sin cancelarla y su telemetría se detenía.
+        if (_alertaActiva.value?.activa == true) return
+        // Con la cuenta regresiva en curso, «Enviar ya» manda la misma alerta (mismo id, detonador y tipo elegido).
+        if (_segundosRestantesPreEnvio.value != null) {
+            if (omitirCuentaEnviarYa || segundosCuenta <= 0) enviarAlertaYa()
+            return
+        }
+
         // El id se fija desde ahora: si se cancela durante la cuenta regresiva (A-08), el intento queda ligado a esta alerta.
-        idAlertaEnCuenta = java.util.UUID.randomUUID().toString()
+        val idTemporal = java.util.UUID.randomUUID().toString()
+        idAlertaEnCuenta = idTemporal
+        detonadorEnCuenta = detonador
         gestorTelemetria.emitirUbicacionGNSSPeriodica()
+        _historialEventosAlerta.value = emptyList()
+        actualizarHistorialEventoAlerta(idTemporal, null, EstadoAlertaE01.CREADA, "Detonador: $detonador")
 
         if (omitirCuentaEnviarYa || segundosCuenta <= 0) {
-            _segundosRestantesPreEnvio.value = null
             activarAlertaEmergencia(detonador)
             return
         }
 
-        detonadorEnCuenta = detonador
-        val idTemporal = idAlertaEnCuenta ?: java.util.UUID.randomUUID().toString()
-        _historialEventosAlerta.value = emptyList()
-        actualizarHistorialEventoAlerta(idTemporal, null, EstadoAlertaE01.CREADA, "Botón presionado ($detonador)")
         actualizarHistorialEventoAlerta(idTemporal, EstadoAlertaE01.CREADA, EstadoAlertaE01.EN_CUENTA_REGRESIVA, "Esperando ${segundosCuenta}s antes de enviar")
+        // Se publica antes de lanzar la corrutina para que la UI vea la cuenta en cuanto se dispara.
+        _segundosRestantesPreEnvio.value = segundosCuenta
+        _detonadorCuentaRegresiva.value = detonador
+        // Lo más probable después es A-06: el modelo de voz sin internet se carga mientras corre la cuenta.
+        gestorVozPanico.prepararVozSinInternet()
+        if (!uiVisible || detonador != TipoDetonador.BOTON_SOS) AvisoCuentaRegresiva.mostrar(appContext, detonador, segundosCuenta)
 
         jobCuentaRegresivaPreEnvio = moduloScope.launch {
             for (seg in segundosCuenta downTo 1) {
                 _segundosRestantesPreEnvio.value = seg
                 delay(1000L)
             }
-            _segundosRestantesPreEnvio.value = null
-            // Aquí, una vez cumplidos los segundos, recién se envía la alerta
-            gestorMalla.reiniciarEstadoParaNuevaPrueba()
-            activarAlertaEmergencia(detonador)
+            despacharCuentaRegresiva()
         }
     }
+
+    /** A-05 «Enviar ya»: envía la alerta en curso sin esperar el resto de la cuenta regresiva. */
+    fun enviarAlertaYa() {
+        jobCuentaRegresivaPreEnvio?.cancel()
+        despacharCuentaRegresiva()
+    }
+
+    // Lo llaman «Enviar ya» (hilo principal) y el fin de la cuenta (Dispatchers.Default): solo uno envía.
+    @Synchronized
+    private fun despacharCuentaRegresiva() {
+        if (_alertaActiva.value?.activa == true) return
+        val detonador = _detonadorCuentaRegresiva.value ?: detonadorEnCuenta
+        val enCuenta = _segundosRestantesPreEnvio.value != null
+        jobCuentaRegresivaPreEnvio = null
+        _segundosRestantesPreEnvio.value = null
+        _detonadorCuentaRegresiva.value = null
+        AvisoCuentaRegresiva.ocultar(appContext)
+        if (enCuenta) gestorMalla.reiniciarEstadoParaNuevaPrueba()
+        activarAlertaEmergencia(detonador)
+    }
+
+    /** Hay una cuenta regresiva corriendo o una alerta enviada sin cerrar. */
+    fun hayAlertaEnCurso(): Boolean =
+        _segundosRestantesPreEnvio.value != null || _alertaActiva.value?.activa == true
 
     fun activarAlertaEmergencia(
         detonador: TipoDetonador,
@@ -244,7 +303,7 @@ class ModuloEmergencias(
             if (it.activa) return it
         }
 
-        ServicioEmergencias.iniciar(appContext)
+        ServicioEmergencias.iniciar(appContext, modoAlerta = true)
 
         val telemetriaInicial = gestorTelemetria.flujoTelemetria.value
             ?: gestorTelemetria.emitirUbicacionGNSSPeriodica()
@@ -276,7 +335,7 @@ class ModuloEmergencias(
             alertaId = nuevaAlerta.idAlerta,
             estadoAnterior = EstadoAlertaE01.EN_CUENTA_REGRESIVA,
             estadoNuevo = EstadoAlertaE01.ENVIADA,
-            detalle = "Enviada como Genérica vía $canalElegido"
+            detalle = "Enviada como ${nuevaAlerta.nombreTipoIncidente} vía $canalElegido"
         )
         sincronizarVistaRedApoyoYEmisora()
 
@@ -847,7 +906,11 @@ class ModuloEmergencias(
         tipoElegidoPreEnvio = null
         idAlertaEnCuenta = null
         jobCuentaRegresivaPreEnvio?.cancel()
+        jobCuentaRegresivaPreEnvio = null
         _segundosRestantesPreEnvio.value = null
+        _detonadorCuentaRegresiva.value = null
+        AvisoCuentaRegresiva.ocultar(appContext)
+        gestorVozPanico.limpiarDictadoRelato()
 
         _alertaActiva.value?.let {
             actualizarHistorialEventoAlerta(it.idAlerta, it.estadoActual, EstadoAlertaE01.CANCELADA, "Cancelación autenticada")
@@ -859,6 +922,9 @@ class ModuloEmergencias(
         gestorMalla.detenerSoloTransmisionBLE()
         _alertaActiva.value = null
         _vistaSincronizadaAtencion.value = null
+        // El servicio sigue en modo protección (sin wake lock) si los detonadores automáticos están activos.
+        if (deteccionAutomaticaHabilitada) ServicioEmergencias.iniciar(appContext, modoAlerta = false)
+        else ServicioEmergencias.detener(appContext)
     }
 
     fun actualizarParametrosSeguridad(

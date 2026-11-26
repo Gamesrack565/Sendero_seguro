@@ -37,6 +37,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
+    <!-- Aviso de cuenta regresiva (caída o 5 presiones): vibración y pantalla completa sobre el bloqueo -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
     <!-- Permiso de micrófono para comandos de voz y grabación de reportes -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
@@ -54,9 +58,9 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="true"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@mipmap/logo_sendero"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:roundIcon="@mipmap/logo_sendero_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Sendero_seguro">
 

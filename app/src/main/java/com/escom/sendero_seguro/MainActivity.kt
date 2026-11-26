@@ -15,6 +15,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.lifecycleScope
+import android.view.WindowManager
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import com.escom.sendero_seguro.emergencias.AvisoMallaUsuario
 import com.escom.sendero_seguro.ui.mapa.ConfiguracionMapaOffline
 import com.escom.sendero_seguro.ui.navegacion.NavegacionApp
@@ -45,6 +50,27 @@ class MainActivity : FragmentActivity() {
         )
     }
 
+    override fun onResume() {
+        super.onResume()
+        (application as SenderoApp).emergencias.uiVisible = true
+    }
+
+    override fun onPause() {
+        (application as SenderoApp).emergencias.uiVisible = false
+        super.onPause()
+    }
+
+    private fun mostrarSobreBloqueo(activo: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(activo)
+            setTurnScreenOn(activo)
+        } else {
+            @Suppress("DEPRECATION")
+            val banderas = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            if (activo) window.addFlags(banderas) else window.clearFlags(banderas)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         avisoEntrante = avisoDe(intent)
@@ -53,6 +79,15 @@ class MainActivity : FragmentActivity() {
 
         enableEdgeToEdge()
         val senderoApp = application as SenderoApp
+
+        // Con una cuenta regresiva o alerta en curso (caída, botón de encendido) la app se muestra sobre la
+        // pantalla de bloqueo y la enciende, para poder cancelar o pedir ayuda. Sin alerta, el bloqueo protege la app.
+        lifecycleScope.launch {
+            val m = senderoApp.emergencias
+            combine(m.segundosRestantesPreEnvio, m.alertaActiva) { s, a -> s != null || a?.activa == true }
+                .distinctUntilChanged()
+                .collect { mostrarSobreBloqueo(it) }
+        }
 
         setContent {
             Sendero_seguroTheme {

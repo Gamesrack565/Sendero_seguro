@@ -1,4 +1,6 @@
+import java.net.URI
 import java.util.Properties
+import java.util.zip.ZipInputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -113,6 +115,10 @@ dependencies {
 
     // --- Módulo 2 (emergencias): mapa
     implementation("org.osmdroid:osmdroid-android:6.1.18")
+    // --- Módulo 2 (emergencias): voz a texto en el teléfono, sin internet (A-06). El modelo en español se descarga
+    // en la primera compilación (tarea descargarModeloVoz) y viaja en los assets del APK.
+    implementation("com.alphacephei:vosk-android:0.3.75")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -120,4 +126,56 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+// ---------------------------------------------------------------- Modelo de voz Vosk (español, ~40 MB)
+// Se descarga una sola vez a .modelos/ (fuera de git) y se copia a los assets como model-es/.
+// La app lo descomprime en el teléfono la primera vez que se usa el dictado sin internet.
+abstract class DescargarModeloVoz : DefaultTask() {
+    @get:Input abstract val url: Property<String>
+    @get:Input abstract val nombreModelo: Property<String>
+    @get:Internal abstract val cache: RegularFileProperty
+    @get:OutputDirectory abstract val salida: DirectoryProperty
+
+    @TaskAction
+    fun ejecutar() {
+        val zip = cache.get().asFile
+        if (!zip.isFile) {
+            zip.parentFile.mkdirs()
+            logger.lifecycle("Descargando modelo de voz ${nombreModelo.get()} (~40 MB)…")
+            val parcial = File(zip.parentFile, zip.name + ".parcial")
+            URI(url.get()).toURL().openStream().use { entrada -> parcial.outputStream().use { entrada.copyTo(it) } }
+            parcial.renameTo(zip)
+        }
+        val destino = salida.get().asFile.resolve("model-es")
+        destino.deleteRecursively()
+        destino.mkdirs()
+        ZipInputStream(zip.inputStream().buffered()).use { z ->
+            generateSequence { z.nextEntry }.forEach { e ->
+                // Quita la carpeta raíz del zip (vosk-model-small-es-0.42/…).
+                val relativa = e.name.substringAfter('/', "")
+                if (relativa.isEmpty()) return@forEach
+                val archivo = destino.resolve(relativa)
+                require(archivo.canonicalPath.startsWith(destino.canonicalPath)) { "Ruta inválida en el zip: ${e.name}" }
+                if (e.isDirectory) archivo.mkdirs() else {
+                    archivo.parentFile.mkdirs()
+                    archivo.outputStream().use { z.copyTo(it) }
+                }
+            }
+        }
+        // StorageService.unpack compara este archivo para saber si ya descomprimió esta versión en el teléfono.
+        destino.resolve("uuid").writeText(nombreModelo.get())
+    }
+}
+
+val descargarModeloVoz = tasks.register<DescargarModeloVoz>("descargarModeloVoz") {
+    nombreModelo.set("vosk-model-small-es-0.42")
+    url.set("https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip")
+    cache.set(rootProject.layout.projectDirectory.file(".modelos/vosk-model-small-es-0.42.zip"))
+    salida.set(layout.buildDirectory.dir("generated/modeloVoz"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(descargarModeloVoz, DescargarModeloVoz::salida)
+    }
 }

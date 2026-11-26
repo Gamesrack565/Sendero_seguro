@@ -42,6 +42,9 @@ import androidx.navigation.compose.rememberNavController
 import com.escom.sendero_seguro.SenderoApp
 import com.escom.sendero_seguro.emergencias.EstadoRedYMalla
 import com.escom.sendero_seguro.PantallaDiagnosticoModulo2
+import com.escom.sendero_seguro.emergencias.GestorVozPanico
+import com.escom.sendero_seguro.emergencias.ModuloEmergencias
+import com.escom.sendero_seguro.emergencias.resolverConCatalogo
 import com.escom.sendero_seguro.emergencias.TipoDetonador
 import com.escom.sendero_seguro.identidad.dominio.MiembroEstado
 import com.escom.sendero_seguro.identidad.dominio.UsuarioRol
@@ -49,6 +52,7 @@ import com.escom.sendero_seguro.identidad.dominio.ResultadoCancelacion
 import com.escom.sendero_seguro.reportes.TipoReporteDto
 import com.escom.sendero_seguro.ui.mapa.Punto
 import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaAlertaActiva
+import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaCaidaDetectada
 import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaCancelarAlerta
 import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaCuentaRegresiva
 import com.escom.sendero_seguro.ui.pantallas.alerta.PantallaDescribirVoz
@@ -121,6 +125,11 @@ import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.launch
 
+private val PantallasSinSesion = setOf(Pantalla.A01, Pantalla.A02, Pantalla.A03, Pantalla.PIN_NUEVO)
+private val PantallasAlerta = setOf(Pantalla.A05, Pantalla.A05_CAIDA, Pantalla.A06, Pantalla.A07, Pantalla.A08)
+// Las herramientas de prueba disparan alertas a propósito; no se les cambia la pantalla.
+private val PantallasDesarrollo = setOf(Pantalla.HERRAMIENTAS, Pantalla.DIAGNOSTICO)
+
 private data class Pestana(val pantalla: Pantalla, val etiqueta: String, val icono: ImageVector)
 
 // Barra inferior de A-04: Alerta · Mapa · Reportes · Perfil
@@ -181,6 +190,28 @@ fun NavegacionApp(
     // P3 → P4: la cuenta regresiva elegida en A-12 también la usan el atajo y el widget del Módulo 2.
     val configActivacion by activacion.config.collectAsState()
     LaunchedEffect(configActivacion.cuentaRegresivaSeg) { modulo2.segundosCuentaRegresivaConfig = configActivacion.cuentaRegresivaSeg }
+    // A-12 «Botón de encendido 5 veces»: antes el interruptor no llegaba al Módulo 2 y el atajo siempre estaba activo.
+    LaunchedEffect(configActivacion.atajoActivo) { modulo2.atajoCincoToquesEncendidoActivo = configActivacion.atajoActivo }
+
+    // Caída, 5 presiones y palabra clave solo con sesión iniciada (fuera de A-01, A-02, A-03 y crear PIN).
+    val conSesion = actual != null && actual !in PantallasSinSesion
+    LaunchedEffect(conSesion) { if (actual != null) modulo2.deteccionAutomaticaHabilitada = conSesion }
+
+    // Una cuenta regresiva o alerta que no se inició desde A-04 (caída, botón de encendido, voz o el aviso de
+    // pantalla completa) abre su pantalla desde donde esté la persona.
+    val segundosCuenta by modulo2.segundosRestantesPreEnvio.collectAsState()
+    val detonadorCuenta by modulo2.detonadorCuentaRegresiva.collectAsState()
+    val alertaEnCurso by modulo2.alertaActiva.collectAsState()
+    LaunchedEffect(segundosCuenta != null, detonadorCuenta, alertaEnCurso?.activa, actual) {
+        val aqui = actual ?: return@LaunchedEffect
+        if (!conSesion || aqui in PantallasAlerta || aqui in PantallasDesarrollo) return@LaunchedEffect
+        when {
+            segundosCuenta != null ->
+                nav.navigate((if (detonadorCuenta == TipoDetonador.CAIDA_IMPACTO) Pantalla.A05_CAIDA else Pantalla.A05).ruta) { launchSingleTop = true }
+            alertaEnCurso?.activa == true ->
+                nav.navigate(Pantalla.A07.ruta) { launchSingleTop = true }
+        }
+    }
 
     // A-14: si quien usa la app es Operador y llega un paquete de la malla sin internet, se abre el modo operador.
     val colaMalla = remember { GestorColaLocalSQLiteER06(context) }
@@ -204,7 +235,7 @@ fun NavegacionApp(
     Scaffold(
         // La franja de la barra de estado toma el color de la pantalla (roja en la alerta, oscura en A-03 y A-13).
         containerColor = when (actual) {
-            Pantalla.A05, Pantalla.A06 -> RojoOscuro
+            Pantalla.A05, Pantalla.A05_CAIDA, Pantalla.A06 -> RojoOscuro
             Pantalla.A07 -> Rojo
             Pantalla.A03, Pantalla.A13, Pantalla.A14 -> Tinta
             else -> Fondo
@@ -320,24 +351,63 @@ fun NavegacionApp(
                     tipos = tiposAlerta,
                     tipoElegido = elegido,
                     onElegirTipo = { t -> elegido = t.id; modulo2.elegirTipoIncidente(t.id, t.nombre) },
+                    // «Decirlo con voz» envía ya (con el detonador real: botón, atajo o voz) y abre A-06 para el relato.
                     onVoz = {
                         aVoz = true
-                        modulo2.iniciarCuentaRegresivaYEnvioBase(TipoDetonador.BOTON_SOS, omitirCuentaEnviarYa = true)
+                        modulo2.enviarAlertaYa()
                     },
-                    onEnviarYa = { modulo2.iniciarCuentaRegresivaYEnvioBase(TipoDetonador.BOTON_SOS, omitirCuentaEnviarYa = true) },
+                    onEnviarYa = { modulo2.enviarAlertaYa() },
                     onCancelar = { irACancelar() }
+                )
+            }
+            composable(Pantalla.A05_CAIDA.ruta) {
+                val segundos by modulo2.segundosRestantesPreEnvio.collectAsState()
+                val alerta by modulo2.alertaActiva.collectAsState()
+                val telemetria by modulo2.flujoTelemetria.collectAsState()
+                LaunchedEffect(alerta) {
+                    if (alerta?.activa == true) nav.navigate(Pantalla.A07.ruta) { popUpTo(Pantalla.A04.ruta) }
+                }
+                BackHandler { irACancelar() }
+                PantallaCaidaDetectada(
+                    segundos = segundos,
+                    segundosTotales = ModuloEmergencias.SEGUNDOS_CUENTA_CAIDA,
+                    precisionM = telemetria?.precision,
+                    onPedirAyudaYa = { modulo2.enviarAlertaYa() },
+                    onEstoyBien = { irACancelar() }
                 )
             }
             composable(Pantalla.A06.ruta) {
                 val alerta by modulo2.alertaActiva.collectAsState()
-                val irA07 = { nav.navigate(Pantalla.A07.ruta) { popUpTo(Pantalla.A04.ruta) } }
+                val voz = modulo2.gestorVozPanico
+                val texto by voz.textoTranscritoEnVivo.collectAsState()
+                val dictando by voz.dictandoRelato.collectAsState()
+                val sugerencia by voz.ultimaClasificacionIA1.collectAsState()
+                val errorVoz by voz.errorDictado.collectAsState()
+                val motor by voz.motorDictado.collectAsState()
+                // El relato empieza vacío en cada alerta y el micrófono se apaga al salir.
+                var relatoLimpio by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(Unit) { if (!relatoLimpio) { voz.limpiarDictadoRelato(); relatoLimpio = true } }
+                val irA07 = { voz.limpiarDictadoRelato(); nav.navigate(Pantalla.A07.ruta) { popUpTo(Pantalla.A04.ruta) } }
                 BackHandler { irA07() }
                 PantallaDescribirVoz(
                     canal = alerta?.canalRecepcion?.aCanal() ?: CanalEnvio.EN_COLA,
-                    clasificar = { modulo2.gestorVozPanico.clasificarIncidenteConIA1Local(it) },
+                    texto = texto,
+                    escuchando = dictando,
+                    // Ids de IA-1 ajustados al catálogo descargado (tipo_incidente del servidor).
+                    sugerencia = sugerencia?.resolverConCatalogo(tiposAlerta),
+                    errorVoz = errorVoz,
+                    notaMotor = when (motor) {
+                        GestorVozPanico.MotorDictado.TELEFONO -> "Transcribiendo en el teléfono, sin internet."
+                        GestorVozPanico.MotorDictado.INTERNET -> "Transcribiendo con internet."
+                        null -> null
+                    },
                     tipos = tiposAlerta,
-                    onUsar = { id, nombre, texto -> modulo2.elegirTipoIncidente(id, nombre, texto.ifBlank { null }); irA07() },
-                    onSoloTexto = { texto -> modulo2.agregarDescripcion(texto); irA07() },
+                    onTexto = voz::reemplazarTextoRelato,
+                    onIniciarVoz = { voz.iniciarDictadoRelato(texto) },
+                    onDetenerVoz = { if (voz.dictandoRelato.value) voz.detenerDictadoRelato() },
+                    onAnalizar = { voz.clasificarRelatoActual() },
+                    onUsar = { id, nombre, t -> modulo2.elegirTipoIncidente(id, nombre, t.ifBlank { null }); irA07() },
+                    onSoloTexto = { t -> modulo2.agregarDescripcion(t); irA07() },
                     onOmitir = { irA07() }
                 )
             }
@@ -510,7 +580,7 @@ fun NavegacionApp(
                     tipos = tipos,
                     ubicacion = ubicacion?.punto,
                     precisionM = ubicacion?.precisionM,
-                    clasificar = { modulo2.gestorVozPanico.clasificarIncidenteConIA1Local(it) },
+                    clasificar = { modulo2.gestorVozPanico.clasificarIncidenteConIA1Local(it).resolverConCatalogo(tipos) },
                     guardarFoto = { uri -> withContext(Dispatchers.IO) { guardarEvidenciaReporte(context, uri) } },
                     onEnviar = { tipoId, descripcion, anonimo, fotos ->
                         val u = ubicacion

@@ -10,6 +10,8 @@ enum class Pantalla(val id: String, val titulo: String, val cu: String, val conB
     A03("A-03", "Inicio de sesión", "CU-02 · RF-1, RF-2"),
     A04("A-04", "Inicio", "CU-11, CU-27 · RF-5, RF-18", conBarra = true),
     A05("A-05", "Cuenta regresiva y tipo de alerta", "CU-11, CU-12, CU-13 · RF-5, RF-6, RF-7"),
+    /** Variante de A-05 cuando el detonador es la caída del teléfono: «¿Estás bien?». */
+    A05_CAIDA("A-05", "Caída detectada", "CU-11 · RF-5"),
     A06("A-06", "Describir con voz y sugerencia IA", "CU-13 · RF-6"),
     A07("A-07", "Alerta activa y estado", "CU-11, CU-22 · RF-7, RF-9, RF-11"),
     A08("A-08", "Cancelar alerta", "CU-21 · RF-13"),
